@@ -39,6 +39,21 @@ vcpkg-manifest-install/
 # Docker
 .docker/
 
+# Debug files
+*.pdb
+*.ilk
+*.exp
+*.idb
+*.ipdb
+*.iobj
+*.log
+
+# VS Code (workspace)
+.vscode/
+
+# Obsidian (workspace config, not project code)
+.obsidian/
+
 # OS
 Thumbs.db
 .DS_Store
