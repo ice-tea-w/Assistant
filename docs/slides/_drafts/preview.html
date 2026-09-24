@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>设备同步 · PPT 三个方向初稿</title>
+<style>
+  :root { --bg:#0f1620; --card:#18202c; --ink:#e8eef6; --muted:#8b9bb0; --line:#2a3644; }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:38px 30px 60px; background:var(--bg); color:var(--ink);
+         font-family:"Microsoft YaHei","Segoe UI",system-ui,sans-serif; }
+  h1 { font-size:22px; margin:0 0 10px; }
+  .lede { color:var(--muted); font-size:13.5px; margin-bottom:34px; line-height:1.8;
+          max-width:1080px; }
+  .lede b { color:#c7d4e6; font-weight:600; }
+  .dir { background:var(--card); border:1px solid var(--line); border-radius:10px;
+         padding:22px 24px 26px; margin-bottom:26px; }
+  .dir h2 { font-size:17px; margin:0 0 8px; }
+  .dir h2 span { color:#4a90d9; margin-right:10px; }
+  .desc { color:var(--muted); font-size:13px; line-height:1.75; margin-bottom:18px;
+          max-width:1060px; }
+  .desc b { color:#c7d4e6; font-weight:600; }
+  .shots { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  .shot { background:#000; border:1px solid var(--line); border-radius:6px;
+          overflow:hidden; }
+  .shot img { display:block; width:100%; height:auto; }
+  .cap { font-size:11.5px; color:var(--muted); padding:8px 11px; background:#131a24;
+         border-top:1px solid var(--line); }
+  .foot { color:var(--muted); font-size:12.5px; line-height:1.9;
+          border-top:1px solid var(--line); padding-top:20px; max-width:1080px; }
+  .foot b { color:#c7d4e6; }
+  code { background:#131a24; padding:1px 6px; border-radius:4px; font-size:12px; }
+</style>
+</head>
+<body>
+
+  <h1>设备同步 · PPT 三个方向初稿</h1>
+  <div class="lede">
+    每个方向 2 页代表页（封面 + 一页核心内容）。三者共用同一套既有配色
+    （深蓝 <code>#142238</code> / 强调蓝 <code>#4A90D9</code>），差异在
+    <b>视觉母题</b>——也就是"用什么画面结构讲这件事"。<br>
+    选定一个方向后，我再按它把完整 deck 做出来（含需求、架构、算法、分工、计划各页）。
+  </div>
+
+  <div class="dir">
+    <h2><span>方向 A</span>镜像</h2>
+    <div class="desc">
+      延续你现有三套 PPT 的模板语言（深色封面 + 浅底内容页 + 白色卡片 + 胶囊标签），
+      封面右侧用<b>两台设备左右对称</b>表达"两端"。<br>
+      <b>优点</b>：与《文件检索模块》《文件管理模块》视觉一脉相承，看起来像同一个项目的第四份汇报，正式场合最稳。
+    </div>
+    <div class="shots">
+      <div class="shot"><img src="draft_a_mirror-1.png" alt="方向A 封面">
+        <div class="cap">封面 · 镜像双设备</div></div>
+      <div class="shot"><img src="draft_a_mirror-2.png" alt="方向A 内容页">
+        <div class="cap">内容页 · 一页看懂（三卡片）</div></div>
+    </div>
+  </div>
+
+  <div class="dir">
+    <h2><span>方向 B</span>双栏</h2>
+    <div class="desc">
+      把<b>"左设备 / 中通道 / 右设备"直接做成版式骨架</b>，所有页面都按这个结构组织。
+      封面本身就是一次分栏：左边本机、右边对端，中间是数据流动的通道带。<br>
+      <b>优点</b>：把"分布式"这件事视觉化，讲架构和算法时天生贴合；
+      <b>风险</b>：版式约束强，纯文字内容页会比较难排。
+    </div>
+    <div class="shots">
+      <div class="shot"><img src="draft_b_duo-1.png" alt="方向B 封面">
+        <div class="cap">封面 · 左右分栏 + 中间通道带</div></div>
+      <div class="shot"><img src="draft_b_duo-2.png" alt="方向B 内容页">
+        <div class="cap">内容页 · 三栏架构（判定中心在中间）</div></div>
+    </div>
+  </div>
+
+  <div class="dir">
+    <h2><span>方向 C</span>状态流</h2>
+    <div class="desc">
+      以<b>文件生命周期时间线</b>为主骨架，把"冲突"从缺陷画成流程上的一个正常站点。
+      封面上一条时间线贯穿四个状态，内容页把它展开成状态机。<br>
+      <b>优点</b>：叙事性最强，"不丢数据"这条底线成为画面主角，容易打动非技术听众；
+      <b>风险</b>：偏故事化，技术细节密度不如 B。
+    </div>
+    <div class="shots">
+      <div class="shot"><img src="draft_c_flow-1.png" alt="方向C 封面">
+        <div class="cap">封面 · 贯穿全页的状态时间线</div></div>
+      <div class="shot"><img src="draft_c_flow-2.png" alt="方向C 内容页">
+        <div class="cap">内容页 · 状态机 + 冲突处理规则</div></div>
+    </div>
+  </div>
+
+  <div class="foot">
+    <b>已过的自检</b>（两个脚本在 <code>docs/slides/</code>，可复跑）：<br>
+    · <code>check_deck_geometry.py</code> — 越界 / 文字溢出 / 大块重叠：三版全部 OK<br>
+    · <code>check_deck_contrast.py</code> — 文字对比度全部达到 WCAG AA（4.5:1）：三版全部 OK<br>
+    <br>
+    <b>说明</b>：初稿由 <code>make_deck_sync_drafts.py</code> 用 python-pptx 生成
+    （沿用你既有三套脚本的技术栈与配色），这两个自检脚本是因为当前会话的模型看不到渲染图、
+    只能靠几何与对比度计算来把关才写的。视觉观感（留白、平衡、气质）仍需你亲自判断。
+  </div>
+
+</body>
+</html>

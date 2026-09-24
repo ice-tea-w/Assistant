@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(Assistant VERSION 0.1.0 LANGUAGES CXX)
+project(Assistant VERSION 0.3.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -34,6 +34,12 @@ add_executable(${PROJECT_NAME}
 
 target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_SOURCE_DIR}/include
+)
+
+# 版本号单一来源：project(VERSION) → 编译期宏 → QCoreApplication::applicationVersion()
+# → QML 的 appVersion context property（避免 QML 里再写死一处 "v0.1.0"）
+target_compile_definitions(${PROJECT_NAME} PRIVATE
+    APP_VERSION="${PROJECT_VERSION}"
 )
 
 target_link_libraries(${PROJECT_NAME} PRIVATE

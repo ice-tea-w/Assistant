@@ -1,5 +1,12 @@
 <RCC>
     <qresource prefix="/">
         <file>qml/MainWindow.qml</file>
+        <file>qml/MainPanel.qml</file>
+        <file>qml/TodoPage.qml</file>
+        <file>qml/NotesPage.qml</file>
+        <file>qml/ClipboardPage.qml</file>
+        <file>qml/SettingsPage.qml</file>
+        <file>qml/Style.qml</file>
+        <file>qml/qmldir</file>
     </qresource>
 </RCC>

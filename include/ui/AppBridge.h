@@ -27,6 +27,7 @@ public:
     Q_INVOKABLE void activate();
     Q_INVOKABLE void hideWindow();
     Q_INVOKABLE void toggleWindow();
+    Q_INVOKABLE void openMainPanel();
 
     /// Set the history database (owned by main; AppBridge does not take ownership).
     void setHistoryDatabase(HistoryDatabase *db);
@@ -39,6 +40,7 @@ signals:
     void statusTextChanged();
     void visibleChanged();
     void commandExecuted(const QString &command);
+    void mainPanelRequested();
 
 private:
     void executeAction(const SearchResult &item);

@@ -1,4 +1,5 @@
 #include "core/ConfigManager.h"
+#include "core/AutoStart.h"
 #include "core/Logger.h"
 
 #include <QDir>
@@ -51,6 +52,9 @@ void ConfigManager::applyDefaults()
 void ConfigManager::load()
 {
     m_filePath = configFilePath();
+
+    // 开机启动的真实来源是注册表，每次启动同步一次（不读 JSON）
+    m_autoStart = AutoStart::isEnabled();
 
     QFile file(m_filePath);
     if (!file.open(QIODevice::ReadOnly)) {
@@ -142,6 +146,7 @@ int     ConfigManager::windowY() const        { return m_windowY; }
 QString ConfigManager::hotkeyModifiers() const { return m_hotkeyModifiers; }
 QString ConfigManager::hotkeyKey() const       { return m_hotkeyKey; }
 QString ConfigManager::logLevel() const       { return m_logLevel; }
+bool    ConfigManager::autoStart() const      { return m_autoStart; }
 
 // ---- setters ----
 
@@ -181,4 +186,17 @@ void ConfigManager::setLogLevel(const QString &level)
         save();
         emit logLevelChanged();
     }
+}
+
+void ConfigManager::setAutoStart(bool enabled)
+{
+    if (m_autoStart == enabled)
+        return;
+
+    // 注册表写失败就不改内存状态，保证 UI 与系统实际状态一致
+    if (!AutoStart::setEnabled(enabled))
+        return;
+
+    m_autoStart = enabled;
+    emit autoStartChanged();
 }

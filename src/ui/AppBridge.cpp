@@ -273,6 +273,11 @@ void AppBridge::toggleWindow()
     setVisible(!m_visible);
 }
 
+void AppBridge::openMainPanel()
+{
+    emit mainPanelRequested();
+}
+
 void AppBridge::setHistoryDatabase(HistoryDatabase *db)
 {
     m_historyDb = db;

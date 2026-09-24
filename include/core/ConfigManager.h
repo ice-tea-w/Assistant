@@ -12,6 +12,7 @@ class ConfigManager : public QObject
     Q_PROPERTY(QString hotkeyModifiers READ hotkeyModifiers NOTIFY hotkeyChanged)
     Q_PROPERTY(QString hotkeyKey READ hotkeyKey NOTIFY hotkeyChanged)
     Q_PROPERTY(QString logLevel READ logLevel NOTIFY logLevelChanged)
+    Q_PROPERTY(bool autoStart READ autoStart NOTIFY autoStartChanged)
 
 public:
     explicit ConfigManager(QObject *parent = nullptr);
@@ -28,11 +29,16 @@ public:
     QString hotkeyKey() const;
     QString logLevel() const;
 
+    /// 开机启动状态。**真实性来源是注册表**（见 `core/AutoStart.h`）：
+    /// 每次 `load()` 同步一次，不写进 config.json（避免两处真相不一致）。
+    bool autoStart() const;
+
     // ---- setters (persist immediately) ----
     Q_INVOKABLE void setTheme(const QString &theme);
     Q_INVOKABLE void saveWindowPosition(int x, int y);
     Q_INVOKABLE void setHotkey(const QString &modifiers, const QString &key);
     Q_INVOKABLE void setLogLevel(const QString &level);
+    Q_INVOKABLE void setAutoStart(bool enabled);
 
     // ---- config file path (read-only, for debugging) ----
     QString filePath() const;
@@ -42,6 +48,7 @@ signals:
     void windowPositionChanged();
     void hotkeyChanged();
     void logLevelChanged();
+    void autoStartChanged();
     void configLoaded();
 
 private:
@@ -54,5 +61,6 @@ private:
     QString m_hotkeyModifiers;
     QString m_hotkeyKey;
     QString m_logLevel;
+    bool    m_autoStart = false;   // 注册表镜像，不持久化到 JSON
     QString m_filePath;
 };

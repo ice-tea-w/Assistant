@@ -26,6 +26,8 @@ cmake --build build --config Debug
 
 新增/删除源文件后必须重新 configure，因为用了 `file(GLOB_RECURSE)`。
 
+> **环境注意（本机 sandbox）**：编译必须用 `danger-full-access`。受限模式下 CMake/AUTOMOC 调 `moc.exe` 子进程会被拦（`libuv process spawn failed: operation not permitted`），`workspace-write` 不够。
+
 ## 运行方式
 
 ```powershell
@@ -35,6 +37,9 @@ cmake --build build --config Debug
 `run.bat` 由 CMake POST_BUILD 自动生成，负责：
 - 把 vcpkg Qt6 `bin/` 加入 PATH（Windows DLL 加载器需要）
 - 在 exe 目录启动程序
+
+> **环境注意（本机 sandbox）**：**运行也需要 `danger-full-access`**。应用要写 `%LOCALAPPDATA%/AssistantTeam/Assistant/`（日志 / 配置 / 4 个 DB），`workspace-write` 下写入被拒 → `Logger::init` 失败退回 console-only，**日志不落盘**，容易误判成"启动正常"。
+> 冒烟判断启动是否成功时**不要看 stdout**：spdlog 的 console sink 在重定向后是全缓冲的，进程被强杀会丢输出；看 `%LOCALAPPDATA%\AssistantTeam\Assistant\logs\assistant.log` 才可靠。
 
 ## Qt 部署原理（vcpkg 开发阶段）
 
@@ -46,21 +51,50 @@ cmake --build build --config Debug
 
 ## 当前开发阶段
 
-**Phase 2 进行中**（核心助手功能）
+**Phase 3 收尾中**（扩展功能）
 
 已完成：
 - Phase 0: Hello 窗口、编译环境
 - Phase 1 MVP: 系统托盘 + 全局热键 (Alt+Space) + QML 窗口 + 配置读写 + 主题
-- Phase 2 Step 1: spdlog 日志系统 (Logger 命名空间单例)
-- Phase 2 Step 2: SQLite 搜索历史 (HistoryDatabase, 3 张表)
-- Phase 2 Step 3: SearchResult + 模糊匹配引擎 (FuzzyMatcher 五级打分)
-- Phase 2 Step 4: Calculator 递归下降解析器 (PEMDAS)
-- Phase 2 Step 5: AppIndexer 应用启动器 (扫描 Start Menu .lnk, IShellLink 解析)
-- Phase 2 Step 6: FileSearcher 文件搜索 (QDirIterator 索引用户目录文件名, 模糊匹配 top-N)
-- Phase 2 Step 7: QML 界面适配 (类型彩色徽章 + 键盘导航滚动跟随)
-- Phase 2 Step 8: 集成测试 (端到端验证 + v0.2.0 里程碑)
+- Phase 2 (v0.2.0): 日志系统 / 搜索历史 SQLite / FuzzyMatcher 五级打分 / Calculator / AppIndexer 应用启动器 / FileSearcher 文件搜索 / QML 适配 / 集成测试
+- Phase 3 主面板: 3.0 主面板骨架（左侧导航 + StackLayout 四页，与搜索浮窗并存）
+- Phase 3 待办: `TodoDatabase` + `TodoPage`（记录 → 完成划去）
+- Phase 3 记事本: `NotesDatabase` + `NotesPage`（CRUD + 编辑）
+- Phase 3 剪贴板: `ClipboardDatabase` + `ClipboardPage` + `startClipboardMonitor`
+- Phase 3 设置页: 主题切换 / 日志级别 / 当前热键显示
 
-下一步：Phase 3 — 扩展功能（剪贴板/待办/设置面板）
+Phase 3 剩余（收尾中，写在这里便于续接）：
+- [x] 热键自定义（设置页捕获组合键 → `PanelBridge::applyHotkey` → `HotkeyManager::reRegister`，失败自动回滚原热键）
+- [x] 开机启动（`core/AutoStart` 写 `HKCU\...\Run`，注册表是唯一真相来源，不写进 config.json）
+- [x] 剪贴板相对时间显示（`createdAtEpoch` + QML 相对时间函数 + 每分钟自刷新 + 悬停显示原始时间）
+- [x] QML 主题色抽 `Style.qml` 单例（`resources/qml/qmldir` 声明 singleton，6 个页面的重复色值收敛为一处）
+- [ ] `v0.3.0` 里程碑：**真机手动走查四页交互**（版本号 bump 已完成 → `0.3.0`，QML 显示走 `appVersion`）
+- [ ] （可选，GUIDE 3.5）崩溃报告 Crashpad
+
+**v0.4.0 文件子系统 Phase A**（`docs/architecture/v0.4-实施清单.md`）：
+- [x] **A1 止血**（2026-09-24，独立 patch）：P0-1 不跟随 junction（`NoSymLinks` 实测无效 → 自控递归 + `isJunction()`）、
+      P0-2 目录级剪枝、P1-5 历史写入挪到执行路径、P1-6 QML 防抖 + IME 拦截；三条验收全过。
+      详见 `docs/devlog/2026-09-24.md`
+- [ ] A2 结构（门面 + COW 快照 + 后台扫描）… A8 拼音首字母
+
+> ⚠️ 本机实测：Desktop 3.5 万文件撞 20000 上限，索引**全是 Desktop 的**，`Documents`/`Downloads` 一个文件都搜不到。
+> 属 P0-3，实施清单原计划留给 A3 —— **实际优先级应提前**。
+
+> 已知限制：热键捕获时，**当前已注册的全局热键**（如 Alt+Space）会被系统先消费，QML 收不到该按键。
+> 想重新绑定成同一个组合键无效，绑定成别的组合键正常。
+
+## 版本与阶段规划（**两套 Phase 编号不要混**）
+
+| 版本 | 内容 | 出处 |
+|---|---|---|
+| `v0.3.0` | Phase 3 扩展功能（主面板 + 待办/笔记/剪贴板/设置） | `GUIDE.md` Phase 3 |
+| `v0.4.0` | **文件子系统 Phase A：搜索基建** | `docs/architecture/文件检索重构方案.md` + `v0.4-实施清单.md` |
+| `v0.4.x` | 文件治理 Phase B：种类过滤 + 工程排除 + 查询语法 | `docs/architecture/文件治理功能设计.md` §1 |
+| `v0.4.x–v0.5.x` | 文件治理 Phase C/D/E：Download Box / 去向追踪 / 自动治理与多源 | 同上 §2–§3 |
+| `v0.6.0` | GUIDE Phase 4：插件系统 + 发布（原定 v0.5.0，因插入文件子系统而顺延） | `GUIDE.md` Phase 4 |
+
+> `GUIDE.md` 的 **Phase 0–4 是项目阶段**；架构文档里的 **Phase A–E 是文件子系统内部阶段**，两者不是一套编号。
+> 落地顺序：Phase 3 收尾 → 文件子系统 A（搜索基建）→ B → C/D/E → 插件系统 + 发布。**插件系统必须排在 A 之后**（GUIDE 自己要求"核心架构稳定后再做"，A 阶段的 `ISearchProvider` 就是那个稳定点）。
 
 ## 核心模块
 
@@ -73,10 +107,17 @@ cmake --build build --config Debug
 | SearchResult | `include/ui/SearchResult.h` | 统一搜索模型 (id, title, subtitle, type, priority, score, resultText, path) |
 | FuzzyMatcher | `include/core/FuzzyMatcher.h`, `src/core/FuzzyMatcher.cpp` | 五级模糊匹配打分 (精确>前缀>词边界>包含>编辑距离) |
 | AppIndexer | `include/core/AppIndexer.h`, `src/core/AppIndexer.cpp` | 扫描 Start Menu `.lnk` (IShellLink COM), 解析目标路径, 去重排序 |
-| FileSearcher | `include/core/FileSearcher.h`, `src/core/FileSearcher.cpp` | QDirIterator 递归索引用户目录文件名, FuzzyMatcher 打分 top-N, 索引上限 2 万 |
+| FileSearcher | `include/core/FileSearcher.h`, `src/core/FileSearcher.cpp` | 自控前序 DFS（`walkDir`，不跟随 junction、目录级剪枝）+ FuzzyMatcher 打分 top-N, 索引上限 2 万 |
 | Calculator | `include/core/Calculator.h`, `src/core/Calculator.cpp` | 递归下降解析器, PEMDAS + 一元正负号 + 括号 |
 | TrayManager | `include/ui/TrayManager.h`, `src/ui/TrayManager.cpp` | 系统托盘图标 + 右键菜单 |
-| HotkeyManager | `include/core/HotkeyManager.h`, `src/core/HotkeyManager.cpp` | Windows RegisterHotKey 全局热键 |
+| HotkeyManager | `include/core/HotkeyManager.h`, `src/core/HotkeyManager.cpp` | Windows RegisterHotKey 全局热键（可重注册） |
+| PanelBridge | `include/ui/PanelBridge.h`, `src/ui/PanelBridge.cpp` | 主面板 QML↔C++ 桥梁（待办/笔记/剪贴板列表 + CRUD + 剪贴板监听） |
+| TodoDatabase | `include/database/TodoDatabase.h`, `src/database/TodoDatabase.cpp` | SQLite 待办（独立连接 `todo`，`todo.db`） |
+| NotesDatabase | `include/database/NotesDatabase.h`, `src/database/NotesDatabase.cpp` | SQLite 笔记（独立连接 `notes`，`notes.db`） |
+| ClipboardDatabase | `include/database/ClipboardDatabase.h`, `src/database/ClipboardDatabase.cpp` | SQLite 剪贴板历史（独立连接 `clipboard`，`clipboard.db`，同内容去重） |
+
+> **DB 约定**：每个功能一个独立 DB 文件 + 独立 `QSqlDatabase` 连接名（见 `ClipboardDatabase`），不要共用一个连接。
+> **QML 约定**：搜索浮窗走 `AppBridge`，主面板走 `PanelBridge`，两个窗口各管自己的桥。
 
 ## Git 规范
 
@@ -89,11 +130,14 @@ cmake --build build --config Debug
 - `cmake-glob-recurse-新文件不编译.md`
 - `qt-automoc-未生成moc文件.md`
 - `msvc-中文utf8编码错误.md`
+- `qt-headers-大小写错误.md`
 - `vs2022-build-tools-安装.md`
+- `qt-nosymlinks-挡不住junction.md`（`QDir::NoSymLinks` 挡不住 Windows junction；修复点选错层次会安静地什么都不做）
 
 ## 文档结构
 
 - `GUIDE.md` — 完整开发流程指南（长期维护）
+- `docs/architecture/` — 架构设计（**文件检索重构方案 / 文件治理功能设计 / v0.4-实施清单**）
 - `docs/devlog/` — 开发日志（按日期）
 - `docs/features/` — 功能设计 idea
 - `docs/learning/` — 学习笔记

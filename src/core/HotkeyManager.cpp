@@ -30,6 +30,7 @@ bool HotkeyManager::registerHotkey(const QString &modifiers,
     }
 
     m_hotkeyId = g_hotkeyIdCounter++;
+    m_hwnd = hwnd;                       // 注销时必须用同一个句柄
 
     BOOL ok = RegisterHotKey(
         reinterpret_cast<HWND>(hwnd),
@@ -53,10 +54,16 @@ bool HotkeyManager::registerHotkey(const QString &modifiers,
 void HotkeyManager::unregisterHotkey()
 {
     if (m_registered) {
-        UnregisterHotKey(nullptr, m_hotkeyId);
+        // 用注册时的 hwnd（早前写成 nullptr 会注销失败，残留热键会被系统吞掉）
+        UnregisterHotKey(reinterpret_cast<HWND>(m_hwnd), m_hotkeyId);
         m_registered = false;
         m_hotkeyId = 0;
     }
+}
+
+bool HotkeyManager::reRegister(const QString &modifiers, const QString &key)
+{
+    return registerHotkey(modifiers, key, m_hwnd);
 }
 
 bool HotkeyManager::isRegistered() const
