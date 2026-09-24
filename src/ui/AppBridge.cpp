@@ -171,9 +171,20 @@ void AppBridge::search(const QString &query)
         setStatus(QStringLiteral("%1 result(s)").arg(m_searchResults.size()));
     }
 
-    // Record search history (only meaningful queries, not empty/whitespace)
-    if (m_historyDb && query.trimmed().length() >= 2) {
-        m_historyDb->recordSearch(query.trimmed(), m_searchResults.size());
+    // 记住这次查询：真正的"搜索历史"在 executeCommand() 里写（见下方说明）。
+    m_lastQuery = query.trimmed();
+
+    // A1 修 P1-5：这里以前会对**每一次按键**（≥2 字符）INSERT 一次搜索历史。
+    // 后果有两个 —— 每按键一次磁盘事务（WAL），以及历史表被 re/rep/repo…
+    // 这类前缀垃圾淹没，真正的意图根本读不出来。现在只写"执行"的那一次。
+    if (m_searchResults.isEmpty()) {
+        Logger::get().debug("AppBridge::search '{}' → 0 result(s)",
+                            query.toStdString());
+    } else {
+        Logger::get().debug("AppBridge::search '{}' → {} result(s), top: {}",
+                            query.toStdString(),
+                            m_searchResults.size(),
+                            m_searchResults.first().title.toStdString());
     }
 }
 
@@ -184,6 +195,13 @@ void AppBridge::executeCommand(int index)
 
     const SearchResult &item = m_searchResults.at(index);
 
+    // 搜索历史的落点：只有用户真的执行了某个结果，这次查询才有意义
+    // （A1 修 P1-5：原来记录在 search() 里，等于每按键写一次库）。
+    auto recordSearchExecution = [this]() {
+        if (m_historyDb && m_lastQuery.length() >= 2)
+            m_historyDb->recordSearch(m_lastQuery, m_searchResults.size());
+    };
+
     // Calculator results: copy to clipboard
     if (item.type == SearchResult::Calculator) {
         QClipboard *clipboard = QApplication::clipboard();
@@ -191,6 +209,7 @@ void AppBridge::executeCommand(int index)
             clipboard->setText(item.subtitle.mid(2));  // strip "= " prefix
             setStatus(QStringLiteral("Copied: %1").arg(item.subtitle));
         }
+        recordSearchExecution();
         emit commandExecuted(item.title);
         return;
     }
@@ -204,6 +223,9 @@ void AppBridge::executeCommand(int index)
         if (m_historyDb)
             m_historyDb->recordAppLaunch(item.title, item.path);
 
+        if (ok)
+            recordSearchExecution();
+
         setStatus(ok ? QStringLiteral("OK — %1").arg(item.title)
                      : QStringLiteral("Failed — %1").arg(item.title));
         emit commandExecuted(item.title);
@@ -214,6 +236,9 @@ void AppBridge::executeCommand(int index)
     // hood, via QDesktopServices::openUrl with a local-file URL).
     if (item.type == SearchResult::File) {
         const bool ok = QDesktopServices::openUrl(QUrl::fromLocalFile(item.path));
+        if (ok)
+            recordSearchExecution();
+
         setStatus(ok ? QStringLiteral("OK — %1").arg(item.title)
                      : QStringLiteral("Failed — %1").arg(item.title));
         emit commandExecuted(item.title);
@@ -226,6 +251,7 @@ void AppBridge::executeCommand(int index)
     if (m_historyDb) {
         m_historyDb->recordCommandExecution(item.id, item.title);
     }
+    recordSearchExecution();
 
     emit commandExecuted(item.title);
 }

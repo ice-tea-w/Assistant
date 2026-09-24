@@ -195,10 +195,23 @@ ApplicationWindow {
                             font: searchInput.font
                         }
 
+                        // A1 修 P1-6：不再逐字检索。
+                        //  - IME 预编辑阶段（拼音串）不该触发检索 → inputMethodComposing 时直接跳过
+                        //  - 连续输入用 40ms 防抖合并：连打 8 个字符只跑 1 次全量模糊匹配
+                        Timer {
+                            id: searchDebounce
+                            interval: 40
+                            repeat: false
+                            onTriggered: backend.search(searchInput.text)
+                        }
+
                         onTextChanged: {
-                            backend.search(text)
+                            if (searchInput.inputMethodComposing)
+                                return
+
                             // New query → reset selection to top result
                             resultsList.currentIndex = 0
+                            searchDebounce.restart()
                         }
                     }
                 }

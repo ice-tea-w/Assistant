@@ -47,6 +47,7 @@ private:
     QList<SearchResult> m_allItems;
     QList<SearchResult> m_searchResults;
     QString m_statusText;
+    QString m_lastQuery;   // 最近一次查询：执行结果时用它写搜索历史（A1）
     bool m_visible = false;
     HistoryDatabase *m_historyDb = nullptr;
 };
