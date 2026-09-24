@@ -53,6 +53,7 @@ vcpkg-manifest-install/
 
 # Obsidian (workspace config, not project code)
 .obsidian/
+*.base
 
 # OS
 Thumbs.db

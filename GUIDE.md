@@ -610,45 +610,269 @@ Phase 2 剩余任务（Step 3-8）按计划推进：
 
 **目标：** 建立「左侧功能栏 + 右侧功能区」的常驻主面板。
 
-关键决策 — 窗口形态二选一：
+窗口形态决策 — **已选定路线 A（并存）**：
 
-| 路线 | 形态 | 适用 |
-|------|------|------|
-| **A. 并存（推荐）** | 保留现有搜索浮窗作快速入口，**另加**一个常驻主面板 | 搜索仍是最高频操作，主面板承载待办/笔记等低频常驻功能 |
-| B. 升级合一 | 搜索浮窗升级为含左侧栏的多 tab 主窗口，搜索变成一个 tab | 所有功能进同一窗口 |
+| 路线       | 形态                                             | 决策                                                         |
+| -------- | ---------------------------------------------- | ---------------------------------------------------------- |
+| **A. 并存** | 保留现有搜索浮窗作快速入口，**另加**一个常驻主面板                    | ✅ **选定** — 搜索仍是最高频操作，主面板承载待办/笔记等低频常驻功能 |
+| B. 升级合一  | 搜索浮窗升级为含左侧栏的多 tab 主窗口，搜索变成一个 tab                | ❌ 弃用                                                      |
 
-> 推荐 A：搜索「呼出 → 输入 → 消失」的交互，与「左侧栏点选切换的常驻面板」本质冲突
+> 选 A 的理由：搜索「呼出 → 输入 → 消失」的交互，与「左侧栏点选切换的常驻面板」本质冲突
 > （现有 `MainWindow.qml` 里 `onActiveChanged` 失焦即隐藏，主面板不能沿用这个行为）。
+
+#### 3.0.1 搜索浮窗 → 主面板入口（🏠 按钮）
+
+两个窗口并存后，需要一个从搜索浮窗进入主面板的显式入口。
+做法：在现有搜索框（`searchBar`）右侧加一个 **🏠 样式按钮**，点击打开主面板。
+
+| 项目 | 设计 |
+|------|------|
+| 位置 | `MainWindow.qml` 的 `searchBar` 内，`RowLayout` 末尾（搜索图标 + 输入框之后） |
+| 样式 | 🏠 图标按钮，与现有搜索图标（⌕）风格一致，颜色沿用 `mutedColor` / `textColor` |
+| 行为 | 点击 → 打开主面板（`MainPanel.qml`），搜索浮窗随后隐藏 |
+| C++ 桥接 | `AppBridge` 新增 `mainPanelRequested()` 信号（或 `Q_INVOKABLE openMainPanel()`），QML 按钮 `onClicked` 触发，`main.cpp` 负责创建/显示主面板 |
 
 骨架实现要点：
 
 - [ ] 新增 `resources/qml/MainPanel.qml`：左侧导航 `ListView` + 右侧 `StackLayout` 页面切换
-- [ ] 左侧栏入口：搜索 / 待办 / 笔记 / 剪贴板 / 设置（先放占位页）
+- [ ] 左侧栏入口：待办事项 / 记事本 / 剪贴板 / 设置（先放占位页，设置固定在底部，其余从上到下）
 - [ ] 主面板窗口 flags 区别于搜索浮窗（不设 `WindowStaysOnTopHint | Tool`，可失焦不隐藏、可最小化）
-- [ ] 决定窗口形态（路线 A / B），并确定主面板的呼出方式（托盘菜单项 / 第二热键）
+- [ ] 搜索浮窗 `searchBar` 右侧加 🏠 按钮，点击打开主面板
+- [ ] 主面板呼出方式：🏠 按钮（主入口）+ 托盘菜单项 + 可选第二热键
+
+#### 3.0.2 左侧功能栏结构
+
+主面板左侧栏固定四项入口，对应右侧 `StackLayout` 四个页面：
+
+| 顺序 | 入口 | 图标 | 页面文件 | 功能 |
+| :--: | ---- | ---- | -------- | ---- |
+| 1 | 待办事项 | ✓ | `TodoPage.qml` | vivo 原子笔记式「记录 → 完成划去」 |
+| 2 | 记事本 | 📝 | `NotesPage.qml` | 笔记 CRUD + 编辑器 |
+| 3 | 剪贴板 | 📋 | `ClipboardPage.qml` | 剪贴板历史列表 + 点击复制 |
+| 4 | 设置 | ⚙ | `SettingsPage.qml` | 热键 / 主题 / 开机启动 |
+
+布局约定：
+
+- 导航 `ListView` 渲染四项：**前三项（待办 / 记事本 / 剪贴板）从上到下排列，设置固定在底部**（与功能项分隔，桌面应用惯例）
+- 每项 = 图标 + 文字标签，选中项高亮（沿用主题 `accentColor`）
+- 右侧 `StackLayout` 的 `currentIndex` 与导航 `currentIndex` 双向绑定，点击即切换页面
+- 四个页面先放占位（空 `Rectangle` + 标题），随后按 3.1 / 3.2 / 3.3 / 3.4 逐个填充
+
+#### 3.0.3 主面板架构与数据流
+
+主面板沿用 Phase 2 的「数据层 + 桥接层 + QML 层」三段式，只是桥接对象从
+`AppBridge`（搜索浮窗专用）换成新的 `PanelBridge`（主面板专用），避免单个桥接类无限膨胀。
+
+| 层 | 组件 | 职责 |
+|----|------|------|
+| QML 层 | `MainPanel.qml` + 4 个 `*Page.qml` | 界面展示与交互 |
+| 桥接层 | `PanelBridge`（QObject） | Q_PROPERTY 暴露列表，Q_INVOKABLE 提供 CRUD |
+| 数据层 | `TodoDatabase` / `NotesDatabase` / `ClipboardDatabase` | Qt6::Sql 持久化，各自独立连接名 + 独立 `.db` 文件 |
+
+三个数据层类结构参照现有 `HistoryDatabase`（QSqlDatabase + 独立连接名 + `createSchema()`），
+文件放在 `include/database/` + `src/database/`，与 `history.db` 并列存于
+`%LOCALAPPDATA%/AssistantTeam/Assistant/`。
+
+数据流（以「添加待办」为例）：
+
+```
+TodoPage.qml 输入 + 回车
+  → panel.addTodo(text)              // Q_INVOKABLE
+    → m_todoDb->addTodo(text)        // SQL INSERT
+      → emit todoListChanged()       // 信号
+        → TodoPage.qml ListView 刷新   // Q_PROPERTY 重读
+```
+
+`main.cpp` 装配骨架：
+
+```cpp
+// 三个数据层实例（独立 .db 文件 + 独立连接名，避免与 history 冲突）
+TodoDatabase todoDb;       todoDb.open(dbDir + "/todo.db");
+NotesDatabase notesDb;     notesDb.open(dbDir + "/notes.db");
+ClipboardDatabase clipDb;  clipDb.open(dbDir + "/clipboard.db");
+
+PanelBridge panel;
+panel.setTodoDatabase(&todoDb);
+panel.setNotesDatabase(&notesDb);
+panel.setClipboardDatabase(&clipDb);
+
+// 主面板窗口：独立 QQmlApplicationEngine（或懒加载 QML Component），
+// 🏠 按钮触发创建/显示，rootContext 注入 "panel"
+```
+
+`PanelBridge` 接口签名（`include/ui/PanelBridge.h`）：
+
+```cpp
+class PanelBridge : public QObject {
+    Q_OBJECT
+    Q_PROPERTY(QVariantList todoList READ todoList NOTIFY todoListChanged)
+    Q_PROPERTY(QVariantList notesList READ notesList NOTIFY notesListChanged)
+    Q_PROPERTY(QVariantList clipList READ clipList NOTIFY clipListChanged)
+public:
+    void setTodoDatabase(TodoDatabase *db);
+    void setNotesDatabase(NotesDatabase *db);
+    void setClipboardDatabase(ClipboardDatabase *db);
+
+    Q_INVOKABLE void addTodo(const QString &content);
+    Q_INVOKABLE void toggleTodo(int id);
+    Q_INVOKABLE void deleteTodo(int id);
+
+    Q_INVOKABLE void addNote(const QString &title, const QString &content);
+    Q_INVOKABLE void updateNote(int id, const QString &title, const QString &content);
+    Q_INVOKABLE void deleteNote(int id);
+
+    Q_INVOKABLE void copyClip(int id);
+    Q_INVOKABLE void deleteClip(int id);
+    Q_INVOKABLE void clearClips();
+
+signals:
+    void todoListChanged();
+    void notesListChanged();
+    void clipListChanged();
+};
+```
 
 #### 3.1 待办事项
 
 > `docs/features/功能设计idea.md` 里明确的需求（vivo 原子笔记式「记录 → 完成划去」），
-> 天然需要常驻列表界面，作为侧边栏第一个真实页面。
+> 作为侧边栏第一个真实页面。
 
-- [ ] 待办 CRUD（SQLite，可复用 HistoryDatabase 或新建 `TodoDatabase`）
-- [ ] QML 待办页：列表 + 勾选划去 + 新增输入框
-- [ ] 接入主面板左侧栏
+##### 数据库（`TodoDatabase`，连接名 `"todo"`）
 
-#### 3.2 剪贴板历史管理
+```sql
+CREATE TABLE IF NOT EXISTS todos (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    content      TEXT    NOT NULL,
+    done         INTEGER NOT NULL DEFAULT 0,   -- 0=未完成 1=已完成
+    created_at   TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+    completed_at TEXT                          -- 完成时间，未完成时为 NULL
+);
+```
 
-- [ ] 监听剪贴板（`QClipboard::dataChanged`）
-- [ ] SQLite 存储 + QML 列表页
+| 方法 | 说明 |
+|------|------|
+| `int addTodo(const QString &content)` | 插入一条未完成待办，返回新 id |
+| `void toggleDone(int id)` | 翻转 `done`，完成时写 `completed_at` |
+| `void deleteTodo(int id)` | 删除 |
+| `QVariantList listTodos()` | 未完成在前（created_at 升序），已完成沉底（completed_at 倒序） |
 
-#### 3.3 笔记速记
+##### QML（`TodoPage.qml`）
 
-- [ ] 笔记 CRUD + QML 编辑页
+```
+Item
+├── 顶部标题「待办事项」
+├── ListView（model: panel.todoList）
+│   └── delegate: CheckBox（勾选 → panel.toggleTodo(id)）+ Text（done 时删除线 + 置灰）
+└── 底部 RowLayout: TextField（新待办）+ Button「添加」→ panel.addTodo(text)
+```
 
-#### 3.4 设置面板
+##### 交互要点
 
-- [ ] QML 设置页：热键自定义、主题切换、开机启动
-- [ ] 接入 ConfigManager 现有属性（theme / hotkey / window）
+- [ ] 勾选划去：`done=1` 时文字加删除线（`font.strikeout`）并置灰，行整体沉底
+- [ ] 回车快速添加：输入框 `onAccepted` 触发 `addTodo`，随后清空并保持焦点
+- [ ] 待办行右侧 hover 显示删除按钮（✕）→ `panel.deleteTodo(id)`
+
+#### 3.2 记事本
+
+##### 数据库（`NotesDatabase`，连接名 `"notes"`）
+
+```sql
+CREATE TABLE IF NOT EXISTS notes (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    title      TEXT    NOT NULL DEFAULT '',
+    content    TEXT    NOT NULL DEFAULT '',
+    created_at TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+    updated_at TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
+);
+```
+
+| 方法 | 说明 |
+|------|------|
+| `int addNote(const QString &title, const QString &content)` | 新建笔记，返回 id |
+| `void updateNote(int id, const QString &title, const QString &content)` | 更新并刷新 `updated_at` |
+| `void deleteNote(int id)` | 删除 |
+| `QVariantList listNotes()` | 按 `updated_at` 倒序（最近编辑在前） |
+
+##### QML（`NotesPage.qml`）
+
+```
+Item
+└── RowLayout
+    ├── 左侧 ListView（标题列表，model: panel.notesList）
+    │   └── delegate: 标题 + 更新时间，选中高亮
+    ├── 右侧 Column
+    │   ├── TextField（标题）
+    │   ├── TextArea（正文，占满剩余空间）
+    │   └── 工具栏「新建 / 删除」
+```
+
+##### 交互要点
+
+- [ ] 选中左侧列表项 → 右侧加载该笔记进入编辑态
+- [ ] 自动保存：失焦 / 输入防抖（`Timer` 500ms）后调用 `updateNote`
+- [ ] 新建：`addNote("", "")` 后立即选中新笔记进入编辑态
+
+#### 3.3 剪贴板历史
+
+##### 数据库（`ClipboardDatabase`，连接名 `"clipboard"`）
+
+```sql
+CREATE TABLE IF NOT EXISTS clipboard_history (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    content    TEXT    NOT NULL,
+    mime_type  TEXT    NOT NULL DEFAULT 'text/plain',
+    created_at TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
+);
+```
+
+| 方法 | 说明 |
+|------|------|
+| `int addClip(const QString &content, const QString &mimeType)` | 新增条目（连续相同内容去重） |
+| `void deleteClip(int id)` | 删除单条 |
+| `void clearAll()` | 清空全部 |
+| `QVariantList listClips(int limit)` | 按 `created_at` 倒序，限量返回 |
+
+##### 采集（C++ 侧）
+
+- [ ] 监听 `QClipboard::dataChanged`，文本内容非空时 `addClip`
+- [ ] 去重：与最近一条相同则跳过，避免复制同一内容刷屏
+- [ ] 采集逻辑放在 `ClipboardDatabase` 内部或单独的 `ClipboardMonitor`（挂到主面板窗口）
+
+##### QML（`ClipboardPage.qml`）
+
+```
+Item
+├── 顶部工具栏：「清空」→ panel.clearClips()
+└── ListView（model: panel.clipList）
+    └── delegate: 内容预览（单行 elide）+ 相对时间；点击 → panel.copyClip(id)
+```
+
+##### 交互要点
+
+- [ ] 点击条目：`copyClip` 将内容写回 `QClipboard` 并置顶
+- [ ] 预览：长文本 `Text.ElideRight` 单行截断，`ToolTip` 显示全文
+
+#### 3.4 设置
+
+> 设置页直接复用现有 `ConfigManager` 的 Q_PROPERTY 和 Q_INVOKABLE，无需新数据库。
+> `main.cpp` 里已把 `config` 作为 context property 注入搜索浮窗，主面板 engine 同样注入一份。
+
+##### QML（`SettingsPage.qml`）
+
+```
+Item
+└── Column（分块设置，块间距 + 分隔线）
+    ├── 热键：当前热键文本 + 「修改」按钮（进入捕获态，记录按键组合）
+    ├── 主题：RadioButton（浅色 / 深色）→ config.setTheme
+    ├── 开机启动：Switch（写入 Windows 注册表 Run 键，Phase 3 可选）
+    └── 日志级别：ComboBox（trace/debug/info/warn）→ config.setLogLevel
+```
+
+##### 交互要点
+
+- [ ] 主题/日志级别：直接调用现有 `config.setTheme` / `config.setLogLevel`（改动即 save，信号驱动 UI 刷新）
+- [ ] 热键修改：新增按键捕获（`Keys.onPressed` 记录组合键），确认后 `config.setHotkey` + `HotkeyManager::registerHotkey`
+- [ ] 开机启动：写 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`（Windows API，Phase 3 可选，需提升权限则提示）
 
 #### 3.5 健壮性与性能
 
@@ -671,7 +895,14 @@ Phase 2 剩余任务（Step 3-8）按计划推进：
 - [ ] 安装包制作（NSIS 或 WiX Toolset）
 - [ ] 编写用户文档
 
-**里程碑：** `v0.5.0` — 可扩展架构，可分发安装包。
+**里程碑：** `v0.6.0` — 可扩展架构，可分发安装包。
+
+> **里程碑号调整说明（2026 变更）**：本阶段原定 `v0.5.0`，因在两个 Phase 之间插入了
+> **文件子系统重构（`v0.4.0` 搜索基建 + `v0.4.x–v0.5.x` 文件治理）** 而顺延为 `v0.6.0`。
+> 版本与阶段映射见 `CLAUDE.md`「版本与阶段规划」与 `docs/architecture/文件检索重构方案.md` 头部。
+>
+> 另：`v0.4.0` 落地后 `ISearchProvider` 就是本阶段插件接口可以直接实现的扩展点——这也印证了
+> 上面那句"插件系统需要核心架构稳定后再做"。
 
 ---
 
@@ -896,13 +1127,19 @@ Phase 2 (Week 5-8):  核心功能
 
 Phase 3 (Week 9-16): 扩展功能
                     ├── C++ 设计模式（单例、观察者、策略）
-                    ├── 剪贴板 + 文件搜索
+                    ├── 主面板（左侧导航 + 待办 / 笔记 / 剪贴板 / 设置四页）
                     ├── 异常处理 + 崩溃报告 (Crashpad)
                     └── Git 高级操作 (rebase, cherry-pick, stash)
 
+File Subsystem      文件子系统重构（插入阶段，非 GUIDE 原 Phase）
+(Week 17+):         ├── v0.4.0 搜索基建：门面 + COW 快照 + Win32 扫描 + watcher + 查询引擎
+                    ├── v0.4.x 文件治理：种类过滤 / 工程排除 / 查询语法
+                    ├── v0.4.x-v0.5.x 下载 box 中转 + 去向追踪 + 自动治理与多源
+                    └── 目标：为插件系统提供稳定的 ISearchProvider 抽象
+
 Phase 4 (Week 17+):  插件系统 + 发布
                     ├── 动态库加载机制 (QLibrary / LoadLibrary)
-                    ├── 插件接口设计 (ABI 兼容性)
+                    ├── 插件接口设计 (ABI 兼容性，实现 ISearchProvider)
                     ├── CI/CD + GitHub Actions + Docker
                     ├── 安装包制作 (NSIS)
                     └── 自动更新 (WinSparkle) + 项目复盘

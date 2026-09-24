@@ -17,16 +17,28 @@ ApplicationWindow {
 
     property bool ready: false
 
-    // ---- Theme colors (driven by C++ ConfigManager::theme property) ----
-    readonly property bool isDark:  config.theme === "dark"
-    readonly property color bgColor:         isDark ? "#2c2c2c" : "#f0f0f0"
-    readonly property color panelColor:      isDark ? "#1e1e1e" : "#ffffff"
-    readonly property color textColor:       isDark ? "#e0e0e0" : "#1a1a1a"
-    readonly property color mutedColor:      isDark ? "#666666" : "#999999"
-    readonly property color accentColor:     isDark ? "#3a6ea5" : "#4a90d9"
-    readonly property color borderColor:     isDark ? "#3d3d3d" : "#d0d0d0"
-    readonly property color activeBorder:    isDark ? "#5a8ec9" : "#4a90d9"
-    readonly property color statusTextColor: isDark ? "#888888" : "#777777"
+    // ---- QQ-style dock-to-top-edge ----
+    // On focus loss the window slides up so only a thin strip stays visible at
+    // the top of the screen; hovering that strip slides it back down.
+    property bool docked: false
+    property int  dockRestoreY: 0
+    readonly property int dockStrip: 8
+
+    // Mouse click-to-select state: first click selects, second click executes.
+    // Kept separate from currentIndex so keyboard/default pre-selection doesn't
+    // cause a first click to launch immediately.
+    property int mouseSelectedIndex: -1
+
+    // ---- Theme colors：统一来自 Style 单例（同目录 qmldir 的 singleton）----
+    readonly property bool isDark:  Style.isDark
+    readonly property color bgColor:         Style.bgColor
+    readonly property color panelColor:      Style.panelColor
+    readonly property color textColor:       Style.textColor
+    readonly property color mutedColor:      Style.mutedColor
+    readonly property color accentColor:     Style.accentColor
+    readonly property color borderColor:     Style.borderColor
+    readonly property color activeBorder:    Style.activeBorder
+    readonly property color statusTextColor: Style.statusTextColor
 
     // ---- Result type → icon glyph + badge color ----
     // Single source of truth for how each result category is visualized.
@@ -54,19 +66,41 @@ ApplicationWindow {
 
     Component.onCompleted: ready = true
 
+    function dock() {
+        if (docked) return
+        docked = true
+        dockRestoreY = window.y
+        dockAnim.from = window.y
+        dockAnim.to = -(window.height - dockStrip)
+        dockAnim.restart()
+    }
+
+    function undock() {
+        if (!docked) return
+        docked = false
+        undockAnim.from = window.y
+        undockAnim.to = dockRestoreY
+        undockAnim.restart()
+        window.requestActivate()
+        searchInput.forceActiveFocus()
+    }
+
     // ---- C++ signal handlers ----
     Connections {
         target: backend
 
         function onVisibleChanged() {
             if (backend.visible) {
+                docked = false
+                mouseSelectedIndex = -1
                 // Restore saved position, or center on first run
                 if (config.windowX >= 0 && config.windowY >= 0) {
                     window.x = config.windowX
                     window.y = config.windowY
                 } else {
-                    window.x = (Screen.width  - window.width)  / 2
-                    window.y =  Screen.height / 4
+                    // Default: horizontally centered, flush against the top edge
+                    window.x = (Screen.width - window.width) / 2
+                    window.y = 0
                 }
                 searchInput.forceActiveFocus()
                 searchInput.text = ""
@@ -80,11 +114,36 @@ ApplicationWindow {
         }
     }
 
-    // Click outside → hide (routes through C++ so state stays in sync)
+    // Click outside → dock to the top edge (QQ-style), not fully hide
     onActiveChanged: {
         if (ready && !active && visible) {
-            backend.hideWindow()
+            dock()
         }
+    }
+
+    // ---- Dock slide animations ----
+    PropertyAnimation {
+        id: dockAnim
+        target: window
+        property: "y"
+        duration: 200
+        easing.type: Easing.OutCubic
+    }
+
+    PropertyAnimation {
+        id: undockAnim
+        target: window
+        property: "y"
+        duration: 200
+        easing.type: Easing.OutCubic
+    }
+
+    // Hover trigger — sits behind the content. When docked, the only on-screen
+    // part is the strip at the top, so onEntered == "cursor touched the strip".
+    MouseArea {
+        anchors.fill: parent
+        hoverEnabled: true
+        onEntered: { if (docked) undock() }
     }
 
     Rectangle {
@@ -108,12 +167,14 @@ ApplicationWindow {
         Keys.onUpPressed: {
             if (resultsList.currentIndex > 0) {
                 resultsList.currentIndex--
+                window.mouseSelectedIndex = -1
             }
         }
 
         Keys.onDownPressed: {
             if (resultsList.currentIndex < resultsList.count - 1) {
                 resultsList.currentIndex++
+                window.mouseSelectedIndex = -1
             }
         }
 
@@ -211,7 +272,30 @@ ApplicationWindow {
 
                             // New query → reset selection to top result
                             resultsList.currentIndex = 0
+                            window.mouseSelectedIndex = -1
                             searchDebounce.restart()
+                        }
+                    }
+
+                    // 🏠 按钮：打开主面板（Phase 3 Step 1）
+                    Rectangle {
+                        Layout.preferredWidth: 30
+                        Layout.preferredHeight: 30
+                        radius: 6
+                        color: homeMouse.containsMouse ? panelColor : "transparent"
+
+                        Text {
+                            anchors.centerIn: parent
+                            text: "🏠"
+                            font.pixelSize: 16
+                        }
+
+                        MouseArea {
+                            id: homeMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: backend.openMainPanel()
                         }
                     }
                 }
@@ -296,6 +380,20 @@ ApplicationWindow {
                                 font.pixelSize: 12
                                 elide: Text.ElideRight
                                 visible: modelData.subtitle !== ""
+                            }
+                        }
+                    }
+
+                    // Mouse selection: click to select, click again to launch
+                    MouseArea {
+                        anchors.fill: parent
+                        onClicked: {
+                            if (window.mouseSelectedIndex === index) {
+                                backend.executeCommand(index)
+                                window.mouseSelectedIndex = -1
+                            } else {
+                                window.mouseSelectedIndex = index
+                                resultsList.currentIndex = index
                             }
                         }
                     }

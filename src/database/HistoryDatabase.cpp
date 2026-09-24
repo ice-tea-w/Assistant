@@ -19,8 +19,14 @@ HistoryDatabase::HistoryDatabase(QObject *parent)
 
 HistoryDatabase::~HistoryDatabase()
 {
-    if (m_db && m_db->isOpen())
-        m_db->close();
+    // 顺序很重要：先销毁 QSqlDatabase（它持有连接引用），再 removeDatabase。
+    // 反过来 Qt 会警告 "connection 'history' is still in use"，连接也不会被真正清理。
+    if (m_db) {
+        if (m_db->isOpen())
+            m_db->close();
+        delete m_db;
+        m_db = nullptr;
+    }
 
     if (!m_connectionName.isEmpty())
         QSqlDatabase::removeDatabase(m_connectionName);
