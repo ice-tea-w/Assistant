@@ -63,6 +63,12 @@ endif()
 # qt.conf 负责：platforms/、qml/ 的路径（Qt 内部查找）
 # 但同时需要 vcpkg/bin 在 PATH 中（Windows DLL 加载器查找）
 
+# Qt 安装前缀由 vcpkg toolchain 提供，不硬编码路径（换机器或换 vcpkg 位置都无需改这里）。
+# 未定义只可能是没用 vcpkg toolchain 配置，此时静默生成错误路径比直接报错难查得多。
+if(NOT VCPKG_INSTALLED_DIR)
+    message(FATAL_ERROR "VCPKG_INSTALLED_DIR 未定义：请按 CLAUDE.md 的命令带 CMAKE_TOOLCHAIN_FILE 配置")
+endif()
+
 # 1. 生成 qt.conf（POST_BUILD，build 阶段执行）
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/write_qt_conf.cmake"
 "file(WRITE \"\${OUT_FILE}\" \"[Paths]\\n\")
@@ -74,7 +80,7 @@ file(APPEND \"\${OUT_FILE}\" \"QmlImports = Qt6/qml\\n\")
 add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
     COMMAND ${CMAKE_COMMAND}
         -D "OUT_FILE=$<TARGET_FILE_DIR:${PROJECT_NAME}>/qt.conf"
-        -D "QT_PREFIX=$<IF:$<CONFIG:Debug>,C:/vcpkg/installed/x64-windows/debug,C:/vcpkg/installed/x64-windows>"
+        -D "QT_PREFIX=$<IF:$<CONFIG:Debug>,${VCPKG_INSTALLED_DIR}/x64-windows/debug,${VCPKG_INSTALLED_DIR}/x64-windows>"
         -P "${CMAKE_CURRENT_BINARY_DIR}/write_qt_conf.cmake"
     COMMENT "Generating qt.conf (vcpkg Qt6)"
 )
@@ -90,7 +96,7 @@ file(APPEND \"\${OUT_FILE}\" \"start \\\"\\\" \\\"\${EXE_NAME}\\\"\\n\")
 add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
     COMMAND ${CMAKE_COMMAND}
         -D "OUT_FILE=$<TARGET_FILE_DIR:${PROJECT_NAME}>/run.bat"
-        -D "QT_PATH=$<IF:$<CONFIG:Debug>,C:/vcpkg/installed/x64-windows/debug,C:/vcpkg/installed/x64-windows>"
+        -D "QT_PATH=$<IF:$<CONFIG:Debug>,${VCPKG_INSTALLED_DIR}/x64-windows/debug,${VCPKG_INSTALLED_DIR}/x64-windows>"
         -D "EXE_DIR=$<TARGET_FILE_DIR:${PROJECT_NAME}>"
         -D "EXE_NAME=$<TARGET_FILE_NAME:${PROJECT_NAME}>"
         -P "${CMAKE_CURRENT_BINARY_DIR}/write_run_bat.cmake"
