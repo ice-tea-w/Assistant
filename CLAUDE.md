@@ -41,6 +41,10 @@ cmake --build build --config Debug
 > **环境注意（本机 sandbox）**：**运行也需要 `danger-full-access`**。应用要写 `%LOCALAPPDATA%/AssistantTeam/Assistant/`（日志 / 配置 / 4 个 DB），`workspace-write` 下写入被拒 → `Logger::init` 失败退回 console-only，**日志不落盘**，容易误判成"启动正常"。
 > 冒烟判断启动是否成功时**不要看 stdout**：spdlog 的 console sink 在重定向后是全缓冲的，进程被强杀会丢输出；看 `%LOCALAPPDATA%\AssistantTeam\Assistant\logs\assistant.log` 才可靠。
 
+> **文件索引引擎开关（A2 起）**：`config.json` 的 `fileIndex.engine` —— `"v2"`（默认，`FileIndex` 门面 + 后台扫描）
+> 或 `"legacy"`（旧 `FileSearcher` 同步建索引，A1 行为，A7 之前一直保留）。子进程驱动应用做验收时用
+> `_probe/hotkey_probe.ps1`（`PostMessage(WM_HOTKEY)` 走真实消息链，见 `docs/devlog/2026-10-16.md`）。
+
 ## Qt 部署原理（vcpkg 开发阶段）
 
 两层机制：
@@ -75,10 +79,16 @@ Phase 3 剩余（收尾中，写在这里便于续接）：
 - [x] **A1 止血**（2026-09-24，独立 patch）：P0-1 不跟随 junction（`NoSymLinks` 实测无效 → 自控递归 + `isJunction()`）、
       P0-2 目录级剪枝、P1-5 历史写入挪到执行路径、P1-6 QML 防抖 + IME 拦截；三条验收全过。
       详见 `docs/devlog/2026-09-24.md`
-- [ ] A2 结构（门面 + COW 快照 + 后台扫描）… A8 拼音首字母
+- [x] **A2 结构**（2026-10-16）：`FileIndex` 门面 + `FileSnapshot`（不可变只读快照）+ `SnapshotManager`（COW 发布，
+      `std::atomic<std::shared_ptr<const T>>`）+ 后台扫描线程；`fileIndex.engine = "v2"`（默认）| `"legacy"`（一行可退）。
+      三条验收全过（真机冷启动 + 20 万条 golden 132 项 0 失败）。详见 `docs/devlog/2026-10-16.md`
+- [ ] A3 采集（Win32 扫描 + `FileIndexDatabase` + `DatabaseMigrator` + 差量）… A8 拼音首字母
 
-> ⚠️ 本机实测：Desktop 3.5 万文件撞 20000 上限，索引**全是 Desktop 的**，`Documents`/`Downloads` 一个文件都搜不到。
-> 属 P0-3，实施清单原计划留给 A3 —— **实际优先级应提前**。
+> ✅ **P0-3 已在 v2 路径修掉**：不再套 2 万条任意截断，真机索引 20000 → **31810** 条，
+> `Documents`/`Downloads` 终于进得来；而每次按键的全表扫描 **333 ms → 326 ms（没有变慢）**。
+> ⚠️ 但**当前打分算法本身就慢**：真机 31810 条单遍全表扫描 **326 ms**、合成 20 万条 **13.2 s** ——
+> 架构文档里"现状 2 万条 5–15 ms"的估计**低了 20 倍以上**（`FuzzyMatcher::score()` 每次调用两次 `toLower()` + 词边界分支的 `t.mid(i)` 分配）。
+> 这是 **A4 baseline 要解决的第一件事**。
 
 > 已知限制：热键捕获时，**当前已注册的全局热键**（如 Alt+Space）会被系统先消费，QML 收不到该按键。
 > 想重新绑定成同一个组合键无效，绑定成别的组合键正常。
@@ -107,7 +117,10 @@ Phase 3 剩余（收尾中，写在这里便于续接）：
 | SearchResult | `include/ui/SearchResult.h` | 统一搜索模型 (id, title, subtitle, type, priority, score, resultText, path) |
 | FuzzyMatcher | `include/core/FuzzyMatcher.h`, `src/core/FuzzyMatcher.cpp` | 五级模糊匹配打分 (精确>前缀>词边界>包含>编辑距离) |
 | AppIndexer | `include/core/AppIndexer.h`, `src/core/AppIndexer.cpp` | 扫描 Start Menu `.lnk` (IShellLink COM), 解析目标路径, 去重排序 |
-| FileSearcher | `include/core/FileSearcher.h`, `src/core/FileSearcher.cpp` | 自控前序 DFS（`walkDir`，不跟随 junction、目录级剪枝）+ FuzzyMatcher 打分 top-N, 索引上限 2 万 |
+| FileSearcher | `include/core/FileSearcher.h`, `src/core/FileSearcher.cpp` | 自控前序 DFS（`walkDir`，不跟随 junction、目录级剪枝）+ FuzzyMatcher 打分 top-N, 索引上限 2 万。**A2 起是 `engine=legacy` 的退路**，A7 删除 |
+| FileSnapshot | `include/core/FileSnapshot.h` | 不可变只读快照（`Builder` 写入 → `nameAt/lowerAt/pathAt/sizeAt/mtimeAt` 读出）；物理表示藏在这层之后，查询层不摸容器 |
+| SnapshotManager | `include/core/SnapshotManager.h`, `src/core/SnapshotManager.cpp` | 快照的 COW 发布（`std::atomic<std::shared_ptr<const T>>`）；读侧取一份即用，无需加锁 |
+| FileIndex | `include/core/FileIndex.h`, `src/core/FileIndex.cpp` | 文件索引**门面**（薄）：`startAsync` 后台扫描 + `query` + `stats`；`engine=v2` 时经 AppBridge 提供文件结果 |
 | Calculator | `include/core/Calculator.h`, `src/core/Calculator.cpp` | 递归下降解析器, PEMDAS + 一元正负号 + 括号 |
 | TrayManager | `include/ui/TrayManager.h`, `src/ui/TrayManager.cpp` | 系统托盘图标 + 右键菜单 |
 | HotkeyManager | `include/core/HotkeyManager.h`, `src/core/HotkeyManager.cpp` | Windows RegisterHotKey 全局热键（可重注册） |
