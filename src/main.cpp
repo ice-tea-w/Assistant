@@ -9,6 +9,7 @@
 #include "core/ConfigManager.h"
 #include "core/AppIndexer.h"
 #include "core/FileSearcher.h"
+#include "core/FileIndex.h"
 #include "database/HistoryDatabase.h"
 #include "database/TodoDatabase.h"
 #include "database/NotesDatabase.h"
@@ -68,8 +69,20 @@ int main(int argc, char *argv[])
     for (const AppIndexer::Entry &app : AppIndexer::scan())
         backend.addApp(app.name, app.path);
 
-    // ---- file indexer (Step 6): build filename index for on-the-fly search ----
-    FileSearcher::buildIndex();
+    // ---- file indexer (Step 6 / A2) ----
+    // v2      : FileIndex 门面 + 后台扫描。startAsync() **立即返回**，窗口与热键
+    //           先可用，索引就绪后 AppBridge 自动重跑最近一次查询（修 P0-4）。
+    // legacy  : 旧 FileSearcher 同步建索引，行为与 A1 **完全一致**，是 v2 的退路。
+    // 开关落在 config.json 的 fileIndex.engine，一行配置就能切回去。
+    FileIndex fileIndex;
+    const bool useFileIndexV2 = (config.fileIndexEngine() == QStringLiteral("v2"));
+    if (useFileIndexV2) {
+        backend.setFileIndex(&fileIndex);
+        fileIndex.startAsync();          // 放在 engine.load() 之前，但不再阻塞
+    } else {
+        FileSearcher::buildIndex();
+    }
+    Logger::get().info("FileIndex: engine = {}", useFileIndexV2 ? "v2" : "legacy");
 
     TrayManager   tray;
     HotkeyManager hotkey;
@@ -88,6 +101,18 @@ int main(int argc, char *argv[])
 
     if (engine.rootObjects().isEmpty())
         return -1;
+
+    // A2 验收①的观测点：这一行证明「窗口已经起来了」时索引处于什么状态。
+    // legacy 会先打印 FileSearcher: indexed … 再打印这一行（同步建索引，UI 被挡住）；
+    // v2 反过来 —— 这一行在前，FileIndex: published snapshot 在后。
+    if (useFileIndexV2) {
+        const FileIndex::IndexStats st = fileIndex.stats();
+        Logger::get().info("UI loaded — fileIndex v2 ready={} scanning={} entries={}",
+                           st.ready, st.scanning, st.entries);
+    } else {
+        Logger::get().info("UI loaded — fileIndex legacy ({} files indexed synchronously)",
+                           FileSearcher::size());
+    }
 
     QObject *rootObject = engine.rootObjects().first();
     QWindow *window = qobject_cast<QWindow *>(rootObject);

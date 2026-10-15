@@ -1,6 +1,7 @@
 # Build outputs
 build/
 out/
+_probe/
 *.exe
 *.dll
 *.obj
@@ -58,4 +59,8 @@ vcpkg-manifest-install/
 # OS
 Thumbs.db
 .DS_Store
+
+# Python（docs/slides 的生成脚本）
+__pycache__/
+*.pyc
 Desktop.ini

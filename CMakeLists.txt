@@ -105,13 +105,29 @@ add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
 # )
 # install(SCRIPT ${deploy_script})
 
-# ---- 测试（Phase 1 暂时禁用，编写测试时取消注释） ----
-# enable_testing()
-# add_executable(assistant_tests
-#     tests/test_main.cpp
-# )
-# target_link_libraries(assistant_tests PRIVATE
-#     GTest::gtest_main
-# )
-# include(GoogleTest)
-# gtest_discover_tests(assistant_tests)
+# ---- 测试 / 验收 ----
+# A2 的验收③要求「同一候选集上 v2 与旧版查询结果逐条一致」，所以先立一个最小的
+# golden 目标（`enable_testing()` + `bench_file_index` 是 A4 的事，见 v0.4-实施清单）。
+# 只链 Core：验收工具不碰 GUI/QML，也不需要 ConfigManager。
+add_executable(assistant_golden
+    tests/golden_file_index.cpp
+    src/core/Logger.cpp
+    src/core/FuzzyMatcher.cpp
+    src/core/FileSearcher.cpp
+    src/core/FileIndex.cpp
+    src/core/SnapshotManager.cpp
+    include/core/FileIndex.h
+    include/core/FileSnapshot.h
+    include/core/SnapshotManager.h
+)
+target_include_directories(assistant_golden PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+)
+target_compile_definitions(assistant_golden PRIVATE
+    APP_VERSION="${PROJECT_VERSION}"
+)
+target_link_libraries(assistant_golden PRIVATE
+    Qt6::Core
+    spdlog::spdlog
+)
+

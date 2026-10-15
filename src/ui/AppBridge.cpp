@@ -2,6 +2,7 @@
 #include "core/FuzzyMatcher.h"
 #include "core/Calculator.h"
 #include "core/FileSearcher.h"
+#include "core/FileIndex.h"
 #include "database/HistoryDatabase.h"
 #include "core/Logger.h"
 
@@ -97,24 +98,10 @@ void AppBridge::search(const QString &query)
             }
         }
 
-        // ---- file search (Step 6) ----
+        // ---- file search (Step 6 / A2) ----
         // Files only appear when actively searching; they are NOT part of
         // m_allItems, otherwise the empty-query default list would be huge.
-        {
-            const QList<FileSearcher::Entry> files =
-                FileSearcher::search(query, kMaxFileResults);
-            for (const FileSearcher::Entry &f : files) {
-                SearchResult item;
-                item.id       = QStringLiteral("file://") + f.path;
-                item.title    = f.name;
-                item.subtitle = f.path;
-                item.type     = SearchResult::File;
-                item.priority = 1;   // below builtins/apps on score ties
-                item.score    = f.score;
-                item.path     = f.path;
-                m_searchResults.append(item);
-            }
-        }
+        m_searchResults += fileResults(query);
 
         // Sort: highest score first, then highest priority for ties
         std::sort(m_searchResults.begin(), m_searchResults.end(),
@@ -170,6 +157,11 @@ void AppBridge::search(const QString &query)
     } else {
         setStatus(QStringLiteral("%1 result(s)").arg(m_searchResults.size()));
     }
+
+    // A2：v2 的索引在后台建，窗口先可用。索引没就绪时把状态说清楚，
+    // 免得"搜不到文件"被当成坏了（旧版是同步建完索引才显示窗口）。
+    if (m_fileIndex && !m_fileIndex->isReady())
+        setStatus(QStringLiteral("正在建立索引…"));
 
     // 记住这次查询：真正的"搜索历史"在 executeCommand() 里写（见下方说明）。
     m_lastQuery = query.trimmed();
@@ -260,7 +252,10 @@ void AppBridge::activate()
 {
     m_searchResults = m_allItems;
     emit searchResultsChanged();
-    setStatus(QStringLiteral("Ready — type to search"));
+    if (m_fileIndex && !m_fileIndex->isReady())
+        setStatus(QStringLiteral("正在建立索引…"));
+    else
+        setStatus(QStringLiteral("Ready — type to search"));
 }
 
 void AppBridge::hideWindow()
@@ -281,6 +276,54 @@ void AppBridge::openMainPanel()
 void AppBridge::setHistoryDatabase(HistoryDatabase *db)
 {
     m_historyDb = db;
+}
+
+void AppBridge::setFileIndex(FileIndex *index)
+{
+    m_fileIndex = index;
+    if (!m_fileIndex)
+        return;
+
+    // 后台索引扫完 → 重跑最近一次查询。用户在"正在建立索引…"期间敲的字
+    // 不该白敲 —— 这正是前后台分离要换来的东西。没敲过字就刷新一次默认状态，
+    // 否则状态栏会一直停在"正在建立索引…"。
+    connect(m_fileIndex, &FileIndex::indexReady, this, [this](int entries, qint64 ms) {
+        Logger::get().info("AppBridge: file index ready — {} entries in {} ms", entries, ms);
+        if (!m_lastQuery.isEmpty())
+            search(m_lastQuery);
+        else
+            activate();
+    });
+}
+
+// ---- file results: legacy FileSearcher vs v2 FileIndex ----
+
+QList<SearchResult> AppBridge::legacyFileResults(const QString &query) const
+{
+    QList<SearchResult> out;
+
+    const QList<FileSearcher::Entry> files = FileSearcher::search(query, kMaxFileResults);
+    out.reserve(files.size());
+    for (const FileSearcher::Entry &f : files) {
+        SearchResult item;
+        item.id       = QStringLiteral("file://") + f.path;
+        item.title    = f.name;
+        item.subtitle = f.path;
+        item.type     = SearchResult::File;
+        item.priority = 1;   // below builtins/apps on score ties
+        item.score    = f.score;
+        item.path     = f.path;
+        out.append(item);
+    }
+    return out;
+}
+
+QList<SearchResult> AppBridge::fileResults(const QString &query)
+{
+    if (m_fileIndex)
+        return m_fileIndex->query(query, kMaxFileResults);
+
+    return legacyFileResults(query);
 }
 
 void AppBridge::addApp(const QString &name, const QString &path)
@@ -342,6 +385,8 @@ void AppBridge::setStatus(const QString &text)
 {
     if (m_statusText != text) {
         m_statusText = text;
+        // debug 级别：验收"状态栏确实切到过正在建立索引…"时用得上
+        Logger::get().debug("AppBridge::status '{}'", text.toStdString());
         emit statusTextChanged();
     }
 }
