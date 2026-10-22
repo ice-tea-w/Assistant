@@ -110,7 +110,11 @@ int runMigrate()
 {
     std::printf("\n[migrate] v1 库 → v2（加治理字段 + idx_files_sizemtime）\n");
 
-    const QString dbPath = tempPath(QStringLiteral("assistant-a3-migrate.db"));
+    // 用 PID 命名的临时库 + 先删一遍：这个用例被登记成 ctest 了，
+    // **必须幂等**（上一次跑剩下的库会让 CREATE TABLE 撞名而假失败）。
+    const QString dbPath =
+        tempPath(QStringLiteral("assistant-a3-migrate-%1.db")
+                     .arg(QCoreApplication::applicationPid()));
     FileIndexDatabase::removeDatabaseFile(dbPath);
 
     constexpr int kSeedRows = 100;
@@ -126,6 +130,12 @@ int runMigrate()
         }
 
         QSqlQuery q(seed);
+        // 防御：万一临时目录里还有同名的旧库，先清空（幂等）
+        for (const QString &table : { QStringLiteral("files"), QStringLiteral("dirs"),
+                                      QStringLiteral("roots") }) {
+            (void)q.exec(QStringLiteral("DROP TABLE IF EXISTS ") + table);
+        }
+
         const QStringList ddl = {
             QStringLiteral("CREATE TABLE dirs (id INTEGER PRIMARY KEY, path TEXT NOT NULL UNIQUE)"),
             QStringLiteral("CREATE TABLE files ("
@@ -237,6 +247,9 @@ int runMigrate()
     }
     // QSqlQuery / QSqlDatabase 都已析构，现在才能安全移除连接
     QSqlDatabase::removeDatabase(verifyConn);
+
+    // 收掉临时库，别在 %TEMP% 里留一堆
+    FileIndexDatabase::removeDatabaseFile(dbPath);
 
     return 0;
 }

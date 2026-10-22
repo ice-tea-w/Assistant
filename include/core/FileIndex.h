@@ -10,6 +10,7 @@
 
 class FileSnapshot;
 class SnapshotManager;
+class QueryEngine;
 class ScanWorker;    // 定义在 FileIndex.cpp（内部协作者：扫描 + 差量写库）
 
 /// 文件索引**门面**（架构文档 §2.2：薄，本方案最重要的架构约束）。
@@ -18,11 +19,10 @@ class ScanWorker;    // 定义在 FileIndex.cpp（内部协作者：扫描 + 差
 /// **不实现** DFS / SQL / 模糊匹配 / watcher —— 想给这个类加方法之前先问：
 /// "这段逻辑能不能放进某个协作者？"能，就别加到门面上。
 ///
-/// 当前边界（见 `docs/architecture/v0.4-实施清单.md` §A2/§A3）：
+/// 当前边界（见 `docs/architecture/v0.4-实施清单.md` §A2–§A4）：
 /// - 采集交给 `FileScanner`（Win32 迭代式 DFS），持久化交给 `FileIndexDatabase`，
 ///   两者都在 worker 线程里跑；门面只负责"起一次扫描 → 收快照 → 通知"。
-/// - 查询语义与旧 `FileSearcher::search()` **逐条等价**，不追求变快；
-///   查询逻辑到 A4 才抽到 `QueryEngine`（Parser → Filter → Score → TopK）。
+/// - 查询转发给 `QueryEngine`（A4 起）：门面里的 `query()` 只剩格式转换。
 /// - 快照仍是"扫完才发布"（A6 才做"先载入 DB 立即可查、再后台校正"）。
 class FileIndex : public QObject
 {
@@ -83,6 +83,7 @@ private:
     void startScan();
 
     std::unique_ptr<SnapshotManager> m_snapshots;
+    std::unique_ptr<QueryEngine>     m_query;
     std::unique_ptr<ScanWorker>      m_worker;
     QString m_databasePath;
     bool   m_scanning       = false;

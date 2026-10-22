@@ -3,7 +3,7 @@
 #include "core/FileSnapshot.h"
 #include "core/SnapshotManager.h"
 #include "core/FileScanner.h"
-#include "core/FuzzyMatcher.h"
+#include "core/QueryEngine.h"
 #include "core/Logger.h"
 #include "database/FileIndexDatabase.h"
 
@@ -149,6 +149,7 @@ private:
 FileIndex::FileIndex(QObject *parent)
     : QObject(parent)
     , m_snapshots(std::make_unique<SnapshotManager>())
+    , m_query(std::make_unique<QueryEngine>(*m_snapshots))
 {
 }
 
@@ -241,45 +242,24 @@ QList<SearchResult> FileIndex::query(const QString &text, int limit)
 {
     QList<SearchResult> out;
 
+    // 门面在这里只剩"转发 + 格式转换"：查询逻辑全在 QueryEngine（Parser → 打分 → top-K），
+    // 快照的只读接口把物理表示挡在后面。A4 之后这个函数不该再长出别的分支。
     const std::shared_ptr<const FileSnapshot> snap = m_snapshots->current();
-    if (!snap || text.trimmed().isEmpty() || limit <= 0)
+    if (!snap || limit <= 0)
         return out;
 
-    // 查询仍是旧 FileSearcher::search() 的算法（线性扫描 + FuzzyMatcher + 稳定序），
-    // 只是数据来源换成快照的只读接口。A4 才把它拆成 QueryEngine
-    // （Parser → CandidateFilter → Score → TopK 堆），届时这里瘦成一行转发。
-    struct Hit { int index; int score; };
-
-    std::vector<Hit> hits;
-    hits.reserve(1024);
-    for (int i = 0, n = snap->size(); i < n; ++i) {
-        // lowerAt() 返回预折叠小写的 const 引用（零拷贝）；FuzzyMatcher 内部
-        // 还会再 toLower 一次，结果与传原始大小写完全一致。
-        const int s = FuzzyMatcher::score(text, snap->lowerAt(i));
-        if (s > 0)
-            hits.push_back({i, s});
-    }
-
-    // 分数降序；同分按名字（大小写不敏感序 ≈ 比较已折叠小写的名字）。
-    // 与旧实现的 tie-break 等价，但零分配。
-    std::sort(hits.begin(), hits.end(), [&snap](const Hit &a, const Hit &b) {
-        if (a.score != b.score)
-            return a.score > b.score;
-        return snap->lowerAt(a.index) < snap->lowerAt(b.index);
-    });
-
-    const int take = std::min<int>(limit, static_cast<int>(hits.size()));
-    out.reserve(take);
-    for (int k = 0; k < take; ++k) {
-        const QString path = snap->pathAt(hits[k].index);
+    const QList<QueryEngine::Match> matches = m_query->query(text, limit);
+    out.reserve(matches.size());
+    for (const QueryEngine::Match &m : matches) {
+        const QString path = snap->pathAt(m.index);
 
         SearchResult item;
         item.id       = QStringLiteral("file://") + path;
-        item.title    = snap->nameAt(hits[k].index);
+        item.title    = snap->nameAt(m.index);
         item.subtitle = path;
         item.type     = SearchResult::File;
         item.priority = 1;              // 与内建/应用同分时排在后面
-        item.score    = hits[k].score;
+        item.score    = m.score;
         item.path     = path;
         out.append(item);
     }

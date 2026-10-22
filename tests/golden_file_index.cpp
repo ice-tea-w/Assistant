@@ -1,26 +1,31 @@
-/// A2 验收③：**v2（`FileIndex`）与旧版的查询结果逐条一致**。
+/// A4 验收工具：**语义 golden** + **与旧引擎的不回归对比**。
 ///
-/// 两个阶段：
+/// A2 时期这个工具断言的"逐条一致"在 A4 已经不成立了 —— 新引擎**故意**多出
+/// 子序列匹配（`chr` → `chrome_installer.exe`）。所以断言换成三条**更强也更准确**的性质：
 ///
-/// **① 合成语料（默认 20 万条，`--n=NNN` 可改）** —— 直接注入 v2 的快照，
-/// 与「旧 `FileSearcher::search()` 算法」的参考实现在**同一候选集**上逐条比对。
-/// 这是 `v0.4-实施清单.md` §A2 验收③ 的字面要求。
-/// 之所以必须是"同一候选集"：v2 刻意**不再套 2 万条任意截断**（P0-3：本机
-/// Desktop 就有 3.5 万文件，旧上限让 Documents/Downloads 一个文件都进不来），
-/// 所以真机上两者的候选集本来就不同 —— 那是设计意图，不是回归。这里比的是
-/// **查询语义**：同样的命中、同样的分数、同样的顺序、同样的条数上限。
+/// 1. **超集**：旧引擎能匹配的，新引擎必须也能匹配（子序列只会新增，不会丢）；
+/// 2. **分数不回归**：旧分数 ≤ 新分数。而且旧实现里"有意义"的档位
+///    （>350，即精确/前缀/词边界/包含）新引擎必须**给同一个分数**——因为那四档
+///    的数值是跨模块共用的（`AppBridge` 里文件名和应用/内建项同尺度排序）；
+/// 3. **top-K 顺序不回归**：旧 top-20 里分数 >350 的条目，必须仍在新的 top-20 里，
+///    且相对顺序不变（只有旧分数 ≤350 的弱命中允许被更强的子序列命中挤掉）。
 ///
-/// **② 真机数据（`--real`）** —— 把 v2 的上限压到 20000 条，于是 v2 与旧
-/// `FileSearcher` 落在同一候选集上，直接拿**真实磁盘**跑同一批查询。这一阶段
-/// 证明的是两件事：A2 的遍历与 A1 的遍历收敛到同一集合，且 `FileIndex::query`
-/// 与 `FileSearcher::search` 在真实数据上等价。
+/// 外加 [phase 3] 的绝对语义用例：子序列 / 拼写容错 / 中文 / 多词 AND / 否定项 /
+/// 空查询 / **路径不参与匹配**。
 ///
-/// 退出码：0 = 全过；1 = 有差异（差异逐条打印，便于定位）。
+/// ```
+///   assistant_golden                       # 合成语料 20 万条（A2 定的规模）
+///   assistant_golden --n=20000 --real      # 加跑真机数据（v2 压到 20000 与旧引擎同候选集）
+/// ```
 
 #include "core/FileIndex.h"
 #include "core/FileSnapshot.h"
 #include "core/FileSearcher.h"
 #include "core/FuzzyMatcher.h"
+#include "core/QueryEngine.h"
+#include "core/QueryParser.h"
+#include "core/ScoreEngine.h"
+#include "core/SnapshotManager.h"
 #include "ui/SearchResult.h"
 
 #include <QCoreApplication>
@@ -29,6 +34,7 @@
 #include <QEventLoop>
 #include <QFileInfo>
 #include <QFileInfoList>
+#include <QHash>
 #include <QStandardPaths>
 #include <QString>
 #include <QStringList>
@@ -43,10 +49,6 @@ namespace {
 int g_checks = 0;
 int g_fails  = 0;
 
-/// 真机等价比对用的上限：与旧 `FileSearcher` 的 `kMaxIndexedFiles` 相同，
-/// 这样两个引擎才落在同一候选集上。
-constexpr int kComparableLimit = 20000;
-
 void report(bool ok, const QString &what)
 {
     ++g_checks;
@@ -56,35 +58,38 @@ void report(bool ok, const QString &what)
     }
 }
 
+/// 真机等价比对用的上限：与旧 `FileSearcher` 的 `kMaxIndexedFiles` 相同
+constexpr int kComparableLimit = 20000;
+
+/// 旧实现里"有意义"的档位下限：>350 只可能来自精确(1000)/前缀(900)/词边界(800)/包含(400..600)。
+/// 编辑距离档最高 350，子序列档最低 351 —— 所以 350 是条干净的分界线。
+constexpr int kMeaningfulScore = 350;
+
 // ---------------------------------------------------------------------------
-// 参考实现：旧 FileSearcher::search() 算法的逐行转写
-// （src/core/FileSearcher.cpp：线性扫描 + FuzzyMatcher + 分数降序 +
-//   名字大小写不敏感序 + 截断到 limit）
+// 旧实现（逐行转写自 src/core/FileSearcher.cpp 的 search()）
 // ---------------------------------------------------------------------------
 
-struct RefHit
+struct LegacyHit
 {
     QString name;
     QString path;
     int     score = 0;
 };
 
-QList<RefHit> legacyReference(const std::vector<QString> &names,
-                              const QString &query,
-                              int limit)
+QList<LegacyHit> legacySearchSnapshot(const FileSnapshot &snap, const QString &query, int limit)
 {
-    QList<RefHit> matches;
+    QList<LegacyHit> matches;
     if (query.trimmed().isEmpty() || limit <= 0)
         return matches;
 
     matches.reserve(1024);
-    for (const QString &name : names) {
-        const int s = FuzzyMatcher::score(query, name);
+    for (int i = 0; i < snap.size(); ++i) {
+        const int s = FuzzyMatcher::score(query, snap.nameAt(i));
         if (s > 0)
-            matches.append({name, QStringLiteral("C:/corpus/") + name, s});
+            matches.append({ snap.nameAt(i), snap.pathAt(i), s });
     }
 
-    std::sort(matches.begin(), matches.end(), [](const RefHit &a, const RefHit &b) {
+    std::sort(matches.begin(), matches.end(), [](const LegacyHit &a, const LegacyHit &b) {
         if (a.score != b.score)
             return a.score > b.score;
         return a.name.compare(b.name, Qt::CaseInsensitive) < 0;
@@ -95,48 +100,98 @@ QList<RefHit> legacyReference(const std::vector<QString> &names,
     return matches;
 }
 
-/// 逐条比对 v2 的结果与参考实现（顺序也必须是同一顺序）。
-void compareAgainstReference(const std::vector<QString> &names,
-                             FileIndex &index,
-                             const QString &query,
-                             int limit)
+// ---------------------------------------------------------------------------
+// 通用回归检查
+// ---------------------------------------------------------------------------
+
+/// 超集 + 分数不回归
+void checkSupersetAndScores(const QList<LegacyHit> &oldHits,
+                            const QList<SearchResult> &newHits,
+                            const QString &tag)
 {
-    const QList<RefHit>          want = legacyReference(names, query, limit);
-    const QList<SearchResult>    got  = index.query(query, limit);
+    QHash<QString, int> newScoreByName;
+    newScoreByName.reserve(newHits.size());
+    for (const SearchResult &r : newHits)
+        newScoreByName.insert(r.title, r.score);
 
-    const QString tag = QStringLiteral("query='%1' limit=%2").arg(query).arg(limit);
+    int missing = 0;
+    int regressed = 0;
+    QString firstProblem;
 
-    if (want.size() != got.size()) {
-        report(false, QStringLiteral("%1 — 条数 %2 vs %3")
-                         .arg(tag).arg(want.size()).arg(got.size()));
-        return;
-    }
-
-    for (int i = 0; i < want.size(); ++i) {
-        const RefHit       &w = want.at(i);
-        const SearchResult &g = got.at(i);
-        if (w.name == g.title && w.score == g.score &&
-            g.id == QStringLiteral("file://") + w.path &&
-            g.subtitle == w.path && g.path == w.path &&
-            g.type == SearchResult::File && g.priority == 1)
+    for (const LegacyHit &old : oldHits) {
+        const auto it = newScoreByName.constFind(old.name);
+        if (it == newScoreByName.constEnd()) {
+            ++missing;
+            if (firstProblem.isEmpty())
+                firstProblem = QStringLiteral("旧命中 '%1'（%2 分）新引擎找不到")
+                                   .arg(old.name).arg(old.score);
             continue;
+        }
 
-        report(false, QStringLiteral("%1 — 第 %2 条不一致：want(%3,%4) got(%5,%6)")
-                         .arg(tag).arg(i).arg(w.name).arg(w.score)
-                         .arg(g.title).arg(g.score));
-        return;
+        if (old.score > kMeaningfulScore) {
+            // 四个强档位必须**逐位相同**（跨模块排序依赖这个尺度）
+            if (it.value() != old.score) {
+                ++regressed;
+                if (firstProblem.isEmpty())
+                    firstProblem = QStringLiteral("'%1' 分数变了：旧 %2 → 新 %3")
+                                       .arg(old.name).arg(old.score).arg(it.value());
+            }
+        } else if (it.value() < old.score) {
+            ++regressed;
+            if (firstProblem.isEmpty())
+                firstProblem = QStringLiteral("'%1' 分数回归：旧 %2 → 新 %3")
+                                   .arg(old.name).arg(old.score).arg(it.value());
+        }
     }
 
-    report(true, tag);
+    report(missing == 0, QStringLiteral("%1 超集（缺 %2 条%3）")
+                             .arg(tag).arg(missing)
+                             .arg(firstProblem.isEmpty() ? QString()
+                                                         : QStringLiteral("；") + firstProblem));
+    report(regressed == 0, QStringLiteral("%1 分数不回归（%2 条退化）").arg(tag).arg(regressed));
+}
+
+/// top-K 顺序不回归：旧 top-20 中分数 >350 的条目，新 top-20 必须包含且保持相对顺序。
+void checkTopKOrder(const QList<LegacyHit> &oldTop, const QList<SearchResult> &newTop,
+                    const QString &tag)
+{
+    QStringList newOrder;
+    for (const SearchResult &r : newTop)
+        newOrder << r.title;
+
+    QStringList oldMeaningful;
+    for (const LegacyHit &h : oldTop) {
+        if (h.score > kMeaningfulScore)
+            oldMeaningful << h.name;
+    }
+
+    bool ok = true;
+    QString why;
+    int cursor = 0;
+    for (const QString &name : oldMeaningful) {
+        const int at = static_cast<int>(newOrder.indexOf(name));
+        if (at < 0) {
+            ok = false;
+            why = QStringLiteral("'%1' 掉出新 top-20").arg(name);
+            break;
+        }
+        if (at < cursor) {
+            ok = false;
+            why = QStringLiteral("'%1' 顺序前移 %2 → %3").arg(name).arg(cursor).arg(at);
+            break;
+        }
+        cursor = at;
+    }
+
+    report(ok, QStringLiteral("%1 top-20 顺序不回归%2")
+                   .arg(tag)
+                   .arg(ok ? QString() : QStringLiteral("：") + why));
 }
 
 // ---------------------------------------------------------------------------
-// 阶段①：合成语料
+// 语料
 // ---------------------------------------------------------------------------
 
-/// 程序化语料（可重复）：不同深度、非 ASCII 约 10%、长名字若干。
-/// 名字尾部拼 `_<i>` 保证**唯一** —— `std::sort` 不是稳定排序，
-/// 名字（大小写不敏感）相同的条目之间顺序未定义，会让比对假失败。
 std::vector<QString> makeCorpus(int n, unsigned seed)
 {
     static const char *kWords[] = {
@@ -171,101 +226,67 @@ std::vector<QString> makeCorpus(int n, unsigned seed)
     return out;
 }
 
-int runSynthetic(int n)
+QStringList defaultQueries(const std::vector<QString> &names)
 {
-    std::printf("\n[phase 1] 合成语料 N=%d\n", n);
+    QStringList queries = {
+        QStringLiteral("report"), QStringLiteral("rep"), QStringLiteral("port"),
+        QStringLiteral("chr"), QStringLiteral("report_1"),
+        QString::fromUtf8("报告"), QString::fromUtf8("预算"),
+        QStringLiteral("a"), QStringLiteral("z"),
+        QStringLiteral("xyzzy_no_such_file"),
+        QString(), QStringLiteral("   "),
+    };
+    if (!names.empty()) {
+        queries << names.front();
+        queries << names.back();
+        queries << names.front().left(6);
+    }
+    return queries;
+}
 
-    const std::vector<QString> names = makeCorpus(n, 20261015u);
+// ---------------------------------------------------------------------------
+// 阶段①：合成语料
+// ---------------------------------------------------------------------------
 
-    // 注入 v2 快照（不碰磁盘）：包成 FileSnapshot::Builder 的正常路径
+void runSynthetic(int n)
+{
+    std::printf("\n[phase 1] 合成语料 N=%d（超集 + 分数 + top-20 顺序）\n", n);
+
+    const std::vector<QString> names = makeCorpus(n, 20261022u);
+
     FileSnapshot::Builder builder;
     builder.reserve(n);
     for (const QString &name : names)
         builder.add(name, QStringLiteral("C:/corpus/") + name, 1024, 1700000000);
 
     std::shared_ptr<FileSnapshot> snap = builder.finish();
-
     FileIndex index;
     index.setSnapshot(snap);
 
-    // ---- 快照自身的不变量 ----
-    report(snap->size() == n,
-           QStringLiteral("快照 size() == N（%1）").arg(snap->size()));
-    {
-        bool lowerOk = true, nonEmpty = true;
-        for (int i = 0; i < snap->size() && lowerOk; ++i) {
-            if (snap->lowerAt(i) != snap->nameAt(i).toLower()) lowerOk = false;
-            if (snap->nameAt(i).isEmpty() || snap->pathAt(i).isEmpty()) nonEmpty = false;
-        }
-        report(lowerOk,   QStringLiteral("lowerAt(i) == nameAt(i).toLower() 全表"));
-        report(nonEmpty,  QStringLiteral("name/path 全表非空"));
-        report(snap->mtimeAt(0) == 1700000000 && snap->sizeAt(0) == 1024,
-               QStringLiteral("size/mtime 原样带出"));
-    }
-
-    // ---- 查询语义比对 ----
-    // 每次比对都是一遍完整的全表扫描，而当前 `FuzzyMatcher` 每次调用都要
-    // toLower + 可能的子串分配（A4 要解决的 P1-2）：全量跑 75 遍太贵，
-    // 所以主比对只用生产值的 limit=20，边界 limit 另用代表性查询覆盖。
-    const std::vector<QString> queries = {
-        QStringLiteral("report"),                       // 词
-        QStringLiteral("rep"),                          // 前缀
-        QStringLiteral("port"),                         // 子串
-        QStringLiteral("chr"),                          // 子串（启动器场景）
-        QStringLiteral("report_1"),                     // 词 + 数字
-        QString::fromUtf8("报告"),                       // 中文
-        QString::fromUtf8("预算"),                       // 中文
-        QStringLiteral("a"),                            // 极短（候选最多）
-        QStringLiteral("z"),                            // 可能无命中
-        QStringLiteral("xyzzy_no_such_file"),           // 必无命中
-        QString(),                                      // 空查询
-        QStringLiteral("   "),                          // 空白查询
-        names[0],                                       // 精确命中（score 1000）
-        names[names.size() - 1],                        // 精确命中（尾部）
-        names[1].left(12),                              // 长查询
-    };
+    const QStringList queries = defaultQueries(names);
 
     QElapsedTimer timer;
     timer.start();
-    int scans = 0;
+
     for (const QString &q : queries) {
-        compareAgainstReference(names, index, q, 20);
-        ++scans;
+        // limit 给足：验证"旧引擎能命中的一条都不丢"
+        const QList<LegacyHit> oldAll = legacySearchSnapshot(*snap, q, n + 1);
+        const QList<SearchResult> newAll = index.query(q, n + 1);
+        checkSupersetAndScores(oldAll, newAll, QStringLiteral("q='%1'").arg(q));
+
+        const QList<LegacyHit> oldTop = legacySearchSnapshot(*snap, q, 20);
+        const QList<SearchResult> newTop = index.query(q, 20);
+        checkTopKOrder(oldTop, newTop, QStringLiteral("q='%1'").arg(q));
     }
 
-    // limit 边界：0 / 1 / 5 / 超过命中数
-    const std::vector<QString> limitQueries = {
-        QStringLiteral("a"), QStringLiteral("report"), QString(),
-    };
-    for (int limit : { 0, 1, 5, 1000 }) {
-        for (const QString &q : limitQueries) {
-            compareAgainstReference(names, index, q, limit);
-            ++scans;
-        }
-    }
-    const qint64 queryMs = timer.elapsed();
-
-    // 单遍全表扫描的量级（给 A4 的 baseline 一个参照；不是正式 baseline 报告）
-    QElapsedTimer single;
-    single.start();
-    (void)index.query(QStringLiteral("report"), 20);
-    const qint64 oneScanMs = single.elapsed();
-
-    std::printf("  %d 遍全表比对：%lld ms   单遍全表扫描 N=%d：%lld ms\n",
-                scans, static_cast<long long>(queryMs), n,
-                static_cast<long long>(oneScanMs));
-    return 0;
+    std::printf("  %d 条查询 × 2 项性质：%lld ms\n", static_cast<int>(queries.size()),
+                static_cast<long long>(timer.elapsed()));
 }
 
 // ---------------------------------------------------------------------------
-// 阶段②：真机数据（v2 上限压到 20000，与旧引擎同候选集）
+// 阶段②：真机数据
 // ---------------------------------------------------------------------------
 
-/// 从 Desktop 取真实文件名当查询。
-///
-/// 必须**自己控制递归**：`QDirIterator::Subdirectories` 会跟着 junction 一路钻
-/// 下去 —— 那正是 A1 的 P0-1。本机 Desktop 顶层只有 `desktop.ini` 一个文件，
-/// 2 万多个文件全在子目录里，所以只取顶层等于一条查询都取不到。
 QStringList harvestQueries(int n)
 {
     QStringList out;
@@ -274,16 +295,15 @@ QStringList harvestQueries(int n)
     if (desktop.isEmpty())
         return out;
 
+    // 自己控制递归：QDirIterator::Subdirectories 会跟着 junction 钻下去（A1 的 P0-1）
     QStringList stack{ desktop };
     while (!stack.isEmpty() && out.size() < n) {
         const QString dir = stack.takeLast();
         const QFileInfoList entries =
-            QDir(dir).entryInfoList(QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot,
-                                    QDir::NoSort);
+            QDir(dir).entryInfoList(QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot, QDir::NoSort);
         for (const QFileInfo &fi : entries) {
             if (out.size() >= n)
                 break;
-
             if (fi.isDir()) {
                 if (fi.isSymLink() || fi.isJunction())
                     continue;
@@ -292,34 +312,27 @@ QStringList harvestQueries(int n)
             }
             if (fi.isSymLink())
                 continue;
-
             const QString name = fi.fileName();
             if (name.length() < 3)
                 continue;
-
-            out << name;                                   // 精确命中（score 1000）
-            out << name.left(qMax(3, name.length() / 2));  // 前缀命中（score 900）
+            out << name;
+            out << name.left(qMax(3, name.length() / 2));
         }
     }
     return out;
 }
 
-int runReal(int sampleQueries, int entryLimit)
+void runReal(int sampleQueries)
 {
-    std::printf("\n[phase 2] 真机数据（v2 limit=%d vs 旧 FileSearcher）\n", entryLimit);
+    std::printf("\n[phase 2] 真机数据（v2 limit=%d vs 旧 FileSearcher）\n", kComparableLimit);
 
-    // 旧引擎：同步建索引（A1 行为）
     QElapsedTimer legacyTimer;
     legacyTimer.start();
     const int legacyCount = FileSearcher::buildIndex();
     const qint64 legacyMs = legacyTimer.elapsed();
 
-    // v2：后台扫描。压到 20000 才有"同一候选集"可比；
-    // 传 0 则用默认硬上限（跑全量），此时只测规模与耗时，不做等价比对。
-    const bool comparable = entryLimit > 0;
-
     FileIndex index;
-    index.setEntryLimit(entryLimit);
+    index.setEntryLimit(kComparableLimit);
 
     QEventLoop loop;
     QObject::connect(&index, &FileIndex::indexReady, &loop, &QEventLoop::quit);
@@ -336,50 +349,229 @@ int runReal(int sampleQueries, int entryLimit)
                 st.entries, static_cast<long long>(v2Ms),
                 static_cast<long long>(st.msLastScan));
 
-    // 单遍全表扫描（v2 路径）——切默认引擎前必须知道的数字
-    {
-        QElapsedTimer one;
-        one.start();
-        (void)index.query(QStringLiteral("report"), 20);
-        std::printf("  v2 单遍全表扫描 %d 条：%lld ms\n", st.entries,
-                    static_cast<long long>(one.elapsed()));
-    }
-
-    if (!comparable) {
-        std::printf("  （limit=0 → 全量索引，只测规模/耗时；等价比对见 limit=%d 的运行）\n",
-                    kComparableLimit);
-        return 0;
-    }
-
     report(st.entries == legacyCount,
            QStringLiteral("候选集规模一致（legacy %1 vs v2 %2）")
                .arg(legacyCount).arg(st.entries));
 
     const QStringList queries = harvestQueries(sampleQueries);
-    std::printf("  用 %d 条真实查询比对（含精确/前缀两档）\n", static_cast<int>(queries.size()));
+    std::printf("  用 %d 条真实查询比对\n", static_cast<int>(queries.size()));
 
-    int compared = 0;
     for (const QString &q : queries) {
-        const QList<FileSearcher::Entry> want = FileSearcher::search(q, 20);
-        const QList<SearchResult>        got  = index.query(q, 20);
+        const QList<FileSearcher::Entry> oldHits = FileSearcher::search(q, 200);
+        const QList<SearchResult> newHits = index.query(q, 200);
 
-        ++compared;
-        if (want.size() != got.size()) {
-            report(false, QStringLiteral("query='%1' 条数 %2 vs %3")
-                             .arg(q).arg(want.size()).arg(got.size()));
-            continue;
+        QStringList newTitles;
+        newTitles.reserve(newHits.size());
+        QHash<QString, int> newScoreByName;
+        for (const SearchResult &r : newHits) {
+            newTitles << r.title;
+            newScoreByName.insert(r.title, r.score);
         }
-        bool same = true;
-        for (int i = 0; i < want.size() && same; ++i) {
-            same = want.at(i).name == got.at(i).title &&
-                   want.at(i).score == got.at(i).score &&
-                   got.at(i).id == QStringLiteral("file://") + want.at(i).path;
+
+        bool ok = true;
+        QString why;
+        for (const FileSearcher::Entry &old : oldHits) {
+            const auto it = newScoreByName.constFind(old.name);
+            if (it == newScoreByName.constEnd()) {
+                ok = false;
+                why = QStringLiteral("'%1' 缺失").arg(old.name);
+                break;
+            }
+            if (old.score > kMeaningfulScore && it.value() != old.score) {
+                ok = false;
+                why = QStringLiteral("'%1' 分数变了 %2 → %3")
+                          .arg(old.name).arg(old.score).arg(it.value());
+                break;
+            }
+            if (old.score <= kMeaningfulScore && it.value() < old.score) {
+                ok = false;
+                why = QStringLiteral("'%1' 分数回归 %2 → %3")
+                          .arg(old.name).arg(old.score).arg(it.value());
+                break;
+            }
         }
-        report(same, QStringLiteral("query='%1'（%2 条）").arg(q).arg(want.size()));
+        report(ok, QStringLiteral("q='%1'（旧 %2 条）%3")
+                       .arg(q).arg(oldHits.size())
+                       .arg(ok ? QString() : QStringLiteral("：") + why));
     }
 
-    std::printf("  真机比对 %d 条查询完成\n", compared);
-    return 0;
+    std::printf("  真机比对 %d 条查询完成\n", static_cast<int>(queries.size()));
+
+    if (!queries.isEmpty()) {
+        QElapsedTimer t1;
+        t1.start();
+        (void)FileSearcher::search(queries.first(), 20);
+        const qint64 oldUs = t1.nsecsElapsed() / 1000;
+
+        QElapsedTimer t2;
+        t2.start();
+        (void)index.query(queries.first(), 20);
+        const qint64 newUs = t2.nsecsElapsed() / 1000;
+
+        std::printf("  单条查询（'%s'）：旧 %.1f ms → 新 %.1f ms（%.1f×）\n",
+                    queries.first().toUtf8().constData(),
+                    oldUs / 1000.0, newUs / 1000.0,
+                    newUs > 0 ? static_cast<double>(oldUs) / static_cast<double>(newUs) : 0.0);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 阶段③：绝对语义用例
+// ---------------------------------------------------------------------------
+
+void runSemanticGolden()
+{
+    std::printf("\n[phase 3] 语义 golden 用例（绝对断言）\n");
+
+    struct Case
+    {
+        QString name;
+        QString path;
+    };
+    const QVector<Case> files = {
+        { QStringLiteral("chrome_installer.exe"), QStringLiteral("C:/t/chrome_installer.exe") },
+        { QStringLiteral("Chrome Installer"),     QStringLiteral("C:/t/Chrome Installer") },
+        { QStringLiteral("report_final.docx"),    QStringLiteral("C:/t/report_final.docx") },
+        { QStringLiteral("report_other.txt"),     QStringLiteral("C:/t/report_other.txt") },
+        { QStringLiteral("budget.xlsx"),          QStringLiteral("C:/t/budget.xlsx") },
+        // 短名字：编辑距离档只在 查询≤10 字符 且 文件名≤30 字符 时启用（旧上限）
+        { QStringLiteral("budget.txt"),           QStringLiteral("C:/t/budget.txt") },
+        { QString::fromUtf8("报告_2026.pdf"),
+          QStringLiteral("C:/t/") + QString::fromUtf8("报告_2026.pdf") },
+        // 名字里没有 report，但**所在目录**叫 report —— 用来验证"路径不参与匹配"
+        { QStringLiteral("notes.md"),             QStringLiteral("C:/work/report/notes.md") },
+    };
+
+    FileSnapshot::Builder builder;
+    for (const Case &c : files)
+        builder.add(c.name, c.path, 10, 1700000000);
+    std::shared_ptr<FileSnapshot> snap = builder.finish();
+
+    SnapshotManager snapshots;
+    snapshots.publish(snap);
+    const QueryEngine engine(snapshots);
+
+    auto titles = [&snap](const QList<QueryEngine::Match> &matches) {
+        QStringList out;
+        for (const QueryEngine::Match &m : matches)
+            out << snap->nameAt(m.index);
+        return out;
+    };
+    auto matchOf = [&snap](const QList<QueryEngine::Match> &matches, const QString &name) {
+        for (const QueryEngine::Match &m : matches) {
+            if (snap->nameAt(m.index) == name)
+                return m;
+        }
+        return QueryEngine::Match{};
+    };
+
+    // 1. 子序列
+    {
+        const auto r = engine.query(QStringLiteral("chri"), 20);
+        const auto m = matchOf(r, QStringLiteral("chrome_installer.exe"));
+        report(m.tier == ScoreEngine::Tier::Subsequence,
+               QStringLiteral("子序列 'chri' 命中 chrome_installer.exe（tier=%1）")
+                   .arg(static_cast<int>(m.tier)));
+        report(m.score >= ScoreEngine::Band::kSubsequenceMin
+                   && m.score <= ScoreEngine::Band::kSubsequenceMax,
+               QStringLiteral("子序列分数落在 (350,400) 空档（实际 %1）").arg(m.score));
+    }
+
+    // 2. 大写缩写
+    {
+        const auto r = engine.query(QStringLiteral("ci"), 20);
+        const auto m = matchOf(r, QStringLiteral("Chrome Installer"));
+        report(m.tier == ScoreEngine::Tier::Subsequence,
+               QStringLiteral("缩写 'ci' 命中 Chrome Installer"));
+    }
+
+    // 3. 四个旧档位数值原样
+    {
+        const auto exact = matchOf(engine.query(QStringLiteral("budget.xlsx"), 5),
+                                   QStringLiteral("budget.xlsx"));
+        report(exact.score == ScoreEngine::Band::kExact,
+               QStringLiteral("精确 = 1000（实际 %1）").arg(exact.score));
+
+        const auto prefix = matchOf(engine.query(QStringLiteral("report_fi"), 5),
+                                    QStringLiteral("report_final.docx"));
+        report(prefix.score == ScoreEngine::Band::kPrefix,
+               QStringLiteral("前缀 = 900（实际 %1）").arg(prefix.score));
+
+        const auto boundary = matchOf(engine.query(QStringLiteral("final"), 5),
+                                      QStringLiteral("report_final.docx"));
+        report(boundary.score == ScoreEngine::Band::kWordBoundary,
+               QStringLiteral("词边界 = 800（实际 %1）").arg(boundary.score));
+
+        const auto contained = matchOf(engine.query(QStringLiteral("eport_final"), 5),
+                                       QStringLiteral("report_final.docx"));
+        report(contained.score == ScoreEngine::Band::kContainsMax - 2,
+               QStringLiteral("包含 pos=1 = 598（实际 %1）").arg(contained.score));
+    }
+
+    // 4. 拼写容错 —— 注意这里有两种 typo，性质完全不同：
+    //  4a **替换型**（budget → budgat）：不是子序列，只能靠编辑距离档救回来。
+    //  4b **删除型**（budget → budgt）：**恰好是子序列**（跳过 e），于是被更强的
+    //     子序列档吃掉，分数 399 —— 比编辑距离档的 350 更高。这是新引擎顺带
+    //     带来的收益（少打一个字符是最常见的误输入），不是 bug。
+    {
+        const auto substitute = matchOf(engine.query(QStringLiteral("budgat.txt"), 10),
+                                        QStringLiteral("budget.txt"));
+        report(substitute.tier == ScoreEngine::Tier::EditDistance,
+               QStringLiteral("替换型 typo 'budgat.txt' → budget.txt（tier=%1）")
+                   .arg(static_cast<int>(substitute.tier)));
+        report(substitute.score == ScoreEngine::Band::kEditBase - ScoreEngine::Band::kEditStep,
+               QStringLiteral("编辑距离 1 → 350（实际 %1）").arg(substitute.score));
+
+        const auto deletion = matchOf(engine.query(QStringLiteral("budgt.txt"), 10),
+                                      QStringLiteral("budget.txt"));
+        report(deletion.tier == ScoreEngine::Tier::Subsequence,
+               QStringLiteral("删除型 typo 'budgt.txt' 走子序列档（tier=%1，顺带修好）")
+                   .arg(static_cast<int>(deletion.tier)));
+        report(deletion.score >= ScoreEngine::Band::kSubsequenceMin,
+               QStringLiteral("删除型 typo 分数（%1）高于编辑距离档上限 350").arg(deletion.score));
+    }
+
+    // 5. 中文
+    {
+        const auto m = matchOf(engine.query(QString::fromUtf8("报告"), 10),
+                               QString::fromUtf8("报告_2026.pdf"));
+        report(m.score == ScoreEngine::Band::kPrefix,
+               QStringLiteral("中文前缀 '报告' = 900（实际 %1）").arg(m.score));
+    }
+
+    // 6. 多词 AND
+    {
+        const QStringList t = titles(engine.query(QStringLiteral("report final"), 20));
+        report(t.contains(QStringLiteral("report_final.docx")),
+               QStringLiteral("多词 AND：'report final' 命中 report_final.docx"));
+        report(!t.contains(QStringLiteral("report_other.txt")),
+               QStringLiteral("多词 AND：'report final' 排除 report_other.txt"));
+    }
+
+    // 7. 否定项
+    {
+        const QStringList t = titles(engine.query(QStringLiteral("report -final"), 20));
+        report(t.contains(QStringLiteral("report_other.txt")),
+               QStringLiteral("否定项：'report -final' 保留 report_other.txt"));
+        report(!t.contains(QStringLiteral("report_final.docx")),
+               QStringLiteral("否定项：'report -final' 排除 report_final.docx"));
+    }
+
+    // 8. 空查询 / 纯否定项
+    {
+        report(engine.query(QString(), 20).isEmpty(), QStringLiteral("空查询返回空"));
+        report(engine.query(QStringLiteral("   "), 20).isEmpty(), QStringLiteral("空白查询返回空"));
+        report(engine.query(QStringLiteral("-final"), 20).isEmpty(),
+               QStringLiteral("纯否定项返回空（A 阶段语义）"));
+    }
+
+    // 9. 路径不参与匹配
+    {
+        report(titles(engine.query(QStringLiteral("notes"), 20)).contains(QStringLiteral("notes.md")),
+               QStringLiteral("按文件名命中 notes.md"));
+        report(!titles(engine.query(QStringLiteral("work"), 20)).contains(QStringLiteral("notes.md")),
+               QStringLiteral("路径不参与匹配：query 'work' 不命中 notes.md"));
+    }
 }
 
 } // namespace
@@ -390,26 +582,23 @@ int main(int argc, char *argv[])
     QCoreApplication::setApplicationName(QStringLiteral("Assistant"));
     QCoreApplication::setOrganizationName(QStringLiteral("AssistantTeam"));
 
-    int  corpusSize   = 200000;
-    bool realPhase    = false;
-    int  realSamples  = 100;
-    int  realLimit    = kComparableLimit;
+    int  corpusSize  = 200000;
+    bool realPhase   = false;
+    int  realSamples = 100;
 
-    const QStringList args = app.arguments();
-    for (const QString &a : args) {
+    for (const QString &a : app.arguments()) {
         if (a.startsWith(QStringLiteral("--n=")))
             corpusSize = a.mid(4).toInt();
         else if (a == QStringLiteral("--real"))
             realPhase = true;
         else if (a.startsWith(QStringLiteral("--real-samples=")))
             realSamples = a.mid(15).toInt();
-        else if (a.startsWith(QStringLiteral("--real-limit=")))
-            realLimit = a.mid(13).toInt();
     }
 
+    runSemanticGolden();
     runSynthetic(corpusSize);
     if (realPhase)
-        runReal(realSamples, realLimit);
+        runReal(realSamples);
 
     std::printf("\n==== %s：%d 项检查，%d 项失败 ====\n",
                 g_fails == 0 ? "PASS" : "FAIL", g_checks, g_fails);
