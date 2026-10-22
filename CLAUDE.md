@@ -85,14 +85,23 @@ Phase 3 剩余（收尾中，写在这里便于续接）：
 - [x] **A3 采集**（2026-10-22）：`FileScanner`（Win32 `FindFirstFileExW` **句柄栈** DFS，顺序与 A1 递归逐条相同）+
       `FileIndexDatabase`（dirs/files/roots + 三方差集差量）+ `DatabaseMigrator`（user_version 前向迁移，v1→v2 加治理字段）。
       四条验收全过（吞吐 6.7 万文件/s、剪枝 97.7%、迁移 14 项、差集收敛 0）。详见 `docs/devlog/2026-10-22.md`
-- [ ] A4 查询引擎 + baseline … A8 拼音首字母
+- [x] **A4 查询 + baseline**（2026-10-22）：`QueryParser`（自由词 AND + `-否定`）+ `ScoreEngine`（tier 判定 +
+  **贪心 O(m) 子序列** + 有界编辑距离，全程零分配）+ `QueryEngine`（top-K min-heap）；`FileIndex::query()` 瘦成转发。
+  三条验收全过（语义 golden 全绿、baseline 落盘、与旧版对比 107 项无回归）。详见 `docs/devlog/2026-10-22.md`
+- [ ] A5 增量（`FileWatcher` + 事件分发）… A8 拼音首字母
 
 > ✅ **P0-3 已修掉**：不再套 2 万条任意截断，真机索引 20000 → **31845** 条，
-> `Documents`/`Downloads` 终于进得来。A3 的 Win32 扫描器扫 31845 条只要 **459–502 ms**
-> （旧 `QDir` 递归扫 20000 条要 976–1047 ms，每文件约 3 倍快），硬上限由 `fileIndex.hardLimitEntries` 配置。
-> ⚠️ 但**打分算法本身慢得离谱**：真机 31845 条单遍全表扫描 **326 ms**、合成 20 万条 **13.2 s** ——
-> 架构文档里"现状 2 万条 5–15 ms"的估计**低了 20 倍以上**（`FuzzyMatcher::score()` 每次调用两次 `toLower()` + 词边界分支的 `t.mid(i)` 分配）。
-> 这是 **A4 baseline 要解决的第一件事**。
+> `Documents`/`Downloads` 终于进得来。A3 的 Win32 扫描器扫 31845 条只要 **459–502 ms**。
+> ✅ **查询已提速 2–8 倍**（A4，Release）：2 万条 1–3 字符 **3.9 ms**（旧 18.7，4.8×）、
+> 20 万条 1–3 字符 **35.4 ms**（旧 275，7.8×）；4–8 字符档 1.8–2.0×。
+> 冷启动到可查询 **28.7 ms**（§9 目标 <150 ms）。
+> ⚠️ **但离 §9 目标仍差一个数量级**：20 万条 P50 35 ms vs 目标 3 ms；快照内存 **64.4 MB**
+> 已过 60 MB 的"必须动手"线。baseline（`assistant_bench`）指向下一步：**§4.2 位图预筛** + **§3.1 目录字典编码**。
+> ⚠️ **测性能必须用 Release**：同一份 2 万条查询，Debug 114 ms、Release 3.9 ms（差 30 倍）。
+
+> 🐞 **部署缺口（打包前必须补）**：构建目录的 app-local 拷贝只拷 `Qt6*.dll`，
+> **不含 `sqlite3.dll`**（`qsqlite.dll` 链接它）。Debug 一直被 `run.bat` / 调试命令里的 vcpkg PATH 掩盖，
+> ctest 才暴露。已在 `a3_migrate` 的 ctest 环境里补 PATH；正式打包要显式带上。
 
 > 已知限制：热键捕获时，**当前已注册的全局热键**（如 Alt+Space）会被系统先消费，QML 收不到该按键。
 > 想重新绑定成同一个组合键无效，绑定成别的组合键正常。
@@ -119,7 +128,10 @@ Phase 3 剩余（收尾中，写在这里便于续接）：
 | HistoryDatabase | `include/database/HistoryDatabase.h`, `src/database/HistoryDatabase.cpp` | SQLite 3 张表 (search/command/app_launch history) |
 | AppBridge | `include/ui/AppBridge.h`, `src/ui/AppBridge.cpp` | QML↔C++ 桥梁, Q_PROPERTY + Q_INVOKABLE |
 | SearchResult | `include/ui/SearchResult.h` | 统一搜索模型 (id, title, subtitle, type, priority, score, resultText, path) |
-| FuzzyMatcher | `include/core/FuzzyMatcher.h`, `src/core/FuzzyMatcher.cpp` | 五级模糊匹配打分 (精确>前缀>词边界>包含>编辑距离) |
+| FuzzyMatcher | `include/core/FuzzyMatcher.h`, `src/core/FuzzyMatcher.cpp` | 五级模糊匹配打分 (精确>前缀>词边界>包含>编辑距离)。**A4 起只剩 `legacy` 退路与"跨模块分数尺度"的参照**，文件查询走 `ScoreEngine` |
+| ScoreEngine | `include/core/ScoreEngine.h`, `src/core/ScoreEngine.cpp` | 打分内核：tier 判定（四档数值与 `FuzzyMatcher` **逐位相同**）+ **贪心 O(m) 子序列**（351–399 空档）+ 有界编辑距离；全程零分配 |
+| QueryParser | `include/core/QueryParser.h`, `src/core/QueryParser.cpp` | A 阶段最小语法：自由词按空白 **AND**、`-词` 否定；整串只 `toLower` 一次 |
+| QueryEngine | `include/core/QueryEngine.h`, `src/core/QueryEngine.cpp` | 查询引擎：Parser → 逐条打分 → **top-K min-heap**（替代全排序）；只依赖快照只读接口 |
 | AppIndexer | `include/core/AppIndexer.h`, `src/core/AppIndexer.cpp` | 扫描 Start Menu `.lnk` (IShellLink COM), 解析目标路径, 去重排序 |
 | FileSearcher | `include/core/FileSearcher.h`, `src/core/FileSearcher.cpp` | 自控前序 DFS（`walkDir`，不跟随 junction、目录级剪枝）+ FuzzyMatcher 打分 top-N, 索引上限 2 万。**A2 起是 `engine=legacy` 的退路**，A7 删除 |
 | FileSnapshot | `include/core/FileSnapshot.h` | 不可变只读快照（`Builder` 写入 → `nameAt/lowerAt/pathAt/sizeAt/mtimeAt` 读出）；物理表示藏在这层之后，查询层不摸容器 |
