@@ -60,6 +60,9 @@ vcpkg-manifest-install/
 Thumbs.db
 .DS_Store
 
+# Office 临时/锁文件（双击打开 pptx/docx 时产生）
+~$*
+
 # Python（docs/slides 的生成脚本）
 __pycache__/
 *.pyc
