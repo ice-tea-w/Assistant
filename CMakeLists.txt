@@ -106,28 +106,47 @@ add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
 # install(SCRIPT ${deploy_script})
 
 # ---- 测试 / 验收 ----
-# A2 的验收③要求「同一候选集上 v2 与旧版查询结果逐条一致」，所以先立一个最小的
-# golden 目标（`enable_testing()` + `bench_file_index` 是 A4 的事，见 v0.4-实施清单）。
-# 只链 Core：验收工具不碰 GUI/QML，也不需要 ConfigManager。
-add_executable(assistant_golden
-    tests/golden_file_index.cpp
+# A2 的 golden 对比（「同一候选集上 v2 与旧版查询结果逐条一致」）与 A3 的采集/持久化
+# 验收（迁移、剪枝、差集收敛、扫描吞吐）共用同一份最小源集合。
+# 只链 Core + Sql：验收工具不碰 GUI/QML，也不需要 ConfigManager。
+# （`enable_testing()` + `bench_file_index` 仍是 A4 的事，见 v0.4-实施清单。）
+set(ASSISTANT_INDEX_TEST_SOURCES
     src/core/Logger.cpp
     src/core/FuzzyMatcher.cpp
+    src/core/FileScanner.cpp
     src/core/FileSearcher.cpp
     src/core/FileIndex.cpp
     src/core/SnapshotManager.cpp
+    src/database/DatabaseMigrator.cpp
+    src/database/FileIndexDatabase.cpp
     include/core/FileIndex.h
     include/core/FileSnapshot.h
+    include/core/FileScanner.h
     include/core/SnapshotManager.h
+    include/database/DatabaseMigrator.h
+    include/database/FileIndexDatabase.h
 )
-target_include_directories(assistant_golden PRIVATE
-    ${CMAKE_SOURCE_DIR}/include
+
+add_executable(assistant_golden
+    tests/golden_file_index.cpp
+    ${ASSISTANT_INDEX_TEST_SOURCES}
 )
-target_compile_definitions(assistant_golden PRIVATE
-    APP_VERSION="${PROJECT_VERSION}"
+add_executable(assistant_a3
+    tests/a3_acceptance.cpp
+    ${ASSISTANT_INDEX_TEST_SOURCES}
 )
-target_link_libraries(assistant_golden PRIVATE
-    Qt6::Core
-    spdlog::spdlog
-)
+
+foreach(_acceptance_target assistant_golden assistant_a3)
+    target_include_directories(${_acceptance_target} PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+    )
+    target_compile_definitions(${_acceptance_target} PRIVATE
+        APP_VERSION="${PROJECT_VERSION}"
+    )
+    target_link_libraries(${_acceptance_target} PRIVATE
+        Qt6::Core
+        Qt6::Sql
+        spdlog::spdlog
+    )
+endforeach()
 

@@ -69,20 +69,27 @@ int main(int argc, char *argv[])
     for (const AppIndexer::Entry &app : AppIndexer::scan())
         backend.addApp(app.name, app.path);
 
-    // ---- file indexer (Step 6 / A2) ----
-    // v2      : FileIndex 门面 + 后台扫描。startAsync() **立即返回**，窗口与热键
-    //           先可用，索引就绪后 AppBridge 自动重跑最近一次查询（修 P0-4）。
+    // ---- file indexer (Step 6 / A2 + A3) ----
+    // v2      : FileIndex 门面 + 后台扫描（FileScanner + FileIndexDatabase 差量）。
+    //           startAsync() **立即返回**，窗口与热键先可用，索引就绪后 AppBridge
+    //           自动重跑最近一次查询（修 P0-4）。
     // legacy  : 旧 FileSearcher 同步建索引，行为与 A1 **完全一致**，是 v2 的退路。
     // 开关落在 config.json 的 fileIndex.engine，一行配置就能切回去。
     FileIndex fileIndex;
     const bool useFileIndexV2 = (config.fileIndexEngine() == QStringLiteral("v2"));
     if (useFileIndexV2) {
+        // file_index.db 是**派生数据**（可随时重扫重建），和 history.db 等平级存放
+        fileIndex.setDatabasePath(QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation)
+                                  + QStringLiteral("/file_index.db"));
+        fileIndex.setEntryLimit(config.fileIndexHardLimitEntries());
         backend.setFileIndex(&fileIndex);
         fileIndex.startAsync();          // 放在 engine.load() 之前，但不再阻塞
     } else {
         FileSearcher::buildIndex();
     }
-    Logger::get().info("FileIndex: engine = {}", useFileIndexV2 ? "v2" : "legacy");
+    Logger::get().info("FileIndex: engine = {}（硬上限 {} 条）",
+                       useFileIndexV2 ? "v2" : "legacy",
+                       config.fileIndexHardLimitEntries());
 
     TrayManager   tray;
     HotkeyManager hotkey;

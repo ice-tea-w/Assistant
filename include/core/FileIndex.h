@@ -10,7 +10,7 @@
 
 class FileSnapshot;
 class SnapshotManager;
-class ScanWorker;    // 定义在 FileIndex.cpp（A3 会被 FileScanner 取代）
+class ScanWorker;    // 定义在 FileIndex.cpp（内部协作者：扫描 + 差量写库）
 
 /// 文件索引**门面**（架构文档 §2.2：薄，本方案最重要的架构约束）。
 ///
@@ -18,11 +18,12 @@ class ScanWorker;    // 定义在 FileIndex.cpp（A3 会被 FileScanner 取代�
 /// **不实现** DFS / SQL / 模糊匹配 / watcher —— 想给这个类加方法之前先问：
 /// "这段逻辑能不能放进某个协作者？"能，就别加到门面上。
 ///
-/// A2 的边界（刻意保守，见 `docs/architecture/v0.4-实施清单.md` §A2）：
+/// 当前边界（见 `docs/architecture/v0.4-实施清单.md` §A2/§A3）：
+/// - 采集交给 `FileScanner`（Win32 迭代式 DFS），持久化交给 `FileIndexDatabase`，
+///   两者都在 worker 线程里跑；门面只负责"起一次扫描 → 收快照 → 通知"。
 /// - 查询语义与旧 `FileSearcher::search()` **逐条等价**，不追求变快；
 ///   查询逻辑到 A4 才抽到 `QueryEngine`（Parser → Filter → Score → TopK）。
-/// - 扫描仍是"进程内枚举"（A2 只是把它挪进 worker 线程），
-///   A3 换 `FileScanner`（Win32 `FindFirstFileExW` 迭代式 DFS）+ 持久化 + 差量。
+/// - 快照仍是"扫完才发布"（A6 才做"先载入 DB 立即可查、再后台校正"）。
 class FileIndex : public QObject
 {
     Q_OBJECT
@@ -30,6 +31,7 @@ public:
     struct IndexStats
     {
         int    entries    = 0;      ///< 当前快照条目数
+        int    dbRows     = 0;      ///< file_index.db 里的行数（0 = 没开持久化）
         bool   ready      = false;  ///< 有没有可查的快照
         bool   scanning   = false;  ///< 后台是否正在扫
         qint64 msLastScan = 0;      ///< 上次扫描耗时
@@ -43,7 +45,7 @@ public:
     /// 重复调用（含扫描期间调用）安全：扫描中再调会记一个"待重扫"。
     void startAsync();
 
-    /// 手动重建（配置变更后）。A2 等价于 startAsync()。
+    /// 手动重建（配置变更后）。当前等价于 startAsync()。
     void refresh();
 
     /// 查询当前快照，返回至多 @p limit 条文件结果（best first）。
@@ -54,15 +56,21 @@ public:
     IndexStats stats() const;
     bool isReady() const;
 
+    /// 持久化数据库路径（`file_index.db`）。传空字符串 = 不持久化（验收工具用）。
+    ///
+    /// 打开/关闭都在 worker 线程内成对发生 —— `QSqlDatabase` 的连接是线程亲和的，
+    /// 这样差量写库不会卡 GUI 线程。
+    void setDatabasePath(const QString &path);
+
     /// 硬保护上限（架构 §3.3），默认 100 万条；`<= 0` 表示回到默认。
     ///
-    /// A3 会由 `fileIndex.hardLimitEntries` 配置注入。现在它还有一个用途：
-    /// **验收**——把上限压到 20000，v2 与旧引擎就落在同一候选集上，
-    /// 两者结果应当逐条一致（见 `tests/golden_file_index.cpp`）。
+    /// 生产值由 `fileIndex.hardLimitEntries` 注入。另一个用途是**验收**：
+    /// 把上限压到 20000，v2 与旧引擎就落在同一候选集上，结果应当逐条一致
+    /// （见 `tests/golden_file_index.cpp`）。
     void setEntryLimit(int maxEntries);
 
     /// 用一份现成快照替换当前索引。
-    /// A3 的增量补丁会用它；golden 测试也用它注入合成语料（不必碰磁盘）。
+    /// 增量补丁会用它；golden 测试也用它注入合成语料（不必碰磁盘）。
     void setSnapshot(std::shared_ptr<const FileSnapshot> snapshot);
 
 signals:
@@ -76,8 +84,10 @@ private:
 
     std::unique_ptr<SnapshotManager> m_snapshots;
     std::unique_ptr<ScanWorker>      m_worker;
+    QString m_databasePath;
     bool   m_scanning       = false;
     bool   m_pendingRefresh = false;
     qint64 m_msLastScan     = 0;
     int    m_entryLimit     = 0;   ///< 0 = 用 §3.3 的默认硬上限
+    int    m_dbRows         = 0;
 };

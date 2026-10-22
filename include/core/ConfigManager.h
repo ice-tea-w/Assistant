@@ -14,6 +14,7 @@ class ConfigManager : public QObject
     Q_PROPERTY(QString logLevel READ logLevel NOTIFY logLevelChanged)
     Q_PROPERTY(bool autoStart READ autoStart NOTIFY autoStartChanged)
     Q_PROPERTY(QString fileIndexEngine READ fileIndexEngine NOTIFY fileIndexEngineChanged)
+    Q_PROPERTY(int fileIndexHardLimitEntries READ fileIndexHardLimitEntries NOTIFY fileIndexHardLimitChanged)
 
 public:
     explicit ConfigManager(QObject *parent = nullptr);
@@ -41,6 +42,10 @@ public:
     /// 旧 `FileSearcher` 在 A7 之前**完全保留**。取值非法时按 `"legacy"` 处理。
     QString fileIndexEngine() const;
 
+    /// 索引硬保护上限（架构 §3.3）：到了就**停止索引**，不驱逐已有条目。
+    /// 默认 100 万；软预算（30 万）只记日志，不动作。
+    int fileIndexHardLimitEntries() const;
+
     // ---- setters (persist immediately) ----
     Q_INVOKABLE void setTheme(const QString &theme);
     Q_INVOKABLE void saveWindowPosition(int x, int y);
@@ -48,6 +53,7 @@ public:
     Q_INVOKABLE void setLogLevel(const QString &level);
     Q_INVOKABLE void setAutoStart(bool enabled);
     Q_INVOKABLE void setFileIndexEngine(const QString &engine);
+    Q_INVOKABLE void setFileIndexHardLimitEntries(int entries);
 
     // ---- config file path (read-only, for debugging) ----
     QString filePath() const;
@@ -59,6 +65,7 @@ signals:
     void logLevelChanged();
     void autoStartChanged();
     void fileIndexEngineChanged();
+    void fileIndexHardLimitChanged();
     void configLoaded();
 
 private:
@@ -76,5 +83,6 @@ private:
     QString m_logLevel;
     bool    m_autoStart = false;   // 注册表镜像，不持久化到 JSON
     QString m_fileIndexEngine;     // "legacy" | "v2"（A2 的 A/B 开关）
+    int     m_fileIndexHardLimit = 1000000;   // 架构 §3.3 的硬保护上限
     QString m_filePath;
 };

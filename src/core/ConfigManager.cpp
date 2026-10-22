@@ -51,6 +51,7 @@ void ConfigManager::applyDefaults()
     // 没有换来查询变慢。要退回去就把这里或 config.json 的 fileIndex.engine
     // 改成 "legacy"，旧 FileSearcher 在 A7 之前一直保留。
     m_fileIndexEngine  = "v2";
+    m_fileIndexHardLimit = 1000000;   // §3.3 硬保护上限（软预算 30 万只记日志）
 }
 
 /// 只认 "legacy" / "v2" 两个值；写错（或旧版 config 里没有这一节）都按 legacy。
@@ -110,11 +111,16 @@ void ConfigManager::load()
             if (log.contains("level")) m_logLevel = QString::fromStdString(log["level"]);
         }
 
-        // file index engine (A2 的 A/B 开关)
+        // file index engine (A2 的 A/B 开关) + 硬保护上限 (A3, §3.3)
         if (j.contains("fileIndex")) {
             auto &fi = j["fileIndex"];
             if (fi.contains("engine"))
                 m_fileIndexEngine = normalizedEngine(QString::fromStdString(fi["engine"]));
+            if (fi.contains("hardLimitEntries")) {
+                const int v = fi["hardLimitEntries"].get<int>();
+                if (v > 0)
+                    m_fileIndexHardLimit = v;
+            }
         }
 
         Logger::get().info("ConfigManager: loaded {}", m_filePath.toStdString());
@@ -148,7 +154,8 @@ void ConfigManager::save()
         {"level", m_logLevel.toStdString()}
     };
     j["fileIndex"] = {
-        {"engine", m_fileIndexEngine.toStdString()}
+        {"engine",            m_fileIndexEngine.toStdString()},
+        {"hardLimitEntries",  m_fileIndexHardLimit}
     };
 
     QFile file(m_filePath);
@@ -172,6 +179,7 @@ QString ConfigManager::hotkeyKey() const       { return m_hotkeyKey; }
 QString ConfigManager::logLevel() const       { return m_logLevel; }
 bool    ConfigManager::autoStart() const      { return m_autoStart; }
 QString ConfigManager::fileIndexEngine() const { return m_fileIndexEngine; }
+int     ConfigManager::fileIndexHardLimitEntries() const { return m_fileIndexHardLimit; }
 
 // ---- setters ----
 
@@ -235,4 +243,14 @@ void ConfigManager::setFileIndexEngine(const QString &engine)
     m_fileIndexEngine = normalized;
     save();
     emit fileIndexEngineChanged();
+}
+
+void ConfigManager::setFileIndexHardLimitEntries(int entries)
+{
+    if (entries <= 0 || m_fileIndexHardLimit == entries)
+        return;
+
+    m_fileIndexHardLimit = entries;
+    save();
+    emit fileIndexHardLimitChanged();
 }
