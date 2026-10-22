@@ -82,11 +82,15 @@ Phase 3 剩余（收尾中，写在这里便于续接）：
 - [x] **A2 结构**（2026-10-16）：`FileIndex` 门面 + `FileSnapshot`（不可变只读快照）+ `SnapshotManager`（COW 发布，
       `std::atomic<std::shared_ptr<const T>>`）+ 后台扫描线程；`fileIndex.engine = "v2"`（默认）| `"legacy"`（一行可退）。
       三条验收全过（真机冷启动 + 20 万条 golden 132 项 0 失败）。详见 `docs/devlog/2026-10-16.md`
-- [ ] A3 采集（Win32 扫描 + `FileIndexDatabase` + `DatabaseMigrator` + 差量）… A8 拼音首字母
+- [x] **A3 采集**（2026-10-22）：`FileScanner`（Win32 `FindFirstFileExW` **句柄栈** DFS，顺序与 A1 递归逐条相同）+
+      `FileIndexDatabase`（dirs/files/roots + 三方差集差量）+ `DatabaseMigrator`（user_version 前向迁移，v1→v2 加治理字段）。
+      四条验收全过（吞吐 6.7 万文件/s、剪枝 97.7%、迁移 14 项、差集收敛 0）。详见 `docs/devlog/2026-10-22.md`
+- [ ] A4 查询引擎 + baseline … A8 拼音首字母
 
-> ✅ **P0-3 已在 v2 路径修掉**：不再套 2 万条任意截断，真机索引 20000 → **31810** 条，
-> `Documents`/`Downloads` 终于进得来；而每次按键的全表扫描 **333 ms → 326 ms（没有变慢）**。
-> ⚠️ 但**当前打分算法本身就慢**：真机 31810 条单遍全表扫描 **326 ms**、合成 20 万条 **13.2 s** ——
+> ✅ **P0-3 已修掉**：不再套 2 万条任意截断，真机索引 20000 → **31845** 条，
+> `Documents`/`Downloads` 终于进得来。A3 的 Win32 扫描器扫 31845 条只要 **459–502 ms**
+> （旧 `QDir` 递归扫 20000 条要 976–1047 ms，每文件约 3 倍快），硬上限由 `fileIndex.hardLimitEntries` 配置。
+> ⚠️ 但**打分算法本身慢得离谱**：真机 31845 条单遍全表扫描 **326 ms**、合成 20 万条 **13.2 s** ——
 > 架构文档里"现状 2 万条 5–15 ms"的估计**低了 20 倍以上**（`FuzzyMatcher::score()` 每次调用两次 `toLower()` + 词边界分支的 `t.mid(i)` 分配）。
 > 这是 **A4 baseline 要解决的第一件事**。
 
@@ -120,7 +124,10 @@ Phase 3 剩余（收尾中，写在这里便于续接）：
 | FileSearcher | `include/core/FileSearcher.h`, `src/core/FileSearcher.cpp` | 自控前序 DFS（`walkDir`，不跟随 junction、目录级剪枝）+ FuzzyMatcher 打分 top-N, 索引上限 2 万。**A2 起是 `engine=legacy` 的退路**，A7 删除 |
 | FileSnapshot | `include/core/FileSnapshot.h` | 不可变只读快照（`Builder` 写入 → `nameAt/lowerAt/pathAt/sizeAt/mtimeAt` 读出）；物理表示藏在这层之后，查询层不摸容器 |
 | SnapshotManager | `include/core/SnapshotManager.h`, `src/core/SnapshotManager.cpp` | 快照的 COW 发布（`std::atomic<std::shared_ptr<const T>>`）；读侧取一份即用，无需加锁 |
-| FileIndex | `include/core/FileIndex.h`, `src/core/FileIndex.cpp` | 文件索引**门面**（薄）：`startAsync` 后台扫描 + `query` + `stats`；`engine=v2` 时经 AppBridge 提供文件结果 |
+| FileIndex | `include/core/FileIndex.h`, `src/core/FileIndex.cpp` | 文件索引**门面**（薄）：`startAsync` 后台扫描 + `query` + `stats`；`engine=v2` 时经 AppBridge 提供文件结果。扫描/写库都在 worker 线程（`QSqlDatabase` 线程亲和） |
+| FileScanner | `include/core/FileScanner.h`, `src/core/FileScanner.cpp` | 采集层：Win32 **句柄栈 DFS**（`FindFirstFileExW` + `FindExInfoBasic` + `LARGE_FETCH`）；目录级剪枝、不跟随 reparse point、长路径 `\\?\`、权限拒绝计数、可取消。剪枝名单只有这一份 |
+| FileIndexDatabase | `include/database/FileIndexDatabase.h`, `src/database/FileIndexDatabase.cpp` | `file_index.db`（独立连接 `file_index`）：dirs/files/roots 三表、三方差集、UPSERT 批量事务。**派生数据**，可删库重扫 |
+| DatabaseMigrator | `include/database/DatabaseMigrator.h`, `src/database/DatabaseMigrator.cpp` | `PRAGMA user_version` **前向**迁移，每步一事务；高版本库拒绝；禁止 DROP+重建 |
 | Calculator | `include/core/Calculator.h`, `src/core/Calculator.cpp` | 递归下降解析器, PEMDAS + 一元正负号 + 括号 |
 | TrayManager | `include/ui/TrayManager.h`, `src/ui/TrayManager.cpp` | 系统托盘图标 + 右键菜单 |
 | HotkeyManager | `include/core/HotkeyManager.h`, `src/core/HotkeyManager.cpp` | Windows RegisterHotKey 全局热键（可重注册） |
