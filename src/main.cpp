@@ -17,6 +17,7 @@
 #include "core/HotkeyManager.h"
 #include "ui/AppBridge.h"
 #include "ui/PanelBridge.h"
+#include "ui/SyncBridge.h"
 
 // CMake 通过 target_compile_definitions 注入（project VERSION）
 #ifndef APP_VERSION
@@ -26,7 +27,15 @@
 int main(int argc, char *argv[])
 {
     // Required by QStandardPaths::AppConfigLocation (used by ConfigManager)
+    // --instance <名字>：同机跑第二个实例时用。配置/数据库/日志目录随应用名分开，
+    // 于是两台"设备"能在只有一台电脑的场合互相同步（答辩演示常用）。
     QApplication::setApplicationName("Assistant");
+    for (int i = 1; i + 1 < argc; ++i) {
+        if (qstrcmp(argv[i], "--instance") == 0) {
+            QApplication::setApplicationName(QStringLiteral("Assistant-")
+                                             + QString::fromLocal8Bit(argv[i + 1]));
+        }
+    }
     QApplication::setOrganizationName("AssistantTeam");
     QApplication::setApplicationVersion(QStringLiteral(APP_VERSION));
 
@@ -64,6 +73,13 @@ int main(int argc, char *argv[])
     AppBridge    backend;
     backend.setHistoryDatabase(&historyDb);
 
+    // ---- 设备同步（联网功能）----
+    // 桥独立于 PanelBridge，避免把主面板桥变成上帝对象；
+    // 具体通道与工作线程都在 SyncBridge 内部按需创建。
+    SyncBridge syncBridge;
+    syncBridge.setConfigManager(&config);
+    syncBridge.init(dbDir + "/sync.db");
+
     // ---- app indexer (Step 5): register launchable Start Menu apps ----
     for (const AppIndexer::Entry &app : AppIndexer::scan())
         backend.addApp(app.name, app.path);
@@ -72,6 +88,15 @@ int main(int argc, char *argv[])
     FileSearcher::buildIndex();
 
     TrayManager   tray;
+
+    // 对端投递的文件收进收件箱后弹一条托盘通知
+    QObject::connect(&syncBridge, &SyncBridge::filesReceived,
+                     &tray, [&tray](int count, const QString &inboxDir) {
+        if (count <= 0)
+            return;
+        tray.notify(QStringLiteral("收到 %1 个文件").arg(count),
+                    QStringLiteral("收件箱：") + inboxDir);
+    });
     HotkeyManager hotkey;
 
     // 设置页改热键需要（先注册失败要能回滚，见 PanelBridge::applyHotkey）
@@ -136,6 +161,7 @@ int main(int argc, char *argv[])
     QQmlApplicationEngine panelEngine;
     panelEngine.rootContext()->setContextProperty("config", &config);
     panelEngine.rootContext()->setContextProperty("panel", &panel);
+    panelEngine.rootContext()->setContextProperty("sync", &syncBridge);
     panelEngine.rootContext()->setContextProperty("appVersion", QCoreApplication::applicationVersion());
     panelEngine.load(QUrl(QStringLiteral("qrc:/qml/MainPanel.qml")));
 
@@ -143,15 +169,18 @@ int main(int argc, char *argv[])
     if (!panelEngine.rootObjects().isEmpty())
         panelWindow = qobject_cast<QWindow *>(panelEngine.rootObjects().first());
 
-    // 🏠 按钮 → 显示主面板 + 隐藏搜索浮窗
-    QObject::connect(&backend, &AppBridge::mainPanelRequested, [&]() {
+    // 🏠 按钮 / 托盘「主面板」 → 显示主面板 + 隐藏搜索浮窗
+    // （第二个实例抢不到全局热键，托盘菜单是它打开主面板的唯一入口）
+    auto showMainPanel = [&]() {
         if (panelWindow) {
             panelWindow->show();
             panelWindow->raise();
             panelWindow->requestActivate();
         }
         backend.hideWindow();
-    });
+    };
+    QObject::connect(&backend, &AppBridge::mainPanelRequested, &app, showMainPanel);
+    QObject::connect(&tray, &TrayManager::mainPanelRequested, &app, showMainPanel);
 
     tray.init();
 

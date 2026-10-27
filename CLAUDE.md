@@ -8,9 +8,9 @@ Windows 桌面助手软件，C++20 + Qt6 Quick (QML) + CMake + vcpkg。学习项
 
 | 领域 | 选型 |
 |------|------|
-| 编译器 | VS2022 MSVC (`-G "Visual Studio 17 2022" -A x64`) |
-| 构建 | CMake 3.20+, `CMAKE_CXX_STANDARD 20` |
-| 包管理 | vcpkg (`C:\vcpkg`, `x64-windows` triplet) |
+| 编译器 | MSVC。生成器名随 VS 版本变：**本机实测可用 `Visual Studio 18 2026`**，装了 VS2022 的机器用 `Visual Studio 17 2022` |
+| 构建 | CMake 3.20+, `CMAKE_CXX_STANDARD 20`。**本机 PATH 里没有 cmake**，用 `D:\vcpkg\downloads\tools\cmake-4.4.3-windows-x86_64\bin\cmake.exe` |
+| 包管理 | vcpkg（**本机装在 `D:\vcpkg`**，`x64-windows` triplet） |
 | GUI | Qt 6 Quick (QML) + QuickControls2 |
 | JSON | nlohmann_json (vcpkg) |
 | 日志 | spdlog (vcpkg, `SPDLOG_FMT_EXTERNAL`) |
@@ -19,12 +19,34 @@ Windows 桌面助手软件，C++20 + Qt6 Quick (QML) + CMake + vcpkg。学习项
 
 ## 编译命令
 
+本机没有 vcpkg 的 `C:\vcpkg`，也没有 PATH 里的 cmake，所以实际命令是：
+
 ```powershell
-cmake -B build -S . -G "Visual Studio 17 2022" -A x64 -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-windows
-cmake --build build --config Debug
+$cmake = "D:\vcpkg\downloads\tools\cmake-4.4.3-windows-x86_64\bin\cmake.exe"
+& $cmake -B build -S . -G "Visual Studio 18 2026" -A x64 `
+    -DCMAKE_TOOLCHAIN_FILE=D:/vcpkg/scripts/buildsystems/vcpkg.cmake `
+    -DVCPKG_TARGET_TRIPLET=x64-windows
+& $cmake --build build --config Debug
 ```
 
+装了 VS2022 与 `C:\vcpkg` 的机器按老写法（`Visual Studio 17 2022` / `C:/vcpkg`）即可，两者是可替代的。
+
 新增/删除源文件后必须重新 configure，因为用了 `file(GLOB_RECURSE)`。
+
+> `CMakeLists.txt` 里 qt.conf 与 run.bat 的 Qt 前缀已改成 `${VCPKG_INSTALLED_DIR}/x64-windows[/debug]`，
+> **不再硬编码 vcpkg 路径**；缺失 `VCPKG_INSTALLED_DIR` 会直接 FATAL_ERROR 提示带 toolchain 配置。
+> Debug/Release 都能用，构建 Release 时 qt.conf 自动指向非 debug 目录。
+
+## 测试
+
+```powershell
+.\build\Debug\assistant_tests.exe                 # 全部用例
+.\build\Debug\assistant_tests.exe -o result.txt,txt   # 输出到文件（终端中文会乱码）
+```
+
+用 **QTest**（`Qt6::Test`），不是 GTest。新增测试文件要重新 configure。
+
+> 编译前先 `Stop-Process Assistant -Force`：exe 正在运行会报 `LNK1168: 无法打开 Assistant.exe 进行写入`。
 
 > **环境注意（本机 sandbox）**：编译必须用 `danger-full-access`。受限模式下 CMake/AUTOMOC 调 `moc.exe` 子进程会被拦（`libuv process spawn failed: operation not permitted`），`workspace-write` 不够。
 
@@ -71,14 +93,44 @@ Phase 3 剩余（收尾中，写在这里便于续接）：
 - [ ] `v0.3.0` 里程碑：**真机手动走查四页交互**（版本号 bump 已完成 → `0.3.0`，QML 显示走 `appVersion`）
 - [ ] （可选，GUIDE 3.5）崩溃报告 Crashpad
 
+**设备同步（联网功能）· 已打通第一条完整链路**（`docs/architecture/设备同步功能-设计文档.md`）：
+- [x] 引擎 + 共享目录通道 + `sync.db` + `PathGuard` + 冲突副本（2026-10-15，独立 feature 分支）
+- [x] 主面板第五页「设备同步」+ `SyncBridge`（工作线程跑引擎，独立 DB 连接）
+- [x] **43 个 QTest 用例全绿** —— 本项目第一套自动化测试（此前零测试）
+- [x] 界面端到端实测：首次同步上传 1 → 再同步 0 → 改文件后再传 1 → 再同步 0
+- [x] 自动同步定时器真机验证：间隔 1 分钟，两实例自动跑出 `上传=1/下载=1`，第二轮 `0/0`
+- [x] 单机演示双设备：`Assistant.exe --instance B` 分数据目录（否则两进程共用同一 config，
+      压根不是"两台设备"）；全局热键独占，第二个实例靠**托盘菜单新增的「主面板」**才能进同步页
+- [x] 设计文档 §4.5 已按实现改成单一 `.sync/manifest.json`（含偏差理由与代价）
+- [x] **多本地文件夹**（2026-10-22，FR2）：`SyncRoot{localPath, alias}`，共享目录里按
+      `<别名>/<相对路径>` 落盘，下载时剥掉别名。**两台机器对同一逻辑文件夹必须用同一别名**，
+      否则各占一棵子树、永远碰不上。本机未参与的子目录静默略过、不计入失败。
+- [x] `sync.db` 安全阀：共享目录被清空时会一直跳过（防误删本地文件）—— 补救办法是删
+      `%LOCALAPPDATA%\AssistantTeam\Assistant\sync.db`。同步结果现在也落日志（原来只有界面一行状态）
+- [x] **快捷同步与投递区**（2026-10-27）：拖拽文件到同步页 → 落到共享目录 `_投递/` →
+      对端每 3 秒轮询领取到收件箱 + 托盘通知；文件变化即同步（watcher + 2 秒去抖 + 定时兜底）；
+      同步锁 `.sync/lock.json` 串行化多实例写清单；共享目录支持 UNC + 「检查共享」按钮；
+      设计见 `docs/architecture/快捷同步与投递区-设计文档.md`。**51 个 QTest 全绿**，
+      QML 冒烟无错误；真机双实例拖拽 / UNC 走查待做
+- [ ] 冲突列表 UI 没有真机点过（引擎侧与冲突副本文件均已实测）
+- [ ] `SyncPage.qml` 多文件夹版界面没有真机点过（QML 无警告，仅代码审查）
+- [ ] 直连通道（`LanTransport` + 帧协议）—— 设计文档里的**加分项，没写**
+
+> 核心决策：**把"搬运"外包给网盘**（OneDrive / 坚果云 / Syncthing），程序只做三方差集判断
+> （本地现状 / 上次基线 / 对端清单 → 唯一动作）。**新增第三方依赖 0**（Qt6Network 早已链接）。
+> 异地直连要 NAT 穿透 + 中继服务器，成本和运维不可控，所以不做。
+
 **v0.4.0 文件子系统 Phase A**（`docs/architecture/v0.4-实施清单.md`）：
 - [x] **A1 止血**（2026-09-24，独立 patch）：P0-1 不跟随 junction（`NoSymLinks` 实测无效 → 自控递归 + `isJunction()`）、
       P0-2 目录级剪枝、P1-5 历史写入挪到执行路径、P1-6 QML 防抖 + IME 拦截；三条验收全过。
       详见 `docs/devlog/2026-09-24.md`
 - [ ] A2 结构（门面 + COW 快照 + 后台扫描）… A8 拼音首字母
 
-> ⚠️ 本机实测：Desktop 3.5 万文件撞 20000 上限，索引**全是 Desktop 的**，`Documents`/`Downloads` 一个文件都搜不到。
-> 属 P0-3，实施清单原计划留给 A3 —— **实际优先级应提前**。
+> **P0-3 的"本机撞上限"结论已撤回**（2026-10-15）。2026-09-24 记的 "Desktop 3.5 万文件吃满 20000 上限、
+> Documents/Downloads 一个都搜不到" **在本机不复现**：35607 是 A1 之前 junction 循环灌出的虚高值
+> （实测曾有 126 条 63 层 `loop/loop/…/real/`）。A1 剪枝后索引为 **9349**，六个根目录
+> （Desktop/Documents/Downloads/Pictures/Music/Movies）全部走完，日志里没有 `index capped at 20000`。
+> 2 万上限本身仍是待解决的设计问题（按遍历顺序任意截断），但**别拿修复前的 devlog 数据当当前事实**。
 
 > 已知限制：热键捕获时，**当前已注册的全局热键**（如 Alt+Space）会被系统先消费，QML 收不到该按键。
 > 想重新绑定成同一个组合键无效，绑定成别的组合键正常。
@@ -115,9 +167,18 @@ Phase 3 剩余（收尾中，写在这里便于续接）：
 | TodoDatabase | `include/database/TodoDatabase.h`, `src/database/TodoDatabase.cpp` | SQLite 待办（独立连接 `todo`，`todo.db`） |
 | NotesDatabase | `include/database/NotesDatabase.h`, `src/database/NotesDatabase.cpp` | SQLite 笔记（独立连接 `notes`，`notes.db`） |
 | ClipboardDatabase | `include/database/ClipboardDatabase.h`, `src/database/ClipboardDatabase.cpp` | SQLite 剪贴板历史（独立连接 `clipboard`，`clipboard.db`，同内容去重） |
+| SyncBridge | `include/ui/SyncBridge.h`, `src/ui/SyncBridge.cpp` | 设备同步主面板桥（Q_PROPERTY + Q_INVOKABLE + 工作线程跑引擎） |
+| SyncEngine | `include/core/sync/SyncEngine.h`, `src/core/sync/SyncEngine.cpp` | 三方差集同步引擎（本地现状 / 上次基线 / 对端清单 → 唯一动作） |
+| ITransport | `include/core/sync/ITransport.h` | 传输通道接口（`probe`/`listRemote`/`fetch`/`push`/`removeRemote`） |
+| FolderTransport | `include/core/sync/FolderTransport.h`, `src/core/sync/FolderTransport.cpp` | 共享目录通道（异地靠网盘搬运，**新增依赖 0**） |
+| ConflictResolver | `include/core/sync/ConflictResolver.h`, `src/core/sync/ConflictResolver.cpp` | `decide(L,S,R)` 纯函数判定表 + 冲突副本命名 |
+| PathGuard | `include/core/sync/PathGuard.h`, `src/core/sync/PathGuard.cpp` | 相对路径安全校验 + junction 解引用后复核前缀 |
+| SyncDatabase | `include/database/SyncDatabase.h`, `src/database/SyncDatabase.cpp` | SQLite 同步状态（独立连接 `sync`，`sync.db`：devices / sync_state / conflicts / received） |
+| assistant_tests | `tests/test_sync.cpp` | QTest 单元测试（51 用例，含真文件系统端到端、同步锁与投递区） |
 
 > **DB 约定**：每个功能一个独立 DB 文件 + 独立 `QSqlDatabase` 连接名（见 `ClipboardDatabase`），不要共用一个连接。
-> **QML 约定**：搜索浮窗走 `AppBridge`，主面板走 `PanelBridge`，两个窗口各管自己的桥。
+> **QML 约定**：搜索浮窗走 `AppBridge`，主面板走 `PanelBridge`；同步页走 `SyncBridge`（第三个桥，注入面板引擎）。
+> **测试约定**：QTest（`Qt6::Test`），不是 GTest。`tests/*.cpp` 里要 `#include "<名字>.moc"` 让 AUTOMOC 处理 `Q_OBJECT`。
 
 ## Git 规范
 
@@ -137,7 +198,7 @@ Phase 3 剩余（收尾中，写在这里便于续接）：
 ## 文档结构
 
 - `GUIDE.md` — 完整开发流程指南（长期维护）
-- `docs/architecture/` — 架构设计（**文件检索重构方案 / 文件治理功能设计 / v0.4-实施清单**）
+- `docs/architecture/` — 架构设计（**文件检索重构方案 / 文件治理功能设计 / v0.4-实施清单 / 设备同步功能-设计文档**）
 - `docs/devlog/` — 开发日志（按日期）
 - `docs/features/` — 功能设计 idea
 - `docs/learning/` — 学习笔记

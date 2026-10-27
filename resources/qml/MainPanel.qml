@@ -29,8 +29,11 @@ ApplicationWindow {
     property var navItems: [
         { "icon": "✓",  "label": "待办事项" },
         { "icon": "📝", "label": "记事本" },
-        { "icon": "📋", "label": "剪贴板" }
+        { "icon": "📋", "label": "剪贴板" },
+        { "icon": "🔄", "label": "设备同步" }
     ]
+    // 设置页在 StackLayout 里的下标（= 导航项数量）
+    readonly property int settingsIndex: navItems.length
 
     // 点 X 只隐藏，不销毁（主面板常驻，下次 🏠 重新 show）
     onClosing: function(close) {
@@ -69,7 +72,7 @@ ApplicationWindow {
                         Layout.fillHeight: true
                         clip: true
                         model: panelWindow.navItems
-                        currentIndex: panelWindow.selectedIndex < 3
+                        currentIndex: panelWindow.selectedIndex < panelWindow.navItems.length
                                       ? panelWindow.selectedIndex : -1
                         spacing: 4
 
@@ -121,7 +124,7 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         Layout.preferredHeight: 40
                         radius: 6
-                        color: panelWindow.selectedIndex === 3
+                        color: panelWindow.selectedIndex === panelWindow.settingsIndex
                                ? accentColor : "transparent"
 
                         RowLayout {
@@ -133,7 +136,7 @@ ApplicationWindow {
                             Text { text: "⚙"; font.pixelSize: 14 }
                             Text {
                                 text: "设置"
-                                color: panelWindow.selectedIndex === 3
+                                color: panelWindow.selectedIndex === panelWindow.settingsIndex
                                        ? "white" : textColor
                                 font.pixelSize: 14
                             }
@@ -143,7 +146,7 @@ ApplicationWindow {
                             anchors.fill: parent
                             onClicked: {
                                 navList.currentIndex = -1
-                                panelWindow.selectedIndex = 3
+                                panelWindow.selectedIndex = panelWindow.settingsIndex
                             }
                         }
                     }
@@ -159,6 +162,7 @@ ApplicationWindow {
                 TodoPage {}
                 NotesPage {}
                 ClipboardPage {}
+                SyncPage {}
                 SettingsPage {}
             }
         }

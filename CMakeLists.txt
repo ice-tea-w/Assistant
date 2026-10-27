@@ -12,7 +12,7 @@ endif()
 
 # ---- 查找 Qt6（QML 方案） ----
 find_package(Qt6 REQUIRED COMPONENTS
-    Core Quick QuickControls2 Network Widgets Sql
+    Core Quick QuickControls2 Network Widgets Sql Test
 )
 
 # ---- 查找其他依赖 ----
@@ -111,13 +111,38 @@ add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
 # )
 # install(SCRIPT ${deploy_script})
 
-# ---- 测试（Phase 1 暂时禁用，编写测试时取消注释） ----
-# enable_testing()
-# add_executable(assistant_tests
-#     tests/test_main.cpp
-# )
-# target_link_libraries(assistant_tests PRIVATE
-#     GTest::gtest_main
-# )
-# include(GoogleTest)
-# gtest_discover_tests(assistant_tests)
+# ---- 测试（QTest；用 vcpkg 已装的 Qt6Test，不引入 GTest） ----
+# 只编被测的纯逻辑与存储层，不编 UI/main：
+# SyncEngine/SyncBridge 依赖线程与 QML，留给集成测试（单机双实例手工走查）。
+enable_testing()
+
+add_executable(assistant_tests
+    tests/test_sync.cpp
+    # Q_OBJECT 头必须列进目标源，否则 AUTOMOC 不会为它生成 moc
+    include/core/sync/SyncEngine.h
+    include/core/ConfigManager.h
+    src/core/Logger.cpp
+    src/core/sync/ConflictResolver.cpp
+    src/core/sync/PathGuard.cpp
+    src/core/sync/FolderTransport.cpp
+    src/core/sync/SyncEngine.cpp
+    src/core/sync/DeliveryNaming.cpp
+    src/database/SyncDatabase.cpp
+    # 配置层往返也要测（同步根列表靠它持久化）
+    src/core/ConfigManager.cpp
+    src/core/AutoStart.cpp
+)
+
+target_include_directories(assistant_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+)
+
+target_link_libraries(assistant_tests PRIVATE
+    Qt6::Core
+    Qt6::Sql
+    Qt6::Test
+    spdlog::spdlog
+    nlohmann_json::nlohmann_json
+)
+
+add_test(NAME sync_unit COMMAND assistant_tests)
