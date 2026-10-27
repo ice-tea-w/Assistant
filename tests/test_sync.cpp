@@ -84,6 +84,7 @@ private slots:
     void folderTransportFetchMissing();
     void folderTransportLockHeld();
     void folderTransportLockTakeover();
+    void folderTransportRemoteAliases();
 
     void engineTwoDevicesSequential();
     void engineTwoRootsNoCollision();
@@ -627,6 +628,29 @@ void TestSync::folderTransportLockTakeover()
     QVERIFY(QFile::exists(lock));
     t.unlock();
     QVERIFY(!QFile::exists(lock));
+}
+
+void TestSync::folderTransportRemoteAliases()
+{
+    QTemporaryDir local, shared;
+    QVERIFY(local.isValid() && shared.isValid());
+
+    const QString src = local.path() + "/a.txt";
+    writeFile(src, "x");
+
+    FolderTransport t(shared.path());
+    QVERIFY(t.probe());
+    QVERIFY(t.remoteAliases().isEmpty());   // 没有清单时推断不出别名
+
+    QVERIFY(t.push(src, "share/a.txt"));
+    QVERIFY(t.push(src, "照片/b.jpg"));
+    QVERIFY(t.push(src, "share/c.txt"));
+
+    // 取 relPath 第一段，去重并按字典序；同一别名出现多次只算一个
+    const QStringList aliases = t.remoteAliases();
+    QCOMPARE(aliases.size(), 2);
+    QCOMPARE(aliases.at(0), QStringLiteral("share"));
+    QCOMPARE(aliases.at(1), QStringLiteral("照片"));
 }
 
 // ---------------------------------------------------------------- 投递区

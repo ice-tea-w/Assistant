@@ -44,6 +44,9 @@ public:
     /// 清单的 updatedAt（Unix 秒；无清单时为 0）
     qint64  manifestUpdatedAt() const;
 
+    /// 从清单里推断对端用过的别名（relPath 的第一段），按字典序去重
+    QStringList remoteAliases() const override;
+
 private:
     QString metaDir() const;        // <sharedDir>/.sync
     QString manifestPath() const;   // <sharedDir>/.sync/manifest.json

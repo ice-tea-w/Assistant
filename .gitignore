@@ -59,3 +59,10 @@ vcpkg-manifest-install/
 Thumbs.db
 .DS_Store
 Desktop.ini
+
+# 汇报材料草稿（生成物与二进制，不入库）
+docs/slides/_drafts/
+docs/slides/make_deck_sync*.py
+docs/slides/check_deck_*.py
+docs/slides/设备同步模块-开题汇报.pdf
+docs/slides/设备同步模块-开题汇报.pptx

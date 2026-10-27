@@ -365,4 +365,20 @@ qint64 FolderTransport::manifestUpdatedAt() const
     return m_manifestUpdatedAt;
 }
 
+QStringList FolderTransport::remoteAliases() const
+{
+    QStringList out;
+    const auto files = readManifest();
+    for (auto it = files.constBegin(); it != files.constEnd(); ++it) {
+        const int slash = it.key().indexOf(QLatin1Char('/'));
+        if (slash <= 0)
+            continue;
+        const QString alias = it.key().left(slash);
+        if (!out.contains(alias))
+            out.append(alias);
+    }
+    out.sort();
+    return out;
+}
+
 } // namespace Sync

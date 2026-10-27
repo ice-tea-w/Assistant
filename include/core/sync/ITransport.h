@@ -2,6 +2,7 @@
 
 #include <QList>
 #include <QString>
+#include <QStringList>
 
 namespace Sync {
 
@@ -51,6 +52,10 @@ public:
     /// 成功后必须成对调用 unlock()。
     virtual bool tryLock(int waitMs = 0) { (void)waitMs; return true; }
     virtual void unlock() {}
+
+    /// 从对端清单推断出的别名集合（relPath 的第一段），供界面提示"两边别名要一致"。
+    /// 默认实现表示该通道不支持推断。
+    virtual QStringList remoteAliases() const { return {}; }
 };
 
 } // namespace Sync

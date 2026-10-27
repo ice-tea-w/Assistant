@@ -4,13 +4,17 @@
 #include "core/sync/FolderTransport.h"
 #include "core/Logger.h"
 
+#include <QClipboard>
 #include <QCryptographicHash>
 #include <QDateTime>
 #include <QDesktopServices>
 #include <QDir>
 #include <QFileInfo>
 #include <QFileSystemWatcher>
+#include <QGuiApplication>
 #include <QLocale>
+#include <QNetworkAddressEntry>
+#include <QNetworkInterface>
 #include <QSet>
 #include <QStandardPaths>
 #include <QSysInfo>
@@ -180,6 +184,32 @@ QString SyncBridge::toLocalPath(const QString &urlOrPath) const
     if (s.startsWith(QStringLiteral("file:"), Qt::CaseInsensitive))
         return QDir::toNativeSeparators(QUrl(s).toLocalFile());
     return s;
+}
+
+QString SyncBridge::localIpv4() const
+{
+    const auto interfaces = QNetworkInterface::allInterfaces();
+    for (const QNetworkInterface &iface : interfaces) {
+        const auto flags = iface.flags();
+        if (!(flags & QNetworkInterface::IsUp) || !(flags & QNetworkInterface::IsRunning)
+            || (flags & QNetworkInterface::IsLoopBack))
+            continue;
+        const auto entries = iface.addressEntries();
+        for (const QNetworkAddressEntry &entry : entries) {
+            const QHostAddress addr = entry.ip();
+            if (addr.protocol() != QAbstractSocket::IPv4Protocol)
+                continue;
+            if (addr.isLoopback() || addr.isLinkLocal())
+                continue;
+            return addr.toString();
+        }
+    }
+    return QString();
+}
+
+void SyncBridge::copyToClipboard(const QString &text)
+{
+    QGuiApplication::clipboard()->setText(text);
 }
 
 void SyncBridge::setSharedDir(const QString &path)
@@ -670,6 +700,10 @@ QVariantMap SyncBridge::checkShared()
     out.insert(QStringLiteral("hasManifest"), hasManifest);
     out.insert(QStringLiteral("device"), device);
     out.insert(QStringLiteral("fileCount"), count);
+    QVariantList aliasList;
+    for (const QString &a : t.remoteAliases())
+        aliasList.append(a);
+    out.insert(QStringLiteral("aliases"), aliasList);
     out.insert(QStringLiteral("updatedAt"),
                updated > 0 ? QDateTime::fromSecsSinceEpoch(updated)
                                  .toString(QStringLiteral("MM-dd HH:mm"))

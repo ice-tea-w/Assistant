@@ -78,6 +78,10 @@ public:
     Q_INVOKABLE void setSharedDir(const QString &path);
     /// 把 file:// URL 转成本地/UNC 路径（带 file: 前缀才转，普通路径原样返回）
     Q_INVOKABLE QString toLocalPath(const QString &urlOrPath) const;
+    /// 本机非回环 IPv4 地址（没有可用网络时返回空串）
+    Q_INVOKABLE QString localIpv4() const;
+    /// 复制文本到系统剪贴板
+    Q_INVOKABLE void copyToClipboard(const QString &text);
     /// 把文件投递到共享目录的 _投递/ 下。路径可为本地路径或 file:// URL
     Q_INVOKABLE void sendFiles(const QStringList &paths);
     /// 检查共享目录：ok / hasManifest / device / updatedAt / fileCount / message

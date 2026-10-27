@@ -4,6 +4,7 @@
 #include <QQmlContext>
 #include <QStandardPaths>
 #include <QDir>
+#include <QTimer>
 
 #include "core/Logger.h"
 #include "core/ConfigManager.h"
@@ -181,6 +182,10 @@ int main(int argc, char *argv[])
     };
     QObject::connect(&backend, &AppBridge::mainPanelRequested, &app, showMainPanel);
     QObject::connect(&tray, &TrayManager::mainPanelRequested, &app, showMainPanel);
+
+    // 调试开关：带 --show-panel 启动时立即弹主面板（界面检查/截图用）
+    if (qApp->arguments().contains(QStringLiteral("--show-panel")))
+        QTimer::singleShot(400, &app, showMainPanel);
 
     tray.init();
 
