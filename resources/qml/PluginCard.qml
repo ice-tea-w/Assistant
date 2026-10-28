@@ -26,6 +26,8 @@ Rectangle {
     property string problem: ""
     property int    percent: 0
     property bool   pluginEnabled: true
+    /// 内置示例数据：下载地址是占位符，安装功能还没接上真实市场。
+    property bool   demo: false
 
     signal installClicked()
     signal cancelClicked()
@@ -148,26 +150,31 @@ Rectangle {
             Layout.preferredHeight: 32
 
             // 未安装
+            // demo（内置示例数据）时按钮置灰、文案改成"未接入"，
+            // 让人一眼看出"这里还没做完"，而不是点下去等一句网络错误。
             Rectangle {
                 visible: card.state === "not-installed" || card.isIncompatible
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
-                width: 56; height: 24; radius: Style.radiusSmall
-                color: card.isIncompatible
-                       ? (Style.isDark ? "#2a2a2a" : "#ececec")
+                width: card.demo ? 62 : 56
+                height: 24; radius: Style.radiusSmall
+                color: (card.isIncompatible || card.demo)
+                       ? (Style.isDark ? "#2f2f2f" : "#ececec")
                        : Style.accentColor
+                border.width: card.demo ? 1 : 0
+                border.color: Style.borderColor
 
                 Text {
                     anchors.centerIn: parent
-                    text: "安装"
-                    color: card.isIncompatible ? card.mutedColor
-                                               : Style.accentTextColor
+                    text: card.demo ? "未接入" : "安装"
+                    color: (card.isIncompatible || card.demo) ? card.mutedColor
+                                                              : Style.accentTextColor
                     font.pixelSize: 11
                 }
 
                 MouseArea {
                     anchors.fill: parent
-                    enabled: !card.isIncompatible
+                    enabled: !card.isIncompatible && !card.demo
                     cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
                     onClicked: card.installClicked()
                 }

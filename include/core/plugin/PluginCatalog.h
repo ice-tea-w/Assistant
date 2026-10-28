@@ -69,6 +69,12 @@ public:
 
     QList<MarketEntry> entries() const { return m_entries; }
     bool      isOffline() const { return m_offline; }
+
+    /// True when the catalog serves the bundled **sample** index because no market
+    /// URL is configured. Those entries are display-only placeholders: their
+    /// download URLs point at example.com. The UI must say "not wired up yet"
+    /// rather than offering an install button that fails with a network error.
+    bool isSeedData() const { return m_marketUrl.isEmpty(); }
     QDateTime fetchedAt() const { return m_fetchedAt; }
 
     /// Human-readable "when is this from", for the offline banner. Empty when the

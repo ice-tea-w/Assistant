@@ -92,6 +92,7 @@ Rectangle {
                        summary: it.summary, icon: it.icon,
                        state: it.state, badge: it.badge, badgeKind: it.badgeKind,
                        problem: it.problem, percent: it.percent || 0,
+                       demo: it.demo === true,
                        pluginEnabled: it.enabled !== false })
         }
         for (var j = 0; j < availableRows.length; ++j) {
@@ -103,12 +104,21 @@ Rectangle {
                        summary: av.summary, icon: av.icon,
                        state: av.state, badge: av.badge, badgeKind: av.badgeKind,
                        problem: av.problem, percent: av.percent || 0,
+                       demo: av.demo === true,
                        pluginEnabled: av.enabled !== false })
         }
         return out
     }
 
     readonly property bool loading: api ? (api.loading === true) : false
+
+    /// 可安装组里是否有内置示例数据（决定分组标题要不要加说明）
+    readonly property bool marketIsDemo: {
+        var list = availableRows
+        for (var i = 0; i < list.length; ++i)
+            if (list[i].demo === true) return true
+        return false
+    }
     readonly property bool isEmpty: !loading && rows.length === 0 && filterText === ""
 
     function findRow(id) {
@@ -307,13 +317,26 @@ Rectangle {
                     width: ListView.view.width
                     height: 22
 
-                    Text {
+                    Row {
                         anchors.left: parent.left
                         anchors.bottom: parent.bottom
                         anchors.bottomMargin: 3
-                        text: section
-                        color: page.mutedColor
-                        font.pixelSize: 11
+                        spacing: 6
+
+                        Text {
+                            text: section
+                            color: page.mutedColor
+                            font.pixelSize: 11
+                        }
+
+                        // 示例数据必须说清楚，否则"未接入"三个字还是会被误读成 bug
+                        Text {
+                            text: "示例数据 · 安装功能尚未接入真实市场"
+                            color: page.mutedColor
+                            font.pixelSize: 11
+                            opacity: 0.75
+                            visible: section === "可安装" && page.marketIsDemo
+                        }
                     }
                 }
 
@@ -330,6 +353,7 @@ Rectangle {
                     badgeKind:     modelData.badgeKind
                     problem:       modelData.problem
                     percent:       modelData.percent
+                    demo:          modelData.demo
                     pluginEnabled: modelData.pluginEnabled
 
                     onInstallClicked: {

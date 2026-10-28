@@ -661,6 +661,10 @@ QVariantList PluginManager::availableRows() const
         row.insert(QStringLiteral("changelog"), entry.latest.changelog);
         row.insert(QStringLiteral("downloads"), static_cast<qlonglong>(entry.downloads));
 
+        // 内置示例数据标记：QML 据此把安装按钮置灰并说明原因，
+        // 而不是让用户点下去得到一句"连接被拒绝"。
+        row.insert(QStringLiteral("demo"), m_catalog->isSeedData());
+
         // State for a not-installed entry. "incompatible" is decided from the
         // index-side minAppVersion so we can grey the button without downloading.
         QString state = QStringLiteral("not-installed");
