@@ -1,0 +1,372 @@
+{
+  "generated": "2026-10-27T22:24:55+08:00",
+  "python": "3.12.10",
+  "platform": "win32",
+  "elapsed_seconds": 8.55,
+  "checks": [
+    {
+      "category": "A. 环境与入口",
+      "name": "Python / cryptography 版本",
+      "status": "PASS",
+      "ms": 2.5,
+      "detail": "Python 3.12.10 · cryptography 50.0.2 · python.exe"
+    },
+    {
+      "category": "A. 环境与入口",
+      "name": "包导入（直接 import 路径）",
+      "status": "PASS",
+      "ms": 39.3,
+      "detail": "file_guard 0.2.0，公开 API 可导入"
+    },
+    {
+      "category": "A. 环境与入口",
+      "name": "子进程 CLI 入口（--version）",
+      "status": "PASS",
+      "ms": 148.9,
+      "detail": "file_guard 0.2.0"
+    },
+    {
+      "category": "A. 环境与入口",
+      "name": "工程内演示文件可读",
+      "status": "PASS",
+      "ms": 0.1,
+      "detail": "合同.docx 37546 字节"
+    },
+    {
+      "category": "B. 文件加密容器",
+      "name": "init 初始化数据目录",
+      "status": "PASS",
+      "ms": 172.5,
+      "detail": "数据目录初始化完成：home"
+    },
+    {
+      "category": "B. 文件加密容器",
+      "name": "加密真实合同文件（子进程 CLI）",
+      "status": "PASS",
+      "ms": 174.5,
+      "detail": "37546 B → 37642 B，1 块，sha256 9cd0ddc11786…"
+    },
+    {
+      "category": "B. 文件加密容器",
+      "name": "容器头信息可读（无需密码）",
+      "status": "PASS",
+      "ms": 154.6,
+      "detail": "容器头：v1，迭代 1000，块 1048576 B"
+    },
+    {
+      "category": "B. 文件加密容器",
+      "name": "verify 校验明文一致性",
+      "status": "PASS",
+      "ms": 148.9,
+      "detail": "明文 SHA-256 一致：9cd0ddc11786dd59…"
+    },
+    {
+      "category": "B. 文件加密容器",
+      "name": "解密还原并逐字节比对",
+      "status": "PASS",
+      "ms": 177.9,
+      "detail": "逐字节一致"
+    },
+    {
+      "category": "B. 文件加密容器",
+      "name": "篡改 1 字节被 GCM 拒绝",
+      "status": "PASS",
+      "ms": 163.9,
+      "detail": "改 1 字节 → exit 3、无半截明文、无 .part 残留"
+    },
+    {
+      "category": "B. 文件加密容器",
+      "name": "错误密码被拒绝",
+      "status": "PASS",
+      "ms": 151.8,
+      "detail": "错误密码 → exit 3，不区分'密码错/被篡改'（不泄露提示）"
+    },
+    {
+      "category": "B. 文件加密容器",
+      "name": "目录批量加密（保留子目录结构）",
+      "status": "PASS",
+      "ms": 182.2,
+      "detail": "2 个同名文件按目录结构输出，未互相覆盖"
+    },
+    {
+      "category": "B. 文件加密容器",
+      "name": "passwd 改密码（不落地明文）",
+      "status": "PASS",
+      "ms": 459.4,
+      "detail": "新密码 verify 通过（sha256 一致），旧密码 exit 3"
+    },
+    {
+      "category": "B. 文件加密容器",
+      "name": "密钥文件模式（模式二）",
+      "status": "PASS",
+      "ms": 660.4,
+      "detail": "32 字节密钥文件模式往返一致"
+    },
+    {
+      "category": "C. 敏感文件检测",
+      "name": "真实合同扫描 + 样本打码",
+      "status": "PASS",
+      "ms": 192.3,
+      "detail": "命中 ['classified', 'contract', 'email', 'phone']，样本已打码，分值 41"
+    },
+    {
+      "category": "C. 敏感文件检测",
+      "name": "报告打码（不含完整证件号/手机号）",
+      "status": "PASS",
+      "ms": 164.4,
+      "detail": "身份证/手机号在报告中均为打码样本"
+    },
+    {
+      "category": "C. 敏感文件检测",
+      "name": "超大文件跳过正文（不撑爆内存）",
+      "status": "PASS",
+      "ms": 164.2,
+      "detail": "超限文件跳过正文、仅按文件名提示"
+    },
+    {
+      "category": "C. 敏感文件检测",
+      "name": "目录联结隔离（不越出授权目录）",
+      "status": "PASS",
+      "ms": 19.2,
+      "detail": "目录联结被跳过，未越出授权目录"
+    },
+    {
+      "category": "C. 敏感文件检测",
+      "name": "Office zip 炸弹防护",
+      "status": "PASS",
+      "ms": 31.9,
+      "detail": "6MB 膨胀 XML 被上限跳过，进程无内存压力"
+    },
+    {
+      "category": "D. 操作审计日志",
+      "name": "日志写入且落盘为密文",
+      "status": "PASS",
+      "ms": 989.2,
+      "detail": "生成 6 条加密日志"
+    },
+    {
+      "category": "D. 操作审计日志",
+      "name": "哈希链校验通过",
+      "status": "PASS",
+      "ms": 155.7,
+      "detail": "6 条，链头 807bf1f2ccc1ce7e…"
+    },
+    {
+      "category": "D. 操作审计日志",
+      "name": "外部锚点（log head / expected-head）",
+      "status": "PASS",
+      "ms": 446.3,
+      "detail": "外部锚点一致时通过，锚点不符时 exit 5"
+    },
+    {
+      "category": "D. 操作审计日志",
+      "name": "改一行密文被检出",
+      "status": "PASS",
+      "ms": 306.3,
+      "detail": "检出：第 2 条哈希校验失败（内容被修改、删除或顺序被调整）…"
+    },
+    {
+      "category": "D. 操作审计日志",
+      "name": "测试后恢复日志目录",
+      "status": "PASS",
+      "ms": 1.7,
+      "detail": "已恢复原始日志，进入下一项"
+    },
+    {
+      "category": "D. 操作审计日志",
+      "name": "删一条日志被检出",
+      "status": "PASS",
+      "ms": 154.5,
+      "detail": "检出：序号不连续/哈希不匹配"
+    },
+    {
+      "category": "D. 操作审计日志",
+      "name": "再次恢复日志目录",
+      "status": "PASS",
+      "ms": 1.7,
+      "detail": "已恢复"
+    },
+    {
+      "category": "D. 操作审计日志",
+      "name": "错误密码不能写坏日志",
+      "status": "PASS",
+      "ms": 155.9,
+      "detail": "错误密码被拒绝（exit 1），日志字节未变"
+    },
+    {
+      "category": "D. 操作审计日志",
+      "name": "日志回滚被拒绝",
+      "status": "PASS",
+      "ms": 158.2,
+      "detail": "日志被截断后拒绝追加，提示疑似回滚"
+    },
+    {
+      "category": "E. 安全备份与恢复",
+      "name": "首次备份（v1）",
+      "status": "PASS",
+      "ms": 177.9,
+      "detail": "v1 备份完成，sha256 9cd0ddc11786…"
+    },
+    {
+      "category": "E. 安全备份与恢复",
+      "name": "改内容生成 v2 + 增量去重",
+      "status": "PASS",
+      "ms": 338.9,
+      "detail": "v2 生成；内容未变时增量跳过"
+    },
+    {
+      "category": "E. 安全备份与恢复",
+      "name": "版本列表正确",
+      "status": "PASS",
+      "ms": 150.4,
+      "detail": "版本列表 [1, 2]"
+    },
+    {
+      "category": "E. 安全备份与恢复",
+      "name": "按版本回滚",
+      "status": "PASS",
+      "ms": 176.7,
+      "detail": "v1 恢复到 restore-v1.docx，SHA-256 一致"
+    },
+    {
+      "category": "E. 安全备份与恢复",
+      "name": "误删恢复",
+      "status": "PASS",
+      "ms": 169.0,
+      "detail": "误删恢复成功：合同.docx（v2）"
+    },
+    {
+      "category": "E. 安全备份与恢复",
+      "name": "备份完整性校验（--full 逐个解密）",
+      "status": "PASS",
+      "ms": 151.1,
+      "detail": "索引 2 条，对象 2 个全部可解密"
+    },
+    {
+      "category": "E. 安全备份与恢复",
+      "name": "对象名去标识化",
+      "status": "PASS",
+      "ms": 0.5,
+      "detail": "2 个对象，文件名是密钥化哈希（不泄露明文信息）"
+    },
+    {
+      "category": "E. 安全备份与恢复",
+      "name": "gc 清理无引用对象",
+      "status": "PASS",
+      "ms": 148.2,
+      "detail": "清理 0 个无引用对象，释放 0 B"
+    },
+    {
+      "category": "F. 本地 HTTP 服务",
+      "name": "服务启动 + token 生成",
+      "status": "PASS",
+      "ms": 707.3,
+      "detail": "监听 127.0.0.1:50504，token 已生成（43 字符）"
+    },
+    {
+      "category": "F. 本地 HTTP 服务",
+      "name": "健康检查 /health",
+      "status": "PASS",
+      "ms": 10.0,
+      "detail": "/health 200（无需 token）"
+    },
+    {
+      "category": "F. 本地 HTTP 服务",
+      "name": "RPC 鉴权",
+      "status": "PASS",
+      "ms": 15.6,
+      "detail": "无 token → 401；正确 token → 200"
+    },
+    {
+      "category": "F. 本地 HTTP 服务",
+      "name": "RPC 调用业务方法（scan）",
+      "status": "PASS",
+      "ms": 54.3,
+      "detail": "RPC scan 成功，中危 1 个"
+    },
+    {
+      "category": "F. 本地 HTTP 服务",
+      "name": "Host 校验（DNS rebinding）",
+      "status": "PASS",
+      "ms": 24.5,
+      "detail": "Host: evil.example.com → 403（挡 DNS rebinding）"
+    },
+    {
+      "category": "F. 本地 HTTP 服务",
+      "name": "Origin 校验（浏览器 CSRF）",
+      "status": "PASS",
+      "ms": 16.1,
+      "detail": "Origin: evil → 403（挡浏览器跨站调用）"
+    },
+    {
+      "category": "F. 本地 HTTP 服务",
+      "name": "参数校验（400 而非 500）",
+      "status": "PASS",
+      "ms": 31.0,
+      "detail": "畸形参数/未知方法 → 400（不是 500）"
+    },
+    {
+      "category": "F. 本地 HTTP 服务",
+      "name": "服务不监听非回环地址",
+      "status": "PASS",
+      "ms": 6.9,
+      "detail": "默认拒绝监听 0.0.0.0（需 --allow-remote 显式 opt-in）"
+    },
+    {
+      "category": "F. 本地 HTTP 服务",
+      "name": "token 文件 ACL 仅当前用户",
+      "status": "PASS",
+      "ms": 9.7,
+      "detail": "ACL 已收紧：LENOVO_LEGION\\31285 + SYSTEM + Administrators"
+    },
+    {
+      "category": "F. 本地 HTTP 服务",
+      "name": "服务优雅退出",
+      "status": "PASS",
+      "ms": 0.8,
+      "detail": "服务进程已退出"
+    },
+    {
+      "category": "G. 监听 / 自校验 / 保险箱",
+      "name": "目录监听捕获新增/修改/删除",
+      "status": "PASS",
+      "ms": 2.9,
+      "detail": "捕获 3 个变更：create/modify/delete 各 1"
+    },
+    {
+      "category": "G. 监听 / 自校验 / 保险箱",
+      "name": "模块自校验（防篡改告警）",
+      "status": "PASS",
+      "ms": 127.9,
+      "detail": "13 个文件校验通过；改一个文件后立即检出"
+    },
+    {
+      "category": "G. 监听 / 自校验 / 保险箱",
+      "name": "DPAPI 密码保险箱",
+      "status": "PASS",
+      "ms": 31.3,
+      "detail": "DPAPI 保险箱往返正常，磁盘无明文密码"
+    },
+    {
+      "category": "G. 监听 / 自校验 / 保险箱",
+      "name": "审计 nonce 逐条随机（防复用）",
+      "status": "PASS",
+      "ms": 87.7,
+      "detail": "8 条记录 8 个互不相同的 12 字节 nonce"
+    },
+    {
+      "category": "H. 性能冒烟",
+      "name": "5 MiB 文件加密耗时",
+      "status": "PASS",
+      "ms": 180.5,
+      "detail": "5 MiB 加密 176 ms（含进程启动），膨胀率 1.000"
+    },
+    {
+      "category": "H. 性能冒烟",
+      "name": "200 个小文件扫描耗时",
+      "status": "PASS",
+      "ms": 339.0,
+      "detail": "200 个小文件扫描 299 ms"
+    }
+  ]
+}

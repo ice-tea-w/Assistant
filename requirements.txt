@@ -1,0 +1,8 @@
+# 运行依赖（实测 cryptography 50.0.2 / Python 3.12）
+cryptography>=42,<52
+
+# 可选：PDF 正文抽取（当前 scan.py 未启用，见 README「已知边界」）
+# pypdf>=4
+
+# 可选：更可靠的文件变更监听（生产建议替换 watch.py 的轮询）
+# watchdog>=4
