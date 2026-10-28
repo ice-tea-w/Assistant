@@ -52,6 +52,10 @@ public:
     /// Pages contributed by loaded plugins (already in navigation-entry form).
     QVariantList navigationEntries() const;
 
+    /// Instantiate (once, then cached) the page identified by "<pluginId>:<pageId>".
+    /// Ownership stays in C++; QML only reparents and sizes the returned item.
+    QObject *acquirePage(const QString &key);
+
     bool isOffline() const;
     QString fetchedAtText() const;
 

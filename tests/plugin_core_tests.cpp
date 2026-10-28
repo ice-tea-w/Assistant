@@ -18,6 +18,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QPointer>
 #include <QString>
 #include <QQmlEngine>
 #include <QVariantList>
@@ -1379,6 +1380,62 @@ void testManagerStartupLoad()
     }
 }
 
+void testLoaderPages()
+{
+    SECTION("PluginLoader / contributed pages");
+
+    ScratchDir scratch;
+    if (!scratch.isValid()) { CHECK(false); return; }
+
+    const QString dir = scratch.path + QStringLiteral("/pg");
+    CHECK(writeTextFile(dir + QStringLiteral("/main.qml"), QByteArray(kMinimalPluginQml)));
+
+    // A page that only reads host.* — proves it runs in the plugin's own context
+    // (a plain Loader + file:// would not see `host` at all).
+    CHECK(writeTextFile(dir + QStringLiteral("/Page.qml"), QByteArray(R"(
+import QtQml
+QtObject {
+    property string pageHostId: host.pluginId
+    property string pageHostName: host.pluginName
+}
+)")));
+
+    QQmlEngine engine;
+    PluginLoader loader;
+    loader.setEngine(&engine);
+
+    // Not loaded yet -> cannot create a page
+    QString error;
+    CHECK(loader.createPage(QStringLiteral("com.pg.one"), QStringLiteral("p1"), &error) == nullptr);
+    CHECK(!error.isEmpty());
+
+    const auto m = manifestFor(
+        QStringLiteral("com.pg.one"), QStringLiteral("main.qml"),
+        R"({"id":"p1","title":"页一","icon":"1","source":"Page.qml"})");
+    CHECK(m.pages.size() == 1);
+    CHECK(loader.load(m, dir));
+
+    // Now it can, and host resolves inside the page
+    QObject *page = loader.createPage(QStringLiteral("com.pg.one"), QStringLiteral("p1"), &error);
+    CHECK(page != nullptr);
+    if (page) {
+        CHECK(page->property("pageHostId").toString() == QStringLiteral("com.pg.one"));
+        CHECK(page->property("pageHostName").toString() == QStringLiteral("测试插件"));
+    }
+
+    // Cached: asking again returns the same instance (页面状态在导航切换间保留)
+    QObject *again = loader.createPage(QStringLiteral("com.pg.one"), QStringLiteral("p1"));
+    CHECK(again == page);
+
+    // Unknown page id
+    CHECK(loader.createPage(QStringLiteral("com.pg.one"), QStringLiteral("nope")) == nullptr);
+
+    // Unloading destroys the pages (QPointer tells us whether it really died)
+    QPointer<QObject> guard(page);
+    loader.unload(QStringLiteral("com.pg.one"));
+    CHECK(guard.isNull());
+}
+
 } // namespace
 
 int main(int argc, char **argv)
@@ -1426,6 +1483,7 @@ int main(int argc, char **argv)
     testManagerBrokenPlugin();
     testManagerUninstall();
     testManagerStartupLoad();
+    testLoaderPages();
 
     std::printf("\n----------------------------------------\n");
     std::printf("checks: %d   failures: %d\n", g_checks, g_failures);

@@ -112,3 +112,8 @@ void PluginBridge::openPluginDir(const QString &id)
     if (m_manager)
         m_manager->openPluginDir(id);
 }
+
+QObject *PluginBridge::acquirePage(const QString &key)
+{
+    return m_manager ? m_manager->acquirePage(key) : nullptr;
+}

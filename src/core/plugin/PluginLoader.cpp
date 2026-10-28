@@ -136,8 +136,18 @@ void PluginLoader::wireHost(LoadedPlugin &plugin)
 
 void PluginLoader::destroy(LoadedPlugin &plugin)
 {
-    // Order matters: the QML object may still reference `host` through bindings,
-    // so the object goes first. The component is independent of the object.
+    // Pages first: they are children of the same context as the entry object and
+    // may still reference `host` through bindings.
+    // QPointer: QML may already have destroyed them by deleting the parent slot.
+    for (auto it = plugin.pageItems.begin(); it != plugin.pageItems.end(); ++it)
+        delete it.value().data();
+    plugin.pageItems.clear();
+
+    for (auto it = plugin.pageComponents.begin(); it != plugin.pageComponents.end(); ++it)
+        delete static_cast<QQmlComponent *>(it.value());
+    plugin.pageComponents.clear();
+
+    // Then the entry object, the component and finally the context + host.
     delete plugin.object;
     plugin.object = nullptr;
 
@@ -149,6 +159,98 @@ void PluginLoader::destroy(LoadedPlugin &plugin)
 
     delete static_cast<PluginHost *>(plugin.host);
     plugin.host = nullptr;
+}
+
+void PluginLoader::destroyPages(const QString &id)
+{
+    auto it = m_loaded.find(id);
+    if (it == m_loaded.end())
+        return;
+
+    for (auto p = it->pageItems.begin(); p != it->pageItems.end(); ++p)
+        delete p.value().data();
+    it->pageItems.clear();
+
+    for (auto c = it->pageComponents.begin(); c != it->pageComponents.end(); ++c)
+        delete static_cast<QQmlComponent *>(c.value());
+    it->pageComponents.clear();
+}
+
+QObject *PluginLoader::createPage(const QString &pluginId, const QString &pageId,
+                                  QString *error)
+{
+    const auto fail = [error](const QString &message) {
+        if (error)
+            *error = message;
+        return nullptr;
+    };
+
+    if (!m_engine)
+        return fail(QStringLiteral("尚未设置 QML engine"));
+
+    auto it = m_loaded.find(pluginId);
+    if (it == m_loaded.end())
+        return fail(QStringLiteral("插件未加载：%1").arg(pluginId));
+
+    if (it->pageItems.contains(pageId)) {
+        QObject *cached = it->pageItems.value(pageId).data();
+        if (cached)
+            return cached;
+        // Dangling (the QML slot destroyed it): drop the record and rebuild.
+        it->pageItems.remove(pageId);
+        auto comp = it->pageComponents.find(pageId);
+        if (comp != it->pageComponents.end()) {
+            delete static_cast<QQmlComponent *>(comp.value());
+            it->pageComponents.erase(comp);
+        }
+    }
+
+    const PageContribution *page = nullptr;
+    for (const PageContribution &candidate : it->manifest.pages) {
+        if (candidate.id == pageId) {
+            page = &candidate;
+            break;
+        }
+    }
+
+    if (!page)
+        return fail(QStringLiteral("插件 %1 没有页面 %2").arg(pluginId, pageId));
+
+    const QString path = it->dir + QLatin1Char('/') + page->source;
+    if (!QFileInfo::exists(path))
+        return fail(QStringLiteral("页面文件不存在：%1").arg(page->source));
+
+    auto *component = new QQmlComponent(m_engine, QUrl::fromLocalFile(path));
+
+    if (component->isError()) {
+        QStringList messages;
+        for (const QQmlError &e : component->errors())
+            messages.append(e.toString());
+        delete component;
+        return fail(messages.isEmpty() ? QStringLiteral("页面 QML 编译失败")
+                                       : messages.join(QLatin1Char('\n')));
+    }
+
+    // Same context as main.qml, which is what makes `host` available here.
+    auto *context = static_cast<QQmlContext *>(it->context);
+
+    QObject *item = component->create(context);
+    if (!item) {
+        QStringList messages;
+        for (const QQmlError &e : component->errors())
+            messages.append(e.toString());
+        delete component;
+        return fail(messages.isEmpty() ? QStringLiteral("页面 QML 实例化失败")
+                                       : messages.join(QLatin1Char('\n')));
+    }
+
+    it->pageItems.insert(pageId, item);
+    it->pageComponents.insert(pageId, component);
+
+    Logger::get().info("PluginLoader: created page {}:{}", pluginId.toStdString(),
+                       pageId.toStdString());
+
+    return item;
 }
 
 void PluginLoader::unload(const QString &id)

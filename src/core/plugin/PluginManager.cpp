@@ -517,6 +517,31 @@ QVariantList PluginManager::navigationEntries() const
     return m_loader->navigationEntries();
 }
 
+QObject *PluginManager::acquirePage(const QString &key)
+{
+    if (!m_loader)
+        return nullptr;
+
+    // key format is "<pluginId>:<pageId>"; plugin ids may contain dots but never colons.
+    const int sep = key.indexOf(QLatin1Char(':'));
+    if (sep <= 0 || sep >= key.size() - 1)
+        return nullptr;
+
+    const QString pluginId = key.left(sep);
+    const QString pageId   = key.mid(sep + 1);
+
+    QString error;
+    QObject *item = m_loader->createPage(pluginId, pageId, &error);
+
+    if (!item && !error.isEmpty()) {
+        Logger::get().warn("PluginManager: page {} failed — {}", key.toStdString(),
+                           error.toStdString());
+        emit toast(QStringLiteral("error"), error);
+    }
+
+    return item;
+}
+
 bool PluginManager::isOffline() const
 {
     // No catalog yet, so there is nothing to be stale. Reporting "offline" here

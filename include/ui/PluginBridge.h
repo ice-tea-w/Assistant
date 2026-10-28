@@ -50,6 +50,11 @@ public:
     Q_INVOKABLE void uninstall(const QString &id);
     Q_INVOKABLE void openPluginDir(const QString &id);
 
+    /// Instantiate (cached) a plugin-contributed page and return the QQuickItem.
+    /// Ownership stays in C++; QML reparents it into a slot and binds its size.
+    /// @param key "<pluginId>:<pageId>"
+    Q_INVOKABLE QObject *acquirePage(const QString &key);
+
 signals:
     void listsChanged();
     void navigationChanged();

@@ -4,6 +4,7 @@
 
 #include <QHash>
 #include <QObject>
+#include <QPointer>
 #include <QString>
 #include <QStringList>
 #include <QVariantList>
@@ -65,6 +66,22 @@ public:
     ///               source (absolute file URL) }
     QVariantList navigationEntries() const;
 
+    /// Instantiate one contributed page as a QQuickItem and return it.
+    ///
+    /// Crucially this uses the **plugin's own QQmlContext**, so `host` resolves
+    /// inside the page exactly as it does in main.qml. Loading the page through a
+    /// plain QML `Loader` instead would run it in the panel engine's root context
+    /// where `host` does not exist.
+    ///
+    /// The item is cached per (plugin, page) so switching navigation back and forth
+    /// keeps the page's state. Ownership stays here; callers must not delete it.
+    /// @return nullptr on failure (missing page id, bad QML, plugin not loaded)
+    QObject *createPage(const QString &pluginId, const QString &pageId,
+                        QString *error = nullptr);
+
+    /// Destroy every cached page of one plugin. Called from unload().
+    void destroyPages(const QString &pluginId);
+
     /// Push host-wide facts into every live PluginHost. Called by PluginManager;
     /// plugins cannot set these themselves.
     void setAppVersion(const QString &appVersion);
@@ -91,6 +108,13 @@ private:
         void          *component = nullptr;   ///< QQmlComponent*, void* to keep the header light
         void          *context   = nullptr;   ///< QQmlContext*
         QObject       *host      = nullptr;   ///< PluginHost*
+
+        /// pageId -> instantiated QQuickItem, and its QQmlComponent for cleanup.
+        /// The item is held through QPointer because QML reparents it into the page
+        /// slot, and destroying that slot would delete it as a child — in which case
+        /// our cleanup must not delete it a second time.
+        QHash<QString, QPointer<QObject>> pageItems;
+        QHash<QString, void *>            pageComponents;
     };
 
     void destroy(LoadedPlugin &plugin);
