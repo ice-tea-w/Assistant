@@ -4,8 +4,18 @@ import QtQuick.Layouts
 
 // Phase 3 主面板 —— 常驻窗口（区别于搜索浮窗）：
 // 不置顶、非 Tool、失焦不隐藏、可最小化。
-// 左侧功能栏：待办 / 记事本 / 剪贴板（从上到下）+ 设置（固定底部）。
-// 右侧 StackLayout 切换对应页面。
+//
+// 左侧功能栏：待办 / 记事本 / 剪贴板 / 插件市场（从上到下）+ 设置（固定底部）。
+// 右侧用 Loader 切换页面。
+//
+// ── 为什么从 StackLayout 改成 Loader（插件市场 M0）──
+// 插件会往导航里加页面，数量是运行时才知道的；StackLayout 的子项模型是
+// 静态声明的，塞不进动态页面。Loader + source 能按 key 计算目标页。
+//
+// ── 为什么从 selectedIndex 改成 selectedKey ──
+// 原来用索引对齐（`selectedIndex === 3` 表示设置）在 4 个固定页时能用，
+// 但加一项之后设置页的索引就变了，而且插件页插在中间会让所有索引错位。
+// 用 key 后，加/减页面只影响 navItems 数组，不影响任何判定。
 ApplicationWindow {
     id: panelWindow
     width: 760
@@ -23,14 +33,39 @@ ApplicationWindow {
     readonly property color accentColor: Style.accentColor
     readonly property color borderColor: Style.borderColor
 
-    property int selectedIndex: 0
+    // ---- 导航状态：以 key 为准，不以索引对齐 ----
+    property string selectedKey: "todo"
 
-    // 左侧导航前三项（从上到下）；设置项单独固定在底部。
+    // 左侧导航项（从上到下）；设置项单独固定在底部。
     property var navItems: [
-        { "icon": "✓",  "label": "待办事项" },
-        { "icon": "📝", "label": "记事本" },
-        { "icon": "📋", "label": "剪贴板" }
+        { "key": "todo",    "icon": "✓",  "label": "待办事项" },
+        { "key": "notes",   "icon": "📝", "label": "记事本"   },
+        { "key": "clip",    "icon": "📋", "label": "剪贴板"   },
+        { "key": "plugins", "icon": "🧩", "label": "插件市场" }
     ]
+
+    // ---- 插件市场数据源 ----
+    // 由 main.cpp 注入的 PluginBridge（context property `plugins`）。
+    // 保留 typeof 判断是为了让本文件能被单独加载（qmllint / 预览）而不报错；
+    // 正式运行时 `plugins` 一定存在。
+    readonly property var pluginApi: (typeof plugins !== "undefined") ? plugins : null
+
+    function indexOfKey(key) {
+        for (var i = 0; i < navItems.length; ++i)
+            if (navItems[i].key === key) return i
+        return -1
+    }
+
+    function sourceFor(key) {
+        switch (key) {
+        case "todo":    return "qrc:/qml/TodoPage.qml"
+        case "notes":   return "qrc:/qml/NotesPage.qml"
+        case "clip":    return "qrc:/qml/ClipboardPage.qml"
+        case "plugins": return "qrc:/qml/PluginsPage.qml"
+        case "settings":return "qrc:/qml/SettingsPage.qml"
+        }
+        return ""
+    }
 
     // 点 X 只隐藏，不销毁（主面板常驻，下次 🏠 重新 show）
     onClosing: function(close) {
@@ -62,15 +97,14 @@ ApplicationWindow {
                     anchors.margins: 8
                     spacing: 4
 
-                    // 前三项功能入口（从上到下）
+                    // 功能入口（从上到下）
                     ListView {
                         id: navList
                         Layout.fillWidth: true
                         Layout.fillHeight: true
                         clip: true
                         model: panelWindow.navItems
-                        currentIndex: panelWindow.selectedIndex < 3
-                                      ? panelWindow.selectedIndex : -1
+                        currentIndex: panelWindow.indexOfKey(panelWindow.selectedKey)
                         spacing: 4
 
                         delegate: Rectangle {
@@ -93,18 +127,17 @@ ApplicationWindow {
                                 Text {
                                     text: modelData.label
                                     color: index === navList.currentIndex
-                                           ? "white" : textColor
+                                           ? Style.accentTextColor : textColor
                                     font.pixelSize: 14
                                     Layout.fillWidth: true
+                                    elide: Text.ElideRight
                                 }
                             }
 
                             MouseArea {
                                 anchors.fill: parent
-                                onClicked: {
-                                    navList.currentIndex = index
-                                    panelWindow.selectedIndex = index
-                                }
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: panelWindow.selectedKey = modelData.key
                             }
                         }
                     }
@@ -121,7 +154,7 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         Layout.preferredHeight: 40
                         radius: 6
-                        color: panelWindow.selectedIndex === 3
+                        color: panelWindow.selectedKey === "settings"
                                ? accentColor : "transparent"
 
                         RowLayout {
@@ -133,33 +166,33 @@ ApplicationWindow {
                             Text { text: "⚙"; font.pixelSize: 14 }
                             Text {
                                 text: "设置"
-                                color: panelWindow.selectedIndex === 3
-                                       ? "white" : textColor
+                                color: panelWindow.selectedKey === "settings"
+                                       ? Style.accentTextColor : textColor
                                 font.pixelSize: 14
                             }
                         }
 
                         MouseArea {
                             anchors.fill: parent
-                            onClicked: {
-                                navList.currentIndex = -1
-                                panelWindow.selectedIndex = 3
-                            }
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: panelWindow.selectedKey = "settings"
                         }
                     }
                 }
             }
 
             // ---- 右侧功能区 ----
-            StackLayout {
+            Loader {
+                id: pageLoader
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                currentIndex: panelWindow.selectedIndex
+                source: panelWindow.sourceFor(panelWindow.selectedKey)
 
-                TodoPage {}
-                NotesPage {}
-                ClipboardPage {}
-                SettingsPage {}
+                // 插件市场页需要一个 api 注入点（其余页面走全局的 `panel`）
+                onLoaded: {
+                    if (item && panelWindow.selectedKey === "plugins")
+                        item.api = panelWindow.pluginApi
+                }
             }
         }
     }

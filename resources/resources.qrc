@@ -6,6 +6,8 @@
         <file>qml/NotesPage.qml</file>
         <file>qml/ClipboardPage.qml</file>
         <file>qml/SettingsPage.qml</file>
+        <file>qml/PluginsPage.qml</file>
+        <file>qml/PluginCard.qml</file>
         <file>qml/Style.qml</file>
         <file>qml/qmldir</file>
     </qresource>

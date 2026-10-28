@@ -17,6 +17,10 @@
 #include "core/HotkeyManager.h"
 #include "ui/AppBridge.h"
 #include "ui/PanelBridge.h"
+#include "ui/PluginBridge.h"
+#include "core/plugin/PluginLoader.h"
+#include "core/plugin/PluginManager.h"
+#include "core/plugin/PluginRegistry.h"
 
 // CMake 通过 target_compile_definitions 注入（project VERSION）
 #ifndef APP_VERSION
@@ -131,13 +135,43 @@ int main(int argc, char *argv[])
         window->setPosition(config.windowX(), config.windowY());
     }
 
+    // ---- plugin subsystem (插件市场 M0：本地插件管理) ----
+    // 装配点是唯一的：四个能力模块彼此不认识，只有 PluginManager 持有它们。
+    PluginRegistry pluginRegistry;
+    {
+        QString warning;
+        if (!pluginRegistry.load(&warning)) {
+            // Not fatal: the app runs without plugins, the market page just stays empty.
+            Logger::get().error("Plugins: cannot prepare {}",
+                                pluginRegistry.rootDir().toStdString());
+        } else if (!warning.isEmpty()) {
+            Logger::get().warn("Plugins: {}", warning.toStdString());
+        }
+    }
+
+    PluginLoader  pluginLoader;
+    PluginManager pluginManager(&pluginRegistry, &pluginLoader);
+    PluginBridge  pluginBridge(&pluginManager);
+
     // ---- main panel window (Phase 3 Step 1) ----
     // 常驻主面板：独立 engine，初始隐藏，由 🏠 按钮 / 托盘菜单触发显示。
     QQmlApplicationEngine panelEngine;
     panelEngine.rootContext()->setContextProperty("config", &config);
     panelEngine.rootContext()->setContextProperty("panel", &panel);
     panelEngine.rootContext()->setContextProperty("appVersion", QCoreApplication::applicationVersion());
+
+    // Must be registered BEFORE the QML loads: MainPanel binds `pluginApi` to
+    // `plugins` at creation time and falls back to mock data when it is absent.
+    panelEngine.rootContext()->setContextProperty("plugins", &pluginBridge);
+    pluginManager.setEngine(&panelEngine);
+
     panelEngine.load(QUrl(QStringLiteral("qrc:/qml/MainPanel.qml")));
+
+    // Plugins load after the engine exists but before the window is shown, so the
+    // navigation list is complete on first paint instead of popping in later.
+    // A failing plugin is recorded as its own problem and never blocks the rest.
+    pluginManager.setDark(config.theme() == QLatin1String("dark"));
+    pluginManager.loadEnabledAtStartup();
 
     QWindow *panelWindow = nullptr;
     if (!panelEngine.rootObjects().isEmpty())
@@ -155,5 +189,10 @@ int main(int argc, char *argv[])
 
     tray.init();
 
-    return app.exec();
+    const int exitCode = app.exec();
+
+    // Plugin objects must be destroyed while the engine is still alive.
+    pluginManager.unloadAll();
+
+    return exitCode;
 }
