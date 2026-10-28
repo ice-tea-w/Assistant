@@ -1,0 +1,95 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-29T00:00:00Z",
+  "appMinVersion": "0.3.0",
+  "plugins": [
+    {
+      "id": "com.assistant.weather",
+      "name": "天气",
+      "summary": "输入 w 城市 查看天气",
+      "description": "在搜索框输入 `w 北京`，直接看到当前天气与未来三天预报。数据来自公开天气接口，国内城市优先。",
+      "author": "AssistantTeam",
+      "categories": ["搜索", "网络"],
+      "tags": ["官方"],
+      "icon": "🌤",
+      "screenshots": [],
+      "latest": {
+        "version": "1.2.0",
+        "url": "https://example.com/plugins/com.assistant.weather-1.2.0.zip",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "size": 48213,
+        "minAppVersion": "0.3.0",
+        "changelog": "修复城市名含空格时解析失败"
+      },
+      "versions": [],
+      "downloads": 128,
+      "updatedAt": "2026-10-20T12:00:00Z"
+    },
+    {
+      "id": "com.assistant.translate",
+      "name": "翻译",
+      "summary": "选中文本按 Ctrl+Shift+T 翻译",
+      "description": "读取剪贴板或选中文本，在中英之间互译。支持划词翻译，结果直接以 toast 呈现，不打断当前操作。",
+      "author": "AssistantTeam",
+      "categories": ["工具", "网络"],
+      "tags": ["官方"],
+      "icon": "🔤",
+      "screenshots": [],
+      "latest": {
+        "version": "1.0.0",
+        "url": "https://example.com/plugins/com.assistant.translate-1.0.0.zip",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "size": 39120,
+        "minAppVersion": "0.3.0",
+        "changelog": "首个版本"
+      },
+      "versions": [],
+      "downloads": 96,
+      "updatedAt": "2026-10-15T09:30:00Z"
+    },
+    {
+      "id": "com.assistant.theme",
+      "name": "主题包",
+      "summary": "三套配色，随系统深浅切换",
+      "description": "内置三套配色方案：晨雾、墨黑、暖沙。跟随系统深浅色自动切换，也可以手动锁定。只影响插件页面，不动宿主配色。",
+      "author": "AssistantTeam",
+      "categories": ["界面"],
+      "tags": ["官方"],
+      "icon": "🎨",
+      "screenshots": [],
+      "latest": {
+        "version": "1.0.0",
+        "url": "https://example.com/plugins/com.assistant.theme-1.0.0.zip",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "size": 20480,
+        "minAppVersion": "0.3.0",
+        "changelog": "首个版本"
+      },
+      "versions": [],
+      "downloads": 41,
+      "updatedAt": "2026-10-10T18:00:00Z"
+    },
+    {
+      "id": "com.assistant.snippets",
+      "name": "代码片段",
+      "summary": "常用命令一键填充",
+      "description": "把高频命令存成片段，输入关键词直接填充到剪贴板。适合记不住长参数的命令行场景。",
+      "author": "AssistantTeam",
+      "categories": ["工具"],
+      "tags": ["实验"],
+      "icon": "⌨",
+      "screenshots": [],
+      "latest": {
+        "version": "0.9.0",
+        "url": "https://example.com/plugins/com.assistant.snippets-0.9.0.zip",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "size": 31744,
+        "minAppVersion": "0.3.0",
+        "changelog": "支持占位符占位"
+      },
+      "versions": [],
+      "downloads": 17,
+      "updatedAt": "2026-10-05T10:00:00Z"
+    }
+  ]
+}

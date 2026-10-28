@@ -18,6 +18,7 @@
 #include "ui/AppBridge.h"
 #include "ui/PanelBridge.h"
 #include "ui/PluginBridge.h"
+#include "core/plugin/PluginCatalog.h"
 #include "core/plugin/PluginInstaller.h"
 #include "core/plugin/PluginLoader.h"
 #include "core/plugin/PluginManager.h"
@@ -151,11 +152,17 @@ int main(int argc, char *argv[])
     }
 
     PluginLoader    pluginLoader;
+    PluginCatalog   pluginCatalog(&pluginRegistry);
     PluginInstaller pluginInstaller(&pluginRegistry);
     PluginManager   pluginManager(&pluginRegistry, &pluginLoader);
     PluginBridge    pluginBridge(&pluginManager);
 
     pluginManager.setInstaller(&pluginInstaller);
+    pluginManager.setCatalog(&pluginCatalog);
+
+    // 市场索引地址。默认留空 = 只用内置 seed：离线也能看到内容，答辩现场不怕断网。
+    // 想接真服务器：设环境变量 ASSISTANT_MARKET_URL 指向一个 index.json。
+    pluginCatalog.setMarketUrl(qEnvironmentVariable("ASSISTANT_MARKET_URL"));
 
     // ---- main panel window (Phase 3 Step 1) ----
     // 常驻主面板：独立 engine，初始隐藏，由 🏠 按钮 / 托盘菜单触发显示。

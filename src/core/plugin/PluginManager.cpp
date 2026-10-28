@@ -1,9 +1,11 @@
 #include "core/plugin/PluginManager.h"
 
 #include "core/Logger.h"
+#include "core/plugin/PluginCatalog.h"
 #include "core/plugin/PluginInstaller.h"
 #include "core/plugin/PluginLoader.h"
 #include "core/plugin/PluginRegistry.h"
+#include "core/plugin/SemVer.h"
 
 #include <QCoreApplication>
 #include <QDateTime>
@@ -110,6 +112,27 @@ void PluginManager::setInstaller(PluginInstaller *installer)
                 emit viewChanged();
                 emit navigationChanged();
             });
+}
+
+void PluginManager::setCatalog(PluginCatalog *catalog)
+{
+    m_catalog = catalog;
+    if (!m_catalog)
+        return;
+
+    connect(m_catalog, &PluginCatalog::fetched, this,
+            [this](bool, const QString &) {
+                emit viewChanged();
+            });
+}
+
+void PluginManager::refreshCatalog(bool force)
+{
+    if (!m_catalog) {
+        emit toast(QStringLiteral("error"), QStringLiteral("市场目录未接入"));
+        return;
+    }
+    m_catalog->fetch(force ? true : false);
 }
 
 void PluginManager::installFromZip(const QString &zipPath)
@@ -365,6 +388,10 @@ void PluginManager::loadEnabledAtStartup()
         enablePlugin(id);
     }
 
+    // Populate the market half. Seed-only mode is synchronous, so the list is
+    // complete before the window is shown (no "empty then pops in" flicker).
+    refreshCatalog(false);
+
     emit viewChanged();
     emit navigationChanged();
 }
@@ -571,8 +598,68 @@ QVariantList PluginManager::installedRows() const
 
 QVariantList PluginManager::availableRows() const
 {
-    // M1: merge PluginCatalog entries minus installed ones.
-    return {};
+    if (!m_catalog || !m_registry)
+        return {};
+
+    QVariantList out;
+
+    const QList<MarketEntry> entries = m_catalog->entries();
+    for (const MarketEntry &entry : entries) {
+        // Installed plugins live in the first group; showing them twice is noise.
+        if (m_registry->contains(entry.id))
+            continue;
+
+        QVariantMap row;
+        row.insert(QStringLiteral("id"), entry.id);
+        row.insert(QStringLiteral("name"), entry.name);
+        row.insert(QStringLiteral("version"), entry.latest.version);
+        row.insert(QStringLiteral("summary"), entry.summary);
+        row.insert(QStringLiteral("icon"), entry.icon);
+        row.insert(QStringLiteral("enabled"), false);
+        row.insert(QStringLiteral("percent"), 0);
+        row.insert(QStringLiteral("permissions"), QStringList());
+        row.insert(QStringLiteral("categories"), entry.categories);
+        row.insert(QStringLiteral("author"), entry.author);
+        row.insert(QStringLiteral("description"), entry.description);
+        row.insert(QStringLiteral("changelog"), entry.latest.changelog);
+        row.insert(QStringLiteral("downloads"), static_cast<qlonglong>(entry.downloads));
+
+        // State for a not-installed entry. "incompatible" is decided from the
+        // index-side minAppVersion so we can grey the button without downloading.
+        QString state = QStringLiteral("not-installed");
+        QString badge;
+        QString badgeKind;
+        QString problem;
+
+        const QString minApp = entry.latest.minAppVersion;
+        if (!minApp.isEmpty()) {
+            const auto app = semver::parse(QStringView(QCoreApplication::applicationVersion()));
+            const auto need = semver::parse(QStringView(minApp));
+            if (app && need && semver::compare(*app, *need) < 0) {
+                state = QStringLiteral("incompatible");
+                badge = QStringLiteral("需 ") + minApp;
+                badgeKind = QStringLiteral("orange");
+                problem = QStringLiteral("需要 Assistant %1，当前 %2")
+                              .arg(minApp, QCoreApplication::applicationVersion());
+            }
+        }
+
+        if (badge.isEmpty() && !entry.tags.isEmpty()) {
+            const QString tag = entry.tags.first();
+            badge = tag;
+            badgeKind = (tag == QStringLiteral("官方")) ? QStringLiteral("accent")
+                                                       : QStringLiteral("orange");
+        }
+
+        row.insert(QStringLiteral("state"), state);
+        row.insert(QStringLiteral("badge"), badge);
+        row.insert(QStringLiteral("badgeKind"), badgeKind);
+        row.insert(QStringLiteral("problem"), problem);
+
+        out.append(row);
+    }
+
+    return out;
 }
 
 QVariantList PluginManager::navigationEntries() const
@@ -609,12 +696,15 @@ QObject *PluginManager::acquirePage(const QString &key)
 
 bool PluginManager::isOffline() const
 {
-    // No catalog yet, so there is nothing to be stale. Reporting "offline" here
-    // would put a misleading banner above a purely local list.
-    return false;
+    return m_catalog ? m_catalog->isOffline() : false;
 }
 
 QString PluginManager::fetchedAtText() const
 {
-    return {};
+    return m_catalog ? m_catalog->fetchedAtText() : QString();
+}
+
+QStringList PluginManager::categories() const
+{
+    return m_catalog ? m_catalog->categories() : QStringList();
 }

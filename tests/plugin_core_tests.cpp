@@ -9,6 +9,7 @@
 #include "core/plugin/PluginHost.h"
 #include "core/plugin/PluginLoader.h"
 #include "core/plugin/PluginArchive.h"
+#include "core/plugin/PluginCatalog.h"
 #include "core/plugin/PluginInstaller.h"
 #include "core/plugin/PluginManager.h"
 #include "core/plugin/PluginSpec.h"
@@ -2104,6 +2105,205 @@ void testInstallerCancel()
 
 } // namespace
 
+// ---------------------------------------------------------------------------
+// PluginCatalog (M1 市场目录)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+void testCatalogSeed()
+{
+    SECTION("PluginCatalog / 内置 seed（无网络）");
+
+    ScratchDir scratch;
+    if (!scratch.isValid()) { CHECK(false); return; }
+
+    PluginRegistry reg(scratch.pluginRoot());
+    CHECK(reg.load());
+
+    PluginCatalog catalog(&reg);
+    // 默认 URL 为空 = seed 模式，不碰网络
+    CHECK(catalog.marketUrl().isEmpty());
+
+    int fetchedCalls = 0;
+    QString lastCode;
+    QObject::connect(&catalog, &PluginCatalog::fetched,
+                     [&](bool, const QString &code) { ++fetchedCalls; lastCode = code; });
+
+    catalog.fetch(true);
+
+    CHECK(fetchedCalls == 1);
+    CHECK(lastCode == QStringLiteral("offline"));      // 明确标注降级
+    CHECK(catalog.isOffline());
+
+    const auto entries = catalog.entries();
+    CHECK(entries.size() == 4);
+
+    if (entries.size() == 4) {
+        // 按 seed 里的顺序
+        CHECK(entries.at(0).id == QStringLiteral("com.assistant.weather"));
+        CHECK(entries.at(0).name == QStringLiteral("天气"));
+        CHECK(entries.at(0).latest.version == QStringLiteral("1.2.0"));
+        CHECK(!entries.at(0).summary.isEmpty());
+        CHECK(entries.at(0).categories.contains(QStringLiteral("搜索")));
+        CHECK(entries.at(0).tags.contains(QStringLiteral("官方")));
+    }
+
+    // 分类由索引聚合而来，且是排序的
+    const QStringList cats = catalog.categories();
+    CHECK(cats.contains(QStringLiteral("搜索")));
+    CHECK(cats.contains(QStringLiteral("工具")));
+    CHECK(cats.contains(QStringLiteral("界面")));
+    CHECK(cats.contains(QStringLiteral("网络")));
+    CHECK(cats.size() == 4);
+    // 排序检查：与自身副本排序后应一致
+    QStringList sorted = cats;
+    sorted.sort(Qt::CaseSensitive);
+    CHECK(cats == sorted);
+
+    // 离线时应当能给出"数据是什么时候的"
+    CHECK(!catalog.fetchedAtText().isEmpty());
+}
+
+void testCatalogCache()
+{
+    SECTION("PluginCatalog / 缓存写入与读取");
+
+    ScratchDir scratch;
+    if (!scratch.isValid()) { CHECK(false); return; }
+
+    PluginRegistry reg(scratch.pluginRoot());
+    CHECK(reg.load());
+    CHECK(!QFileInfo::exists(reg.marketCacheFile()));
+
+    {
+        PluginCatalog catalog(&reg);
+        catalog.fetch(true);
+        CHECK(catalog.entries().size() == 4);
+    }
+
+    // 缓存文件应已写出
+    CHECK(QFileInfo::exists(reg.marketCacheFile()));
+
+    // 新实例走缓存路径（force=false），不再读 seed，但内容一致
+    {
+        PluginCatalog catalog(&reg);
+        catalog.fetch(false);
+        CHECK(catalog.isOffline());
+        CHECK(catalog.entries().size() == 4);
+        if (catalog.entries().size() == 4)
+            CHECK(catalog.entries().at(0).id == QStringLiteral("com.assistant.weather"));
+    }
+}
+
+void testCatalogCorruptCache()
+{
+    SECTION("PluginCatalog / 缓存损坏时降级到 seed");
+
+    ScratchDir scratch;
+    if (!scratch.isValid()) { CHECK(false); return; }
+
+    PluginRegistry reg(scratch.pluginRoot());
+    CHECK(reg.load());
+
+    CHECK(writeTextFile(reg.marketCacheFile(), QByteArray("{ this is not json")));
+
+    PluginCatalog catalog(&reg);
+    catalog.fetch(false);          // 走缓存 -> 坏了 -> 应该退回 seed
+
+    CHECK(catalog.entries().size() == 4);   // 不空、不崩
+    CHECK(catalog.isOffline());
+}
+
+void testCatalogMergeIntoRows()
+{
+    SECTION("PluginCatalog / 与已安装合并");
+
+    ScratchDir scratch;
+    if (!scratch.isValid()) { CHECK(false); return; }
+
+    PluginRegistry reg(scratch.pluginRoot());
+    CHECK(reg.load());
+    PluginLoader loader;
+    PluginManager mgr(&reg, &loader);
+    PluginCatalog catalog(&reg);
+    mgr.setCatalog(&catalog);
+
+    // 没接 catalog 前是空的
+    CHECK(catalog.entries().isEmpty());
+
+    catalog.fetch(true);
+    CHECK(catalog.entries().size() == 4);
+
+    // 全部 4 个都可安装
+    CHECK(mgr.availableRows().size() == 4);
+
+    // 把 weather 登记为"已安装"，它就该从可安装里消失
+    InstalledPlugin installed;
+    installed.id = QStringLiteral("com.assistant.weather");
+    installed.version = QStringLiteral("1.2.0");
+    installed.enabled = false;
+    installed.origin.kind = QStringLiteral("market");
+    CHECK(reg.upsertAndSave(installed));
+
+    const QVariantList available = mgr.availableRows();
+    CHECK(available.size() == 3);
+    for (const QVariant &row : available)
+        CHECK(row.toMap().value(QStringLiteral("id")).toString()
+              != QStringLiteral("com.assistant.weather"));
+
+    // 已安装那一组里应该能看到它
+    const QVariantList installedRows = mgr.installedRows();
+    CHECK(installedRows.size() == 1);
+    if (installedRows.size() == 1) {
+        const QVariantMap row = installedRows.at(0).toMap();
+        CHECK(row.value(QStringLiteral("id")).toString() == QStringLiteral("com.assistant.weather"));
+        CHECK(row.value(QStringLiteral("state")).toString() == QStringLiteral("installed"));
+    }
+}
+
+void testCatalogIncompatible()
+{
+    SECTION("PluginCatalog / minAppVersion 门控");
+
+    ScratchDir scratch;
+    if (!scratch.isValid()) { CHECK(false); return; }
+
+    PluginRegistry reg(scratch.pluginRoot());
+    CHECK(reg.load());
+
+    // 写一份把 minAppVersion 设成未来的索引到缓存位置，然后只读缓存
+    const QByteArray index = R"({
+      "schemaVersion": 1,
+      "generatedAt": "2026-10-29T00:00:00Z",
+      "plugins": [
+        { "id": "com.future.one", "name": "未来插件", "summary": "s",
+          "latest": { "version": "1.0.0", "minAppVersion": "99.0.0" } }
+      ]
+    })";
+    const QByteArray wrapper = QByteArray(R"({"schemaVersion":1,"index":)") + index + "}";
+    CHECK(writeTextFile(reg.marketCacheFile(), wrapper));
+
+    PluginLoader loader;
+    PluginManager mgr(&reg, &loader);
+    PluginCatalog catalog(&reg);
+    mgr.setCatalog(&catalog);
+
+    catalog.fetch(false);
+
+    const QVariantList rows = mgr.availableRows();
+    CHECK(rows.size() == 1);
+    if (rows.size() == 1) {
+        const QVariantMap row = rows.at(0).toMap();
+        // 宿主是 0.3.0，要求 99.0.0 => 不可安装，并在界面上说明原因
+        CHECK(row.value(QStringLiteral("state")).toString() == QStringLiteral("incompatible"));
+        CHECK(row.value(QStringLiteral("badgeKind")).toString() == QStringLiteral("orange"));
+        CHECK(row.value(QStringLiteral("problem")).toString().contains(QStringLiteral("99.0.0")));
+    }
+}
+
+} // namespace
+
 int main(int argc, char **argv)
 {
     QCoreApplication app(argc, argv);
@@ -2167,6 +2367,12 @@ int main(int argc, char **argv)
     testInstallerAlreadyInstalledAndUpgrade();
     testInstallerBusy();
     testInstallerCancel();
+
+    testCatalogSeed();
+    testCatalogCache();
+    testCatalogCorruptCache();
+    testCatalogMergeIntoRows();
+    testCatalogIncompatible();
 
     std::printf("\n----------------------------------------\n");
     std::printf("checks: %d   failures: %d\n", g_checks, g_failures);

@@ -44,9 +44,16 @@ QVariantList PluginBridge::availableList() const
 
 QVariantList PluginBridge::categories() const
 {
-    // Category chips are derived from market entries. With no catalog (M0) only the
-    // "全部" chip is meaningful, and PluginsPage always prepends that itself.
-    return {};
+    // Derived from the market index, never hardcoded in QML.
+    QVariantList out;
+    if (!m_manager)
+        return out;
+
+    const QStringList names = m_manager->categories();
+    for (const QString &name : names)
+        out.append(name);
+
+    return out;
 }
 
 QVariantList PluginBridge::navigationEntries() const
@@ -73,16 +80,18 @@ void PluginBridge::refresh()
     if (!m_manager)
         return;
 
-    // M0 has no remote catalog, so "refresh" only re-scans the local directory.
-    // Emitting loadingChanged around it keeps the UI's skeleton path exercised.
     m_loading = true;
     emit loadingChanged();
 
+    // Rescan the local directory *and* re-read the market index. In seed-only mode
+    // the catalog part is synchronous, so `loading` is honest for both paths.
     m_manager->discoverUnregistered();
+    m_manager->refreshCatalog(true);
 
     m_loading = false;
     emit loadingChanged();
     emit listsChanged();
+    emit catalogChanged();
 }
 
 void PluginBridge::install(const QString &id)

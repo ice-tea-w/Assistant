@@ -27,6 +27,20 @@ find_package(miniz CONFIG REQUIRED)
 file(GLOB_RECURSE SOURCES src/*.cpp)
 file(GLOB_RECURSE HEADERS include/*.h)
 
+# ---- 资源依赖（重要）----
+# AUTORCC 的依赖扫描并不可靠地覆盖 .qrc 里"仅被列出"的文件：
+# 只改 .qml 内容时可能不触发重新打包，于是"改了界面但跑起来还是旧的"。
+# 显式把它们声明成 resources.qrc 的依赖，改任何一个 QML 都会重新 rcc。
+file(GLOB_RECURSE QRC_RESOURCE_FILES
+    resources/qml/*.qml
+    resources/qml/qmldir
+    resources/market/*.json
+)
+if (QRC_RESOURCE_FILES)
+    set_property(SOURCE resources/resources.qrc PROPERTY
+        OBJECT_DEPENDS "${QRC_RESOURCE_FILES}")
+endif()
+
 # ---- 主程序 ----
 add_executable(${PROJECT_NAME}
     ${SOURCES}

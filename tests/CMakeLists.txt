@@ -24,9 +24,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # PluginHost / PluginLoader declare Q_OBJECT, so their moc output must be generated.
 # The main project gets this from its own CMakeLists; the test project needs it too.
 set(CMAKE_AUTOMOC ON)
+# 测试也要读内置 seed（:/market/seed-index.json），所以需要 rcc
+set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOMOC_RELAXED_MODE ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Qml)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Qml Network)
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
 find_package(miniz CONFIG REQUIRED)
@@ -35,12 +37,15 @@ set(REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/..")
 
 add_executable(assistant_core_tests
     plugin_core_tests.cpp
+    # 只为了拿到 :/market/seed-index.json；QML 部分是无关数据，不进测试逻辑
+    ${REPO_ROOT}/resources/resources.qrc
     # Q_OBJECT headers must be listed so AUTOMOC can find them; they do not sit
     # next to their .cpp (public headers live under include/), so the usual
     # same-basename association does not apply.
     ${REPO_ROOT}/include/core/plugin/PluginHost.h
     ${REPO_ROOT}/include/core/plugin/PluginLoader.h
     ${REPO_ROOT}/include/core/plugin/PluginManager.h
+    ${REPO_ROOT}/include/core/plugin/PluginCatalog.h
     ${REPO_ROOT}/include/core/plugin/PluginInstaller.h
     ${REPO_ROOT}/src/core/plugin/SemVer.cpp
     ${REPO_ROOT}/src/core/plugin/PluginManifest.cpp
@@ -50,6 +55,7 @@ add_executable(assistant_core_tests
     ${REPO_ROOT}/src/core/plugin/PluginManager.cpp
     ${REPO_ROOT}/src/core/plugin/PluginSpec.cpp
     ${REPO_ROOT}/src/core/plugin/PluginArchive.cpp
+    ${REPO_ROOT}/src/core/plugin/PluginCatalog.cpp
     ${REPO_ROOT}/src/core/plugin/PluginInstaller.cpp
     ${REPO_ROOT}/src/core/Logger.cpp
 )
@@ -62,6 +68,7 @@ target_link_libraries(assistant_core_tests PRIVATE
     Qt6::Core
     Qt6::Gui      # QDesktopServices (PluginHost::openPath)
     Qt6::Qml      # QQmlEngine / QQmlComponent (PluginLoader)
+    Qt6::Network  # QNetworkAccessManager (PluginCatalog)
     nlohmann_json::nlohmann_json
     spdlog::spdlog
     miniz::miniz

@@ -12,6 +12,7 @@ class QQmlEngine;
 class PluginRegistry;
 class PluginLoader;
 class PluginInstaller;
+class PluginCatalog;
 
 /// The single business entry point: **the only place that decides ordering**.
 ///
@@ -43,6 +44,9 @@ public:
     /// Optional (M2). Without it, install intents report "not available".
     void setInstaller(PluginInstaller *installer);
 
+    /// Optional (M1). Without it, the market half reports empty.
+    void setCatalog(PluginCatalog *catalog);
+
     // ---- read side (what the UI consumes) ----
 
     /// Installed plugins as rows for PluginListModel / QVariantList binding.
@@ -62,6 +66,9 @@ public:
 
     bool isOffline() const;
     QString fetchedAtText() const;
+
+    /// Distinct categories across market entries, for the filter chips.
+    QStringList categories() const;
 
     // ---- lifecycle ----
 
@@ -88,6 +95,9 @@ public:
 
     /// Ask the installer to stop. Reports "太晚了" when the commit already happened.
     void cancelInstall(const QString &requestId);
+
+    /// Re-read the market index (cache -> network -> seed).
+    void refreshCatalog(bool force = false);
 
     /// Emit the current theme to every loaded plugin host.
     void setDark(bool dark);
@@ -119,6 +129,7 @@ private:
     PluginRegistry *m_registry = nullptr;
     PluginLoader   *m_loader   = nullptr;
     PluginInstaller *m_installer = nullptr;
+    PluginCatalog   *m_catalog   = nullptr;
 
     mutable QHash<QString, PluginManifest> m_manifests;
 };
