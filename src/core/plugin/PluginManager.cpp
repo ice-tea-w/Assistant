@@ -151,6 +151,43 @@ void PluginManager::installFromZip(const QString &zipPath)
         emit toast(QStringLiteral("error"), QStringLiteral("无法开始安装"));
 }
 
+void PluginManager::requestInstall(const QString &id)
+{
+    if (!m_installer) {
+        emit toast(QStringLiteral("error"), QStringLiteral("安装功能未接入"));
+        return;
+    }
+    if (!m_catalog) {
+        emit toast(QStringLiteral("error"), QStringLiteral("市场目录未接入"));
+        return;
+    }
+    if (m_installer->isBusy()) {
+        emit toast(QStringLiteral("error"), QStringLiteral("正在安装另一个插件，请稍候"));
+        return;
+    }
+
+    const QList<MarketEntry> entries = m_catalog->entries();
+    for (const MarketEntry &entry : entries) {
+        if (entry.id != id)
+            continue;
+
+        if (entry.latest.url.isEmpty()) {
+            emit toast(QStringLiteral("error"),
+                       QStringLiteral("索引里没有这个插件的下载地址"));
+            return;
+        }
+
+        m_installer->installFromMarket(entry.id, entry.latest.version,
+                                       QUrl(entry.latest.url),
+                                       entry.latest.sha256,
+                                       entry.latest.size);
+        return;
+    }
+
+    emit toast(QStringLiteral("error"),
+               QStringLiteral("市场里找不到这个插件：%1").arg(id));
+}
+
 void PluginManager::cancelInstall(const QString &requestId)
 {
     if (!m_installer) {

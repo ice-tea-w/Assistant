@@ -21,9 +21,13 @@
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
+#include <QCryptographicHash>
 #include <QEventLoop>
 #include <QFileInfo>
 #include <QPointer>
+#include <QHostAddress>
+#include <QTcpServer>
+#include <QTcpSocket>
 #include <QTimer>
 #include <QString>
 #include <QQmlEngine>
@@ -2304,6 +2308,291 @@ void testCatalogIncompatible()
 
 } // namespace
 
+// ---------------------------------------------------------------------------
+// 市场安装：本地 HTTP 服务器（不碰公网）
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// 极简 HTTP 服务器：只为验证下载链路，不做任何多余的事。
+/// 端口由系统分配（listen 时传 0），所以并发跑测试也不会撞车。
+struct MiniHttp
+{
+    QTcpServer server;
+    struct Route { int status = 200; QByteArray body; };
+    QHash<QString, Route> routes;
+
+    bool start()
+    {
+        if (!server.listen(QHostAddress::LocalHost, 0))
+            return false;
+
+        QObject::connect(&server, &QTcpServer::newConnection, &server, [this]() {
+            while (server.hasPendingConnections()) {
+                QTcpSocket *sock = server.nextPendingConnection();
+
+                QObject::connect(sock, &QTcpSocket::readyRead, sock, [this, sock]() {
+                    const QByteArray request = sock->readAll();
+
+                    // 请求行: "GET /path HTTP/1.1"
+                    const QList<QByteArray> parts = request.split(' ');
+                    const QString path = (parts.size() >= 2)
+                        ? QString::fromUtf8(parts.at(1))
+                        : QString();
+
+                    const Route route = routes.contains(path) ? routes.value(path)
+                                                              : Route{404, "not found"};
+
+                    QByteArray response = "HTTP/1.1 " + QByteArray::number(route.status)
+                                          + (route.status == 200 ? " OK" : " Error")
+                                          + "\r\nContent-Length: "
+                                          + QByteArray::number(route.body.size())
+                                          + "\r\nConnection: close\r\n\r\n";
+                    response += route.body;
+
+                    sock->write(response);
+                    sock->flush();
+                    sock->disconnectFromHost();
+                });
+
+                QObject::connect(sock, &QTcpSocket::disconnected, sock, &QObject::deleteLater);
+            }
+        });
+
+        return true;
+    }
+
+    QString urlFor(const QString &path) const
+    {
+        return QStringLiteral("http://127.0.0.1:%1%2")
+            .arg(server.serverPort())
+            .arg(path);
+    }
+};
+
+QString sha256Of(const QString &path)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+        return {};
+    QCryptographicHash hash(QCryptographicHash::Sha256);
+    hash.addData(file.readAll());
+    return QString::fromLatin1(hash.result().toHex());
+}
+
+void testMarketInstallSuccess()
+{
+    SECTION("PluginInstaller / 从市场安装（本地 HTTP）");
+
+    ScratchDir scratch;
+    if (!scratch.isValid()) { CHECK(false); return; }
+
+    PluginRegistry reg(scratch.pluginRoot());
+    CHECK(reg.load());
+    PluginInstaller installer(&reg);
+
+    // 造一个真实可装的包
+    const QString zipPath = scratch.path + QStringLiteral("/market.zip");
+    CHECK(writePluginZip(zipPath, QStringLiteral("com.market.one"), QStringLiteral("1.2.0")));
+
+    QFile zf(zipPath);
+    CHECK(zf.open(QIODevice::ReadOnly));
+    const QByteArray zipBytes = zf.readAll();
+    zf.close();
+
+    MiniHttp http;
+    CHECK(http.start());
+    http.routes.insert(QStringLiteral("/pkg.zip"), MiniHttp::Route{200, zipBytes});
+
+    const QString sha = sha256Of(zipPath);
+    CHECK(sha.size() == 64);
+
+    QStringList logs;
+    QObject::connect(&installer, &PluginInstaller::log,
+                     [&](const QString &, const QString &l) { logs.append(l); });
+
+    const QString requestId = installer.installFromMarket(
+        QStringLiteral("com.market.one"), QStringLiteral("1.2.0"),
+        QUrl(http.urlFor(QStringLiteral("/pkg.zip"))), sha, zipBytes.size());
+    CHECK(!requestId.isEmpty());
+
+    bool ok = false;
+    QString code, message;
+    CHECK(waitForInstall(installer, requestId, &ok, &code, &message));
+    if (!ok)
+        std::printf("  market install failed: %s — %s\n",
+                    code.toUtf8().constData(), message.toUtf8().constData());
+    CHECK(ok);
+    CHECK(code.isEmpty());
+
+    // 文件到位
+    CHECK(QFileInfo::exists(reg.pluginDir(QStringLiteral("com.market.one"))
+                            + QStringLiteral("/plugin.json")));
+
+    // 记录里应标记为 market 来源，并留下 sha256 以便日后校验
+    const auto entry = reg.get(QStringLiteral("com.market.one"));
+    CHECK(entry.has_value());
+    if (entry) {
+        CHECK(entry->version == QStringLiteral("1.2.0"));
+        CHECK(entry->origin.kind == QStringLiteral("market"));
+        CHECK(entry->origin.sha256 == sha);
+        CHECK(!entry->origin.url.isEmpty());
+        CHECK(entry->enabled == false);
+    }
+
+    // 日志里应能看到校验通过
+    CHECK(logs.join(QStringLiteral("\n")).contains(QStringLiteral("校验通过")));
+    // 临时目录清干净
+    CHECK(!QDir(reg.tmpDir() + QLatin1Char('/') + requestId).exists());
+}
+
+void testMarketInstallChecksumMismatch()
+{
+    SECTION("PluginInstaller / 校验值不符");
+
+    ScratchDir scratch;
+    if (!scratch.isValid()) { CHECK(false); return; }
+
+    PluginRegistry reg(scratch.pluginRoot());
+    CHECK(reg.load());
+    PluginInstaller installer(&reg);
+
+    const QString zipPath = scratch.path + QStringLiteral("/bad.zip");
+    CHECK(writePluginZip(zipPath, QStringLiteral("com.market.bad"), QStringLiteral("1.0.0")));
+
+    QFile zf(zipPath);
+    CHECK(zf.open(QIODevice::ReadOnly));
+    const QByteArray zipBytes = zf.readAll();
+    zf.close();
+
+    MiniHttp http;
+    CHECK(http.start());
+    http.routes.insert(QStringLiteral("/bad.zip"), MiniHttp::Route{200, zipBytes});
+
+    const QString wrongSha = QString(64, QLatin1Char('0'));
+
+    const QString requestId = installer.installFromMarket(
+        QStringLiteral("com.market.bad"), QStringLiteral("1.0.0"),
+        QUrl(http.urlFor(QStringLiteral("/bad.zip"))), wrongSha, zipBytes.size());
+
+    bool ok = true;
+    QString code;
+    CHECK(waitForInstall(installer, requestId, &ok, &code, nullptr));
+    CHECK(!ok);
+    CHECK(code == QStringLiteral("checksum"));
+
+    // 关键：校验失败不能留下任何东西
+    CHECK(!QDir(reg.pluginDir(QStringLiteral("com.market.bad"))).exists());
+    CHECK(reg.count() == 0);
+    CHECK(!QDir(reg.tmpDir() + QLatin1Char('/') + requestId).exists());
+}
+
+void testMarketInstallHttpError()
+{
+    SECTION("PluginInstaller / HTTP 404");
+
+    ScratchDir scratch;
+    if (!scratch.isValid()) { CHECK(false); return; }
+
+    PluginRegistry reg(scratch.pluginRoot());
+    CHECK(reg.load());
+    PluginInstaller installer(&reg);
+
+    MiniHttp http;
+    CHECK(http.start());
+    // 故意不注册这个路径 -> 服务器回 404
+
+    const QString requestId = installer.installFromMarket(
+        QStringLiteral("com.market.missing"), QStringLiteral("1.0.0"),
+        QUrl(http.urlFor(QStringLiteral("/nope.zip"))), QString(), 0);
+    CHECK(!requestId.isEmpty());
+
+    bool ok = true;
+    QString code;
+    CHECK(waitForInstall(installer, requestId, &ok, &code, nullptr));
+    CHECK(!ok);
+    CHECK(code == QStringLiteral("http-status"));
+    CHECK(reg.count() == 0);
+}
+
+void testMarketInstallVersionMismatch()
+{
+    SECTION("PluginInstaller / 包内版本与索引不符");
+
+    ScratchDir scratch;
+    if (!scratch.isValid()) { CHECK(false); return; }
+
+    PluginRegistry reg(scratch.pluginRoot());
+    CHECK(reg.load());
+    PluginInstaller installer(&reg);
+
+    // 包里写 1.0.0
+    const QString zipPath = scratch.path + QStringLiteral("/vm.zip");
+    CHECK(writePluginZip(zipPath, QStringLiteral("com.market.vm"), QStringLiteral("1.0.0")));
+
+    QFile zf(zipPath);
+    CHECK(zf.open(QIODevice::ReadOnly));
+    const QByteArray zipBytes = zf.readAll();
+    zf.close();
+
+    MiniHttp http;
+    CHECK(http.start());
+    http.routes.insert(QStringLiteral("/vm.zip"), MiniHttp::Route{200, zipBytes});
+
+    // 索引说 2.0.0 —— 不一致必须拒绝（可能索引过期，也可能包被换过）
+    const QString requestId = installer.installFromMarket(
+        QStringLiteral("com.market.vm"), QStringLiteral("2.0.0"),
+        QUrl(http.urlFor(QStringLiteral("/vm.zip"))), sha256Of(zipPath), zipBytes.size());
+
+    bool ok = true;
+    QString code;
+    CHECK(waitForInstall(installer, requestId, &ok, &code, nullptr));
+    CHECK(!ok);
+    CHECK(code == QStringLiteral("version-mismatch"));
+    CHECK(reg.count() == 0);
+}
+
+void testMarketInstallCancelDuringDownload()
+{
+    SECTION("PluginInstaller / 下载中取消");
+
+    ScratchDir scratch;
+    if (!scratch.isValid()) { CHECK(false); return; }
+
+    PluginRegistry reg(scratch.pluginRoot());
+    CHECK(reg.load());
+    PluginInstaller installer(&reg);
+
+    const QString zipPath = scratch.path + QStringLiteral("/cx.zip");
+    CHECK(writePluginZip(zipPath, QStringLiteral("com.market.cx"), QStringLiteral("1.0.0")));
+
+    QFile zf(zipPath);
+    CHECK(zf.open(QIODevice::ReadOnly));
+    const QByteArray zipBytes = zf.readAll();
+    zf.close();
+
+    MiniHttp http;
+    CHECK(http.start());
+    http.routes.insert(QStringLiteral("/cx.zip"), MiniHttp::Route{200, zipBytes});
+
+    const QString requestId = installer.installFromMarket(
+        QStringLiteral("com.market.cx"), QStringLiteral("1.0.0"),
+        QUrl(http.urlFor(QStringLiteral("/cx.zip"))), sha256Of(zipPath), zipBytes.size());
+
+    // 立刻取消：此时还在 downloading/extracting 的排队阶段
+    CHECK(installer.cancel(requestId));
+
+    bool ok = true;
+    QString code;
+    CHECK(waitForInstall(installer, requestId, &ok, &code, nullptr));
+    CHECK(!ok);
+    CHECK(code == QStringLiteral("cancelled"));
+    CHECK(reg.count() == 0);
+    CHECK(!QDir(reg.pluginDir(QStringLiteral("com.market.cx"))).exists());
+}
+
+} // namespace
+
 int main(int argc, char **argv)
 {
     QCoreApplication app(argc, argv);
@@ -2373,6 +2662,12 @@ int main(int argc, char **argv)
     testCatalogCorruptCache();
     testCatalogMergeIntoRows();
     testCatalogIncompatible();
+
+    testMarketInstallSuccess();
+    testMarketInstallChecksumMismatch();
+    testMarketInstallHttpError();
+    testMarketInstallVersionMismatch();
+    testMarketInstallCancelDuringDownload();
 
     std::printf("\n----------------------------------------\n");
     std::printf("checks: %d   failures: %d\n", g_checks, g_failures);

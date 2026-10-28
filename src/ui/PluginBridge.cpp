@@ -96,11 +96,8 @@ void PluginBridge::refresh()
 
 void PluginBridge::install(const QString &id)
 {
-    if (!m_manager)
-        return;
-    // Market lookups need PluginCatalog (M1). Side-loading is available now.
-    emit toast(QStringLiteral("error"),
-               QStringLiteral("从市场安装尚未接入（%1），可先用「从文件安装」").arg(id));
+    if (m_manager)
+        m_manager->requestInstall(id);
 }
 
 void PluginBridge::pickAndInstall()

@@ -93,6 +93,10 @@ public:
     /// Side-load a local .zip. The plugin stays disabled until it loads cleanly.
     void installFromZip(const QString &zipPath);
 
+    /// Install one market entry by id: resolves url/version/sha256 from the catalog
+    /// and hands them to PluginInstaller. Reports `not-found` when the id is unknown.
+    void requestInstall(const QString &id);
+
     /// Ask the installer to stop. Reports "太晚了" when the commit already happened.
     void cancelInstall(const QString &requestId);
 
