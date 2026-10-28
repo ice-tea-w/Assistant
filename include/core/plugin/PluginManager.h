@@ -11,6 +11,7 @@
 class QQmlEngine;
 class PluginRegistry;
 class PluginLoader;
+class PluginInstaller;
 
 /// The single business entry point: **the only place that decides ordering**.
 ///
@@ -38,6 +39,9 @@ public:
 
     /// Inject the engine used by PluginLoader. Must be called before loading.
     void setEngine(QQmlEngine *engine);
+
+    /// Optional (M2). Without it, install intents report "not available".
+    void setInstaller(PluginInstaller *installer);
 
     // ---- read side (what the UI consumes) ----
 
@@ -79,6 +83,12 @@ public:
     void requestUninstall(const QString &id);
     void openPluginDir(const QString &id);
 
+    /// Side-load a local .zip. The plugin stays disabled until it loads cleanly.
+    void installFromZip(const QString &zipPath);
+
+    /// Ask the installer to stop. Reports "太晚了" when the commit already happened.
+    void cancelInstall(const QString &requestId);
+
     /// Emit the current theme to every loaded plugin host.
     void setDark(bool dark);
 
@@ -86,6 +96,13 @@ signals:
     void viewChanged();          ///< any row changed (list must re-read)
     void navigationChanged();    ///< navigation items changed
     void toast(const QString &level, const QString &text);
+
+    // ---- install progress (forwarded from PluginInstaller) ----
+    void installProgress(const QString &requestId, int stage, int percent,
+                         const QString &detail);
+    void installLog(const QString &requestId, const QString &line);
+    void installFinished(const QString &requestId, bool ok, const QString &code,
+                         const QString &message);
 
 private:
     /// Read and validate `<pluginDir>/plugin.json`, caching the result.
@@ -101,6 +118,7 @@ private:
 
     PluginRegistry *m_registry = nullptr;
     PluginLoader   *m_loader   = nullptr;
+    PluginInstaller *m_installer = nullptr;
 
     mutable QHash<QString, PluginManifest> m_manifests;
 };

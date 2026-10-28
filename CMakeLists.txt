@@ -18,6 +18,8 @@ find_package(Qt6 REQUIRED COMPONENTS
 # ---- 查找其他依赖 ----
 find_package(spdlog REQUIRED)
 find_package(nlohmann_json REQUIRED)
+# 插件市场：zip 解压（Qt6 没有公开的 zip API，QZipReader 是私有头）
+find_package(miniz CONFIG REQUIRED)
 # find_package(SQLite3 REQUIRED)    # Phase 2: uncomment when adding HistoryDatabase
 # find_package(GTest REQUIRED)
 
@@ -51,6 +53,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     Qt6::Sql
     nlohmann_json::nlohmann_json
     spdlog::spdlog
+    miniz::miniz
 )
 
 # AppIndexer uses the Windows Shell Link COM interface (IShellLink, SHGetKnownFolderPath)

@@ -18,6 +18,7 @@
 #include "ui/AppBridge.h"
 #include "ui/PanelBridge.h"
 #include "ui/PluginBridge.h"
+#include "core/plugin/PluginInstaller.h"
 #include "core/plugin/PluginLoader.h"
 #include "core/plugin/PluginManager.h"
 #include "core/plugin/PluginRegistry.h"
@@ -149,9 +150,12 @@ int main(int argc, char *argv[])
         }
     }
 
-    PluginLoader  pluginLoader;
-    PluginManager pluginManager(&pluginRegistry, &pluginLoader);
-    PluginBridge  pluginBridge(&pluginManager);
+    PluginLoader    pluginLoader;
+    PluginInstaller pluginInstaller(&pluginRegistry);
+    PluginManager   pluginManager(&pluginRegistry, &pluginLoader);
+    PluginBridge    pluginBridge(&pluginManager);
+
+    pluginManager.setInstaller(&pluginInstaller);
 
     // ---- main panel window (Phase 3 Step 1) ----
     // 常驻主面板：独立 engine，初始隐藏，由 🏠 按钮 / 托盘菜单触发显示。

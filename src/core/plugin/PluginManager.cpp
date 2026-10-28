@@ -1,6 +1,7 @@
 #include "core/plugin/PluginManager.h"
 
 #include "core/Logger.h"
+#include "core/plugin/PluginInstaller.h"
 #include "core/plugin/PluginLoader.h"
 #include "core/plugin/PluginRegistry.h"
 
@@ -72,6 +73,70 @@ void PluginManager::setEngine(QQmlEngine *engine)
 {
     if (m_loader)
         m_loader->setEngine(engine);
+}
+
+void PluginManager::setInstaller(PluginInstaller *installer)
+{
+    m_installer = installer;
+    if (!m_installer)
+        return;
+
+    connect(m_installer, &PluginInstaller::progress, this,
+            [this](const QString &requestId, PluginInstaller::Stage stage,
+                   int percent, const QString &detail) {
+                emit installProgress(requestId, static_cast<int>(stage), percent, detail);
+            });
+
+    connect(m_installer, &PluginInstaller::log, this, &PluginManager::installLog);
+    connect(m_installer, &PluginInstaller::finished, this, &PluginManager::installFinished);
+
+    // A fresh install is enabled right away: the user just asked for it, and a
+    // plugin that lands disabled looks like nothing happened. If loading fails,
+    // enablePlugin() records a problem and the row turns red — still honest.
+    connect(m_installer, &PluginInstaller::installed, this,
+            [this](const QString &pluginId, const QString &version) {
+                Logger::get().info("PluginManager: installed {} v{}, enabling",
+                                   pluginId.toStdString(), version.toStdString());
+                enablePlugin(pluginId);
+
+                auto entry = m_registry ? m_registry->get(pluginId) : std::nullopt;
+                if (entry) {
+                    entry->enabled = true;
+                    QString error;
+                    if (!m_registry->upsertAndSave(*entry, &error))
+                        emit toast(QStringLiteral("error"), error);
+                }
+
+                emit viewChanged();
+                emit navigationChanged();
+            });
+}
+
+void PluginManager::installFromZip(const QString &zipPath)
+{
+    if (!m_installer) {
+        emit toast(QStringLiteral("error"), QStringLiteral("安装功能未接入"));
+        return;
+    }
+
+    if (m_installer->isBusy()) {
+        emit toast(QStringLiteral("error"), QStringLiteral("正在安装另一个插件，请稍候"));
+        return;
+    }
+
+    if (m_installer->installFromZip(zipPath).isEmpty())
+        emit toast(QStringLiteral("error"), QStringLiteral("无法开始安装"));
+}
+
+void PluginManager::cancelInstall(const QString &requestId)
+{
+    if (!m_installer) {
+        emit toast(QStringLiteral("error"), QStringLiteral("没有正在进行的安装"));
+        return;
+    }
+
+    if (!m_installer->cancel(requestId))
+        emit toast(QStringLiteral("error"), QStringLiteral("安装已进入最后一步，无法取消"));
 }
 
 void PluginManager::setDark(bool dark)

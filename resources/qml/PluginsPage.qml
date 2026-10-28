@@ -20,8 +20,29 @@ Rectangle {
     property string category: "全部"
     property string detailId: ""
     property bool   detailOpen: false
-    property bool   installOpen: false
+
+    // ---- 安装进度（完全由 PluginInstaller 的信号驱动，QML 不猜进度）----
+    property bool   installVisible: false
+    property bool   installFinished: false
+    property bool   installOk: true
+    property int    installPercent: 0
+    property int    installStage: 0
+    property string installDetail: ""
     property string installRequestId: ""
+    property string installMessage: ""
+    property var    installLog: []
+
+    function beginInstall(requestId) {
+        installRequestId = requestId
+        installFinished   = false
+        installOk         = true
+        installPercent    = 0
+        installStage      = 0
+        installDetail     = "准备中"
+        installMessage    = ""
+        installLog        = []
+        installVisible    = true
+    }
 
     // ---- 主题 ----
     readonly property color textColor:  Style.textColor
@@ -114,7 +135,7 @@ Rectangle {
 
     focus: true
     Keys.onEscapePressed: {
-        if (installOpen) { installOpen = false; return }
+        if (installVisible) { installVisible = false; return }
         if (detailOpen)  { detailOpen = false; return }
     }
 
@@ -167,6 +188,28 @@ Rectangle {
                         color: page.mutedColor
                         font.pixelSize: 11
                     }
+                }
+            }
+
+            // 从文件安装（侧载）
+            Rectangle {
+                Layout.preferredHeight: 26
+                Layout.preferredWidth: installLabel.implicitWidth + 20
+                radius: Style.radiusSmall
+                color: page.accentColor
+
+                Text {
+                    id: installLabel
+                    anchors.centerIn: parent
+                    text: "从文件安装"
+                    color: Style.accentTextColor
+                    font.pixelSize: 11
+                }
+
+                MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: { if (page.api) page.api.pickAndInstall() }
                 }
             }
 
@@ -290,9 +333,8 @@ Rectangle {
                     pluginEnabled: modelData.pluginEnabled
 
                     onInstallClicked: {
+                        // 市场安装要等 M1（PluginCatalog）；这里只提示，不假装开始安装
                         if (page.api) page.api.install(pluginId)
-                        page.installRequestId = pluginId
-                        page.installOpen = true
                     }
                     onCancelClicked: {
                         if (page.api) page.api.cancelInstall(pluginId)
@@ -613,10 +655,12 @@ Rectangle {
         }
     }
 
-    // ══════════ 安装对话框 ══════════
+    // ══════════ 安装进度对话框 ══════════
+    // 显示什么完全由 PluginInstaller 的 progress / log / finished 信号决定。
     Item {
+        id: installOverlay
         anchors.fill: parent
-        visible: installOpen
+        visible: page.installVisible
         z: 20
 
         Rectangle {
@@ -626,77 +670,125 @@ Rectangle {
 
             MouseArea {
                 anchors.fill: parent
-                onClicked: page.installOpen = false
+                onClicked: page.installVisible = false
             }
         }
 
         Rectangle {
-            width: 380
-            height: 240
+            width: 400
+            height: 300
             anchors.centerIn: parent
             radius: Style.radius
             color: page.panelColor
             border.width: 1
             border.color: page.borderColor
 
-            property var row: page.installRequestId !== "" ? page.findRow(page.installRequestId) : null
-
             ColumnLayout {
                 anchors.fill: parent
                 anchors.margins: 16
                 spacing: 10
 
-                Text {
-                    text: installPanel.row ? ("安装 " + installPanel.row.name
-                                             + "  v" + installPanel.row.version)
-                                           : "安装插件"
-                    color: page.textColor
-                    font.pixelSize: 14
-                    font.bold: true
-                }
-
-                // 信任提示（常驻不折叠，LLD §9.4）
-                Rectangle {
+                RowLayout {
                     Layout.fillWidth: true
-                    Layout.preferredHeight: 56
-                    radius: Style.radiusSmall
-                    color: Style.isDark ? "#332b1a" : "#fdf8ec"
 
                     Text {
-                        anchors.fill: parent
-                        anchors.margins: 8
-                        text: "插件以你的权限在本程序内运行，可读写你的文件。"
-                              + "只安装你信任的来源。已安装的插件不会自动更新。"
-                        color: Style.isDark ? "#d8b878" : "#9a6b1e"
-                        font.pixelSize: 10
-                        wrapMode: Text.Wrap
+                        Layout.fillWidth: true
+                        text: page.installFinished
+                              ? (page.installOk ? "安装完成" : "安装失败")
+                              : "正在安装插件"
+                        color: page.installFinished && !page.installOk
+                               ? Style.dangerColor : page.textColor
+                        font.pixelSize: 14
+                        font.bold: true
                     }
-                }
 
-                // 阶段清单（M0 只有占位；M2 接真实进度）
-                ColumnLayout {
-                    Layout.fillWidth: true
-                    spacing: 4
-
-                    Repeater {
-                        model: ["解析清单", "下载", "解压", "校验清单", "提交"]
-                        RowLayout {
-                            spacing: 8
-                            Text {
-                                text: "○"
-                                color: page.mutedColor
-                                font.pixelSize: 11
-                            }
-                            Text {
-                                text: modelData
-                                color: page.mutedColor
-                                font.pixelSize: 11
-                            }
+                    Item {
+                        width: 16; height: 16
+                        Text {
+                            anchors.centerIn: parent
+                            text: "✕"
+                            color: closeInstallMouse.containsMouse
+                                   ? page.textColor : page.mutedColor
+                            font.pixelSize: 14
+                        }
+                        MouseArea {
+                            id: closeInstallMouse
+                            anchors.fill: parent
+                            anchors.margins: -6
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: page.installVisible = false
                         }
                     }
                 }
 
-                Item { Layout.fillHeight: true }
+                // 进度条
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 6
+                    radius: 3
+                    visible: !page.installFinished
+                    color: Style.isDark ? "#3a3a3a" : "#e6e6e6"
+
+                    Rectangle {
+                        width: parent.width * Math.max(0, Math.min(1, page.installPercent / 100))
+                        height: parent.height
+                        radius: 3
+                        color: Style.accentColor
+                        Behavior on width { NumberAnimation { duration: 180 } }
+                    }
+                }
+
+                Text {
+                    Layout.fillWidth: true
+                    text: page.installFinished
+                          ? (page.installOk
+                             ? (page.installMessage !== "" ? page.installMessage
+                                                           : "插件已写入并启用")
+                             : page.installMessage)
+                          : page.installDetail
+                    color: page.installFinished && !page.installOk
+                           ? Style.dangerColor : page.mutedColor
+                    font.pixelSize: 11
+                    wrapMode: Text.Wrap
+                }
+
+                // 安装日志
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    radius: Style.radiusSmall
+                    color: Style.isDark ? "#242424" : "#fafafa"
+                    border.width: 1
+                    border.color: page.borderColor
+
+                    ListView {
+                        id: installLogList
+                        anchors.fill: parent
+                        anchors.margins: 8
+                        clip: true
+                        model: page.installLog
+                        spacing: 2
+                        onCountChanged: positionViewAtEnd()
+
+                        delegate: Text {
+                            width: ListView.view.width
+                            text: modelData
+                            color: page.mutedColor
+                            font.pixelSize: 10
+                            font.family: "Consolas"
+                            wrapMode: Text.Wrap
+                        }
+                    }
+
+                    Text {
+                        anchors.centerIn: parent
+                        visible: installLogList.count === 0
+                        text: "等待开始…"
+                        color: page.mutedColor
+                        font.pixelSize: 10
+                    }
+                }
 
                 RowLayout {
                     Layout.fillWidth: true
@@ -704,7 +796,7 @@ Rectangle {
                     Item { Layout.fillWidth: true }
 
                     Rectangle {
-                        Layout.preferredWidth: 70
+                        Layout.preferredWidth: 88
                         Layout.preferredHeight: 28
                         radius: Style.radiusSmall
                         color: "transparent"
@@ -713,7 +805,7 @@ Rectangle {
 
                         Text {
                             anchors.centerIn: parent
-                            text: "取消"
+                            text: page.installFinished ? "关闭" : "取消安装"
                             color: page.textColor
                             font.pixelSize: 12
                         }
@@ -721,30 +813,12 @@ Rectangle {
                         MouseArea {
                             anchors.fill: parent
                             cursorShape: Qt.PointingHandCursor
-                            onClicked: page.installOpen = false
-                        }
-                    }
-
-                    Rectangle {
-                        Layout.preferredWidth: 70
-                        Layout.preferredHeight: 28
-                        radius: Style.radiusSmall
-                        color: page.accentColor
-
-                        Text {
-                            anchors.centerIn: parent
-                            text: "开始安装"
-                            color: Style.accentTextColor
-                            font.pixelSize: 12
-                        }
-
-                        MouseArea {
-                            anchors.fill: parent
-                            cursorShape: Qt.PointingHandCursor
                             onClicked: {
-                                if (page.api) page.api.install(page.installRequestId)
-                                page.installOpen = false
-                                page.showToast(true, "已发起安装")
+                                if (page.installFinished) {
+                                    page.installVisible = false
+                                } else if (page.api && page.installRequestId !== "") {
+                                    page.api.cancelInstall(page.installRequestId)
+                                }
                             }
                         }
                     }
@@ -752,7 +826,6 @@ Rectangle {
             }
         }
     }
-
     // ══════════ 页内 toast ══════════
     Rectangle {
         id: toast
@@ -796,6 +869,35 @@ Rectangle {
 
         function onToast(level, text) {
             page.showToast(level !== "error", text)
+        }
+
+        // 第一个 progress 到达时才知道 requestId，此时开对话框
+        function onInstallProgress(requestId, stage, percent, detail) {
+            if (!page.installVisible || page.installRequestId !== requestId)
+                page.beginInstall(requestId)
+            page.installStage   = stage
+            page.installPercent = percent
+            page.installDetail  = detail
+        }
+
+        function onInstallLog(requestId, line) {
+            if (page.installRequestId !== requestId)
+                return
+            var lines = page.installLog.slice()
+            lines.push(line)
+            if (lines.length > 200)          // 只留最近 200 行，避免无限增长
+                lines = lines.slice(lines.length - 200)
+            page.installLog = lines
+        }
+
+        function onInstallFinished(requestId, ok, code, message) {
+            if (page.installRequestId !== requestId)
+                return
+            page.installFinished = true
+            page.installOk       = ok
+            page.installMessage  = message !== "" ? message
+                                                  : (ok ? "" : "失败：" + code)
+            page.installPercent  = 100
         }
     }
 }

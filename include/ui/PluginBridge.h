@@ -44,6 +44,12 @@ public:
     // ---- intents (thin pass-through) ----
     Q_INVOKABLE void refresh();
     Q_INVOKABLE void install(const QString &id);
+
+    /// Open the native file picker and side-load the chosen .zip.
+    /// A file picker is used instead of QML FileDialog because QtQuick.Dialogs is
+    /// not part of the modules this project links; Widgets is.
+    Q_INVOKABLE void pickAndInstall();
+
     Q_INVOKABLE void installFromZip(const QString &zipPath);
     Q_INVOKABLE void cancelInstall(const QString &requestId);
     Q_INVOKABLE void setEnabled(const QString &id, bool enabled);
@@ -61,6 +67,13 @@ signals:
     void catalogChanged();
     void loadingChanged();
     void toast(const QString &level, const QString &text);
+
+    // ---- install progress (forwarded from PluginManager) ----
+    void installProgress(const QString &requestId, int stage, int percent,
+                         const QString &detail);
+    void installLog(const QString &requestId, const QString &line);
+    void installFinished(const QString &requestId, bool ok, const QString &code,
+                         const QString &message);
 
 private:
     PluginManager *m_manager = nullptr;

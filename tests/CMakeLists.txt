@@ -29,6 +29,7 @@ set(CMAKE_AUTOMOC_RELAXED_MODE ON)
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Qml)
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
+find_package(miniz CONFIG REQUIRED)
 
 set(REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/..")
 
@@ -40,12 +41,16 @@ add_executable(assistant_core_tests
     ${REPO_ROOT}/include/core/plugin/PluginHost.h
     ${REPO_ROOT}/include/core/plugin/PluginLoader.h
     ${REPO_ROOT}/include/core/plugin/PluginManager.h
+    ${REPO_ROOT}/include/core/plugin/PluginInstaller.h
     ${REPO_ROOT}/src/core/plugin/SemVer.cpp
     ${REPO_ROOT}/src/core/plugin/PluginManifest.cpp
     ${REPO_ROOT}/src/core/plugin/PluginRegistry.cpp
     ${REPO_ROOT}/src/core/plugin/PluginHost.cpp
     ${REPO_ROOT}/src/core/plugin/PluginLoader.cpp
     ${REPO_ROOT}/src/core/plugin/PluginManager.cpp
+    ${REPO_ROOT}/src/core/plugin/PluginSpec.cpp
+    ${REPO_ROOT}/src/core/plugin/PluginArchive.cpp
+    ${REPO_ROOT}/src/core/plugin/PluginInstaller.cpp
     ${REPO_ROOT}/src/core/Logger.cpp
 )
 
@@ -59,6 +64,7 @@ target_link_libraries(assistant_core_tests PRIVATE
     Qt6::Qml      # QQmlEngine / QQmlComponent (PluginLoader)
     nlohmann_json::nlohmann_json
     spdlog::spdlog
+    miniz::miniz
 )
 
 # The shipped app locates QML modules through the generated qt.conf. The test

@@ -8,7 +8,10 @@
 
 #include "core/plugin/PluginHost.h"
 #include "core/plugin/PluginLoader.h"
+#include "core/plugin/PluginArchive.h"
+#include "core/plugin/PluginInstaller.h"
 #include "core/plugin/PluginManager.h"
+#include "core/plugin/PluginSpec.h"
 #include "core/plugin/PluginManifest.h"
 #include "core/plugin/PluginRegistry.h"
 #include "core/plugin/SemVer.h"
@@ -17,12 +20,16 @@
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
+#include <QEventLoop>
 #include <QFileInfo>
 #include <QPointer>
+#include <QTimer>
 #include <QString>
 #include <QQmlEngine>
 #include <QVariantList>
 #include <QVariantMap>
+
+#include <miniz.h>
 
 #include <cstdio>
 
@@ -1438,9 +1445,673 @@ QtObject {
 
 } // namespace
 
+// ---------------------------------------------------------------------------
+// PluginSpec + PluginArchive (M2 安装管线的纯工具层)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// Build a zip with arbitrary entry names.
+/// Writing the archive ourselves is the only way to craft the hostile names that
+/// zip-slip protection must reject — a "nice" archive can't reproduce them.
+bool makeZip(const QString &zipPath,
+             const QList<QPair<QByteArray, QByteArray>> &entries)
+{
+    mz_zip_archive zip{};
+    if (!mz_zip_writer_init_file(&zip, zipPath.toUtf8().constData(), 0))
+        return false;
+
+    bool ok = true;
+    for (const auto &entry : entries) {
+        if (!mz_zip_writer_add_mem(&zip, entry.first.constData(),
+                                   entry.second.constData(),
+                                   static_cast<size_t>(entry.second.size()),
+                                   MZ_BEST_COMPRESSION)) {
+            ok = false;
+        }
+    }
+
+    if (!mz_zip_writer_finalize_archive(&zip))
+        ok = false;
+    if (!mz_zip_writer_end(&zip))
+        ok = false;
+
+    return ok;
+}
+
+QByteArray minimalManifestJson(const QString &id)
+{
+    return QStringLiteral(R"({
+        "manifestVersion": 1,
+        "id": "%1",
+        "name": "打包测试",
+        "version": "1.0.0",
+        "main": "main.qml"
+    })").arg(id).toUtf8();
+}
+
+void testPluginSpec()
+{
+    SECTION("PluginSpec / parse");
+
+    // ---- id ----
+    {
+        QString err;
+        const auto s = PluginSpec::parse(QStringLiteral("com.assistant.weather"), &err);
+        CHECK(s.has_value());
+        if (s) {
+            CHECK(s->kind == PluginSpec::Kind::Id);
+            CHECK(s->id == QStringLiteral("com.assistant.weather"));
+            CHECK(s->needsMarketLookup());
+            CHECK(!s->isLocal());
+        }
+    }
+
+    // ---- id@version ----
+    {
+        QString err;
+        const auto s = PluginSpec::parse(QStringLiteral("com.a.b@1.2.0"), &err);
+        CHECK(s.has_value());
+        if (s) {
+            CHECK(s->kind == PluginSpec::Kind::IdVersion);
+            CHECK(s->id == QStringLiteral("com.a.b"));
+            CHECK(s->version == QStringLiteral("1.2.0"));
+        }
+    }
+
+    // Ranges are not versions — must be refused, not silently never matched.
+    CHECK(!PluginSpec::parse(QStringLiteral("com.a.b@^1.2")).has_value());
+    CHECK(!PluginSpec::parse(QStringLiteral("com.a.b@>=1.0.0")).has_value());
+    CHECK(!PluginSpec::parse(QStringLiteral("com.a.b@1.0")).has_value());
+    CHECK(!PluginSpec::parse(QStringLiteral("com.a.b@")).has_value());
+
+    // ---- URL ----
+    {
+        const auto s = PluginSpec::parse(QStringLiteral("https://example.com/pkg-1.0.0.zip"));
+        CHECK(s.has_value());
+        if (s) {
+            CHECK(s->kind == PluginSpec::Kind::Url);
+            CHECK(s->isRemote());
+            CHECK(s->url.host() == QStringLiteral("example.com"));
+        }
+    }
+    {
+        // Loopback is allowed as a URL (the installer gates the scheme, not the parser).
+        const auto s = PluginSpec::parse(QStringLiteral("http://127.0.0.1:8000/index.json"));
+        CHECK(s.has_value());
+        if (s)
+            CHECK(s->kind == PluginSpec::Kind::Url);
+    }
+
+    // ---- rejections ----
+    CHECK(!PluginSpec::parse(QString()).has_value());
+    CHECK(!PluginSpec::parse(QStringLiteral("   ")).has_value());
+    CHECK(!PluginSpec::parse(QStringLiteral("AB")).has_value());            // too short
+    CHECK(!PluginSpec::parse(QStringLiteral("Com.A.B")).has_value());       // uppercase
+    CHECK(!PluginSpec::parse(QStringLiteral("-abc")).has_value());          // bad first char
+    // A path that does not exist must fail here rather than later.
+    CHECK(!PluginSpec::parse(QStringLiteral("D:/no/such/file.zip")).has_value());
+}
+
+void testPluginSpecLocalPath()
+{
+    SECTION("PluginSpec / local path");
+
+    ScratchDir scratch;
+    if (!scratch.isValid()) { CHECK(false); return; }
+
+    const QString zipPath = scratch.path + QStringLiteral("/pkg.zip");
+    CHECK(writeTextFile(zipPath, QByteArray("PK\x03\x04 not a real zip")));
+
+    QString err;
+    const auto s = PluginSpec::parse(zipPath, &err);
+    CHECK(s.has_value());
+    if (s) {
+        CHECK(s->kind == PluginSpec::Kind::LocalPath);
+        CHECK(s->isLocal());
+        CHECK(s->path.endsWith(QStringLiteral("pkg.zip")));
+        CHECK(QFileInfo(s->path).isAbsolute());
+    }
+
+    // Backslash form must resolve to the same thing.
+    QString windowsStyle = zipPath;
+    windowsStyle.replace(QLatin1Char('/'), QLatin1Char('\\'));
+    const auto s2 = PluginSpec::parse(windowsStyle);
+    CHECK(s2.has_value());
+    if (s2)
+        CHECK(s2->kind == PluginSpec::Kind::LocalPath);
+}
+
+void testArchiveEntryNames()
+{
+    SECTION("PluginArchive / entry name gate");
+
+    // Legitimate names
+    CHECK(PluginArchive::checkEntryName(QStringLiteral("plugin.json")).isEmpty());
+    CHECK(PluginArchive::checkEntryName(QStringLiteral("qml/Page.qml")).isEmpty());
+    CHECK(PluginArchive::checkEntryName(QStringLiteral("qml/")).isEmpty());
+    CHECK(PluginArchive::checkEntryName(QStringLiteral("sub\\Page.qml")).isEmpty());
+
+    // Hostile names
+    CHECK(!PluginArchive::checkEntryName(QStringLiteral("../evil.txt")).isEmpty());
+    CHECK(!PluginArchive::checkEntryName(QStringLiteral("a/../../evil.txt")).isEmpty());
+    CHECK(!PluginArchive::checkEntryName(QStringLiteral("..\\evil.txt")).isEmpty());
+    CHECK(!PluginArchive::checkEntryName(QStringLiteral("/abs.txt")).isEmpty());
+    CHECK(!PluginArchive::checkEntryName(QStringLiteral("C:/Windows/evil.txt")).isEmpty());
+    CHECK(!PluginArchive::checkEntryName(QStringLiteral("C:\\Windows\\evil.txt")).isEmpty());
+    CHECK(!PluginArchive::checkEntryName(QStringLiteral("file.txt:stream")).isEmpty());
+    CHECK(!PluginArchive::checkEntryName(QString()).isEmpty());
+}
+
+void testArchiveExtract()
+{
+    SECTION("PluginArchive / extract happy paths");
+
+    ScratchDir scratch;
+    if (!scratch.isValid()) { CHECK(false); return; }
+
+    const QString id = QStringLiteral("com.pack.one");
+
+    // --- plugin.json at the archive root ---
+    {
+        const QString zipPath = scratch.path + QStringLiteral("/flat.zip");
+        CHECK(makeZip(zipPath, {
+            { "plugin.json", minimalManifestJson(id) },
+            { "main.qml", "import QtQml\nQtObject{}\n" },
+            { "qml/Page.qml", "import QtQml\nQtObject{}\n" },
+        }));
+
+        const QString target = scratch.path + QStringLiteral("/out-flat");
+        const auto r = PluginArchive::extract(zipPath, target);
+        CHECK(r.ok);
+        if (r.ok) {
+            CHECK(r.code.isEmpty());
+            CHECK(r.fileCount == 3);
+            CHECK(QDir::cleanPath(r.packageRoot) == QDir::cleanPath(target));
+            CHECK(QFileInfo::exists(target + QStringLiteral("/plugin.json")));
+            CHECK(QFileInfo::exists(target + QStringLiteral("/qml/Page.qml")));
+
+            const QString found = PluginArchive::findPackageRoot(target);
+            CHECK(QDir::cleanPath(found) == QDir::cleanPath(target));
+        }
+    }
+
+    // --- everything wrapped in one top-level folder ---
+    {
+        const QString zipPath = scratch.path + QStringLiteral("/wrapped.zip");
+        CHECK(makeZip(zipPath, {
+            { "pkg-1.0.0/plugin.json", minimalManifestJson(id) },
+            { "pkg-1.0.0/main.qml", "import QtQml\nQtObject{}\n" },
+        }));
+
+        const QString target = scratch.path + QStringLiteral("/out-wrapped");
+        const auto r = PluginArchive::extract(zipPath, target);
+        CHECK(r.ok);
+        if (r.ok) {
+            CHECK(QDir::cleanPath(r.packageRoot)
+                  == QDir::cleanPath(target + QStringLiteral("/pkg-1.0.0")));
+            CHECK(QFileInfo::exists(r.packageRoot + QStringLiteral("/plugin.json")));
+        }
+    }
+}
+
+void testArchiveRejects()
+{
+    SECTION("PluginArchive / rejects");
+
+    ScratchDir scratch;
+    if (!scratch.isValid()) { CHECK(false); return; }
+
+    // --- missing file ---
+    {
+        const auto r = PluginArchive::extract(scratch.path + QStringLiteral("/nope.zip"),
+                                             scratch.path + QStringLiteral("/out0"));
+        CHECK(!r.ok);
+        CHECK(r.code == QStringLiteral("not-found"));
+    }
+
+    // --- not a zip at all ---
+    {
+        const QString bogus = scratch.path + QStringLiteral("/bogus.zip");
+        CHECK(writeTextFile(bogus, QByteArray("this is definitely not a zip archive")));
+        const auto r = PluginArchive::extract(bogus, scratch.path + QStringLiteral("/out1"));
+        CHECK(!r.ok);
+        CHECK(r.code == QStringLiteral("invalid-zip"));
+    }
+
+    // --- archive without plugin.json ---
+    {
+        const QString zipPath = scratch.path + QStringLiteral("/noplugin.zip");
+        CHECK(makeZip(zipPath, { { "readme.txt", "hello" } }));
+        const QString target = scratch.path + QStringLiteral("/out2");
+        const auto r = PluginArchive::extract(zipPath, target);
+        CHECK(!r.ok);
+        CHECK(r.code == QStringLiteral("not-a-plugin"));
+        CHECK(!QDir(target).exists());       // half-extracted tree must be gone
+    }
+
+    // --- zip-slip: relative escape ---
+    {
+        const QString zipPath = scratch.path + QStringLiteral("/slip1.zip");
+        CHECK(makeZip(zipPath, {
+            { "plugin.json", minimalManifestJson(QStringLiteral("com.pack.evil")) },
+            { "../escaped.txt", "pwned" },
+        }));
+        const QString target = scratch.path + QStringLiteral("/out3");
+        const auto r = PluginArchive::extract(zipPath, target);
+        CHECK(!r.ok);
+        CHECK(r.code == QStringLiteral("zip-slip"));
+        CHECK(!QFileInfo::exists(scratch.path + QStringLiteral("/escaped.txt")));
+        CHECK(!QDir(target).exists());
+    }
+
+    // --- zip-slip: absolute path ---
+    // miniz's *writer* refuses to create an entry starting with '/', so this archive
+    // cannot be crafted with the tool at hand. The gate itself is covered by
+    // testArchiveEntryNames ("/abs.txt"); here we only assert the outcome if a
+    // future writer does manage to produce one.
+    {
+        const QString zipPath = scratch.path + QStringLiteral("/slip2.zip");
+        const bool created = makeZip(zipPath, {
+            { "plugin.json", minimalManifestJson(QStringLiteral("com.pack.evil2")) },
+            { "/abs-escaped.txt", "pwned" },
+        });
+
+        if (created) {
+            const auto r = PluginArchive::extract(zipPath, scratch.path + QStringLiteral("/out4"));
+            CHECK(!r.ok);
+            CHECK(r.code == QStringLiteral("zip-slip"));
+        } else {
+            std::printf("  note: writer refused a leading-'/' entry; "
+                        "the name gate is covered by testArchiveEntryNames\n");
+        }
+    }
+
+    // --- zip-slip: drive letter ---
+    {
+        const QString zipPath = scratch.path + QStringLiteral("/slip3.zip");
+        CHECK(makeZip(zipPath, {
+            { "plugin.json", minimalManifestJson(QStringLiteral("com.pack.evil3")) },
+            { "C:/Windows/evil.txt", "pwned" },
+        }));
+        const auto r = PluginArchive::extract(zipPath, scratch.path + QStringLiteral("/out5"));
+        CHECK(!r.ok);
+        CHECK(r.code == QStringLiteral("zip-slip"));
+    }
+
+    // --- zip-slip: backslash dodge ---
+    {
+        const QString zipPath = scratch.path + QStringLiteral("/slip4.zip");
+        CHECK(makeZip(zipPath, {
+            { "plugin.json", minimalManifestJson(QStringLiteral("com.pack.evil4")) },
+            { "a\\..\\..\\escaped2.txt", "pwned" },
+        }));
+        const auto r = PluginArchive::extract(zipPath, scratch.path + QStringLiteral("/out6"));
+        CHECK(!r.ok);
+        CHECK(r.code == QStringLiteral("zip-slip"));
+    }
+}
+
+} // namespace
+
+// ---------------------------------------------------------------------------
+// PluginInstaller
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// Block until this request finishes. The installer drives its stages through the
+/// event loop (so Cancel can be handled between them), which means tests must run
+/// the loop too rather than calling the stages synchronously.
+bool waitForInstall(PluginInstaller &installer, const QString &requestId,
+                    bool *ok, QString *code, QString *message, int timeoutMs = 5000)
+{
+    QEventLoop loop;
+    bool done = false;
+
+    QMetaObject::Connection conn = QObject::connect(
+        &installer, &PluginInstaller::finished, &loop,
+        [&](const QString &id, bool o, const QString &c, const QString &m) {
+            if (id != requestId)
+                return;
+            done = true;
+            if (ok)      *ok = o;
+            if (code)    *code = c;
+            if (message) *message = m;
+            loop.quit();
+        });
+
+    QTimer::singleShot(timeoutMs, &loop, &QEventLoop::quit);
+    loop.exec();
+    QObject::disconnect(conn);
+    return done;
+}
+
+/// A valid, installable package.
+QByteArray pluginZip(const QString &id, const QString &version,
+                     const QByteArray &mainQml = "import QtQml\nQtObject{}\n")
+{
+    return QByteArray();   // unused placeholder; archives are built with makeZip
+}
+
+struct PackageSpec
+{
+    QString id;
+    QString version;
+    QByteArray manifestOverride;   ///< when non-empty, used verbatim
+};
+
+/// Build a .zip that unzips to plugin.json + main.qml at the archive root.
+bool writePluginZip(const QString &zipPath, const QString &id, const QString &version,
+                    const QByteArray &manifestOverride = QByteArray(),
+                    const QByteArray &mainQml = QByteArray())
+{
+    const QByteArray manifest = manifestOverride.isEmpty()
+        ? QStringLiteral(R"({
+            "manifestVersion": 1,
+            "id": "%1",
+            "name": "安装测试",
+            "version": "%2",
+            "main": "main.qml"
+        })").arg(id, version).toUtf8()
+        : manifestOverride;
+
+    const QByteArray main = mainQml.isEmpty()
+        ? QByteArray("import QtQml\nQtObject{}\n")
+        : mainQml;
+
+    return makeZip(zipPath, {
+        { "plugin.json", manifest },
+        { "main.qml", main },
+    });
+}
+
+void testInstallerSuccess()
+{
+    SECTION("PluginInstaller / success path");
+
+    ScratchDir scratch;
+    if (!scratch.isValid()) { CHECK(false); return; }
+
+    PluginRegistry reg(scratch.pluginRoot());
+    CHECK(reg.load());
+    PluginInstaller installer(&reg);
+
+    const QString zipPath = scratch.path + QStringLiteral("/pkg.zip");
+    CHECK(writePluginZip(zipPath, QStringLiteral("com.inst.one"), QStringLiteral("1.0.0")));
+
+    QStringList logLines;
+    QObject::connect(&installer, &PluginInstaller::log, [&](const QString &, const QString &l) {
+        logLines.append(l);
+    });
+
+    const QString requestId = installer.installFromZip(zipPath);
+    CHECK(!requestId.isEmpty());
+
+    bool ok = false;
+    QString code, message;
+    CHECK(waitForInstall(installer, requestId, &ok, &code, &message));
+    CHECK(ok);
+    CHECK(code.isEmpty());
+
+    // Files landed
+    CHECK(QDir(reg.pluginDir(QStringLiteral("com.inst.one"))).exists());
+    CHECK(QFileInfo::exists(reg.pluginDir(QStringLiteral("com.inst.one"))
+                            + QStringLiteral("/plugin.json")));
+
+    // Registry recorded it, disabled until the manager enables it
+    const auto entry = reg.get(QStringLiteral("com.inst.one"));
+    CHECK(entry.has_value());
+    if (entry) {
+        CHECK(entry->version == QStringLiteral("1.0.0"));
+        CHECK(entry->enabled == false);
+        CHECK(entry->origin.kind == QStringLiteral("local"));
+        CHECK(entry->problem.isNull());
+    }
+
+    // Temp dir cleaned up
+    CHECK(!QDir(reg.tmpDir() + QLatin1Char('/') + requestId).exists());
+
+    // Log file written (.logs/<requestId>.log)
+    CHECK(QFileInfo::exists(reg.logsDir() + QLatin1Char('/') + requestId
+                            + QStringLiteral(".log")));
+    CHECK(!logLines.isEmpty());
+}
+
+void testInstallerPreCommitFailures()
+{
+    SECTION("PluginInstaller / pre-commit failures leave nothing behind");
+
+    ScratchDir scratch;
+    if (!scratch.isValid()) { CHECK(false); return; }
+
+    PluginRegistry reg(scratch.pluginRoot());
+    CHECK(reg.load());
+    PluginInstaller installer(&reg);
+
+    // Snapshot the state file so we can prove it was not touched.
+    const QByteArray stateBefore = [&reg] {
+        QFile f(reg.stateFile());
+        return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+    }();
+
+    const auto expectFail = [&](const QString &zipPath, const QString &expectedCode) {
+        const QString requestId = installer.installFromZip(zipPath);
+        if (requestId.isEmpty()) {
+            std::printf("  note: install rejected outright for %s\n",
+                        expectedCode.toUtf8().constData());
+            return;
+        }
+        bool ok = true;
+        QString code, message;
+        const bool finished = waitForInstall(installer, requestId, &ok, &code, &message);
+        CHECK(finished);
+        CHECK(!ok);
+        if (code != expectedCode) {
+            std::printf("  expected code '%s' but got '%s'\n",
+                        expectedCode.toUtf8().constData(), code.toUtf8().constData());
+        }
+        CHECK(code == expectedCode);
+        CHECK(reg.count() == 0);                        // registry untouched
+    };
+
+    // 1. missing file
+    expectFail(scratch.path + QStringLiteral("/nope.zip"), QStringLiteral("not-found"));
+
+    // 2. not a zip
+    {
+        const QString p = scratch.path + QStringLiteral("/bogus.zip");
+        CHECK(writeTextFile(p, QByteArray("not a zip")));
+        expectFail(p, QStringLiteral("invalid-zip"));
+    }
+
+    // 3. zip without plugin.json
+    {
+        const QString p = scratch.path + QStringLiteral("/nomanifest.zip");
+        CHECK(makeZip(p, { { "readme.txt", "hi" } }));
+        expectFail(p, QStringLiteral("not-a-plugin"));
+    }
+
+    // 4. zip-slip
+    {
+        const QString p = scratch.path + QStringLiteral("/slip.zip");
+        CHECK(makeZip(p, {
+            { "plugin.json", QStringLiteral(R"({"manifestVersion":1,"id":"com.inst.evil","name":"x","version":"1.0.0","main":"main.qml"})").toUtf8() },
+            { "../escaped.txt", "pwned" },
+        }));
+        expectFail(p, QStringLiteral("zip-slip"));
+        CHECK(!QDir(reg.pluginDir(QStringLiteral("com.inst.evil"))).exists());
+    }
+
+    // 5. invalid manifest (bad version)
+    {
+        const QString p = scratch.path + QStringLiteral("/badmanifest.zip");
+        CHECK(writePluginZip(p, QStringLiteral("com.inst.bad"), QStringLiteral("1.0"),
+                             QByteArray(R"({"manifestVersion":1,"id":"com.inst.bad","name":"x","version":"1.0","main":"main.qml"})")));
+        expectFail(p, QStringLiteral("invalid-manifest"));
+    }
+
+    // 6. incompatible engines range — must fail because of the declared range,
+    //    not because the host version is unparsable.
+    {
+        const QString p = scratch.path + QStringLiteral("/incompat.zip");
+        CHECK(writePluginZip(p, QStringLiteral("com.inst.old"), QStringLiteral("1.0.0"),
+                             QByteArray(R"({"manifestVersion":1,"id":"com.inst.old","name":"x","version":"1.0.0","main":"main.qml","engines":{"assistant":">=99.0.0"}})")));
+
+        const QString requestId = installer.installFromZip(p);
+        bool ok = true;
+        QString code, message;
+        CHECK(waitForInstall(installer, requestId, &ok, &code, &message));
+        CHECK(!ok);
+        CHECK(code == QStringLiteral("incompatible-version"));
+        // 这条断言就是防"假通过"的关键：错误信息必须提到范围，而不是空版本。
+        if (!message.contains(QStringLiteral("99.0.0")))
+            std::printf("  message was: %s\n", message.toUtf8().constData());
+        CHECK(message.contains(QStringLiteral("99.0.0")));
+        CHECK(reg.count() == 0);
+    }
+
+    // The state file must be byte-identical: six failures, zero writes.
+    {
+        QFile f(reg.stateFile());
+        CHECK(f.open(QIODevice::ReadOnly));
+        CHECK(f.readAll() == stateBefore);
+    }
+
+    // No leftover plugin directories either.
+    const QStringList leftovers = QDir(reg.rootDir())
+        .entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+    QStringList realOnes;
+    for (const QString &d : leftovers) {
+        if (!d.startsWith(QLatin1Char('.')))
+            realOnes.append(d);
+    }
+    CHECK(realOnes.isEmpty());
+}
+
+void testInstallerAlreadyInstalledAndUpgrade()
+{
+    SECTION("PluginInstaller / already-installed + upgrade");
+
+    ScratchDir scratch;
+    if (!scratch.isValid()) { CHECK(false); return; }
+
+    PluginRegistry reg(scratch.pluginRoot());
+    CHECK(reg.load());
+    PluginInstaller installer(&reg);
+
+    const QString v1 = scratch.path + QStringLiteral("/v1.zip");
+    CHECK(writePluginZip(v1, QStringLiteral("com.inst.up"), QStringLiteral("1.0.0")));
+
+    {
+        const QString requestId = installer.installFromZip(v1);
+        bool ok = false;
+        CHECK(waitForInstall(installer, requestId, &ok, nullptr, nullptr));
+        CHECK(ok);
+    }
+
+    // Re-installing the same version must be refused, not silently overwrite.
+    {
+        const QString requestId = installer.installFromZip(v1);
+        bool ok = true;
+        QString code;
+        CHECK(waitForInstall(installer, requestId, &ok, &code, nullptr));
+        CHECK(!ok);
+        CHECK(code == QStringLiteral("already-installed"));
+    }
+
+    // A newer version replaces it.
+    const QString v2 = scratch.path + QStringLiteral("/v2.zip");
+    CHECK(writePluginZip(v2, QStringLiteral("com.inst.up"), QStringLiteral("2.0.0")));
+    {
+        const QString requestId = installer.installFromZip(v2);
+        bool ok = false;
+        CHECK(waitForInstall(installer, requestId, &ok, nullptr, nullptr));
+        CHECK(ok);
+    }
+
+    const auto entry = reg.get(QStringLiteral("com.inst.up"));
+    CHECK(entry.has_value());
+    if (entry)
+        CHECK(entry->version == QStringLiteral("2.0.0"));
+
+    // Old version must not be left in the plugin directory.
+    CHECK(!QDir(reg.pluginDir(QStringLiteral("com.inst.up"))).entryList().isEmpty());
+}
+
+void testInstallerBusy()
+{
+    SECTION("PluginInstaller / single install at a time");
+
+    ScratchDir scratch;
+    if (!scratch.isValid()) { CHECK(false); return; }
+
+    PluginRegistry reg(scratch.pluginRoot());
+    CHECK(reg.load());
+    PluginInstaller installer(&reg);
+
+    const QString zipPath = scratch.path + QStringLiteral("/one.zip");
+    CHECK(writePluginZip(zipPath, QStringLiteral("com.inst.busy"), QStringLiteral("1.0.0")));
+
+    const QString first = installer.installFromZip(zipPath);
+    CHECK(!first.isEmpty());
+    CHECK(installer.isBusy());
+
+    // Second request while the first is still queued must be refused.
+    const QString second = installer.installFromZip(zipPath);
+    CHECK(second.isEmpty());
+
+    bool ok = false;
+    CHECK(waitForInstall(installer, first, &ok, nullptr, nullptr));
+    CHECK(ok);
+    CHECK(!installer.isBusy());
+}
+
+void testInstallerCancel()
+{
+    SECTION("PluginInstaller / cancel");
+
+    ScratchDir scratch;
+    if (!scratch.isValid()) { CHECK(false); return; }
+
+    PluginRegistry reg(scratch.pluginRoot());
+    CHECK(reg.load());
+    PluginInstaller installer(&reg);
+
+    const QString zipPath = scratch.path + QStringLiteral("/cancel.zip");
+    CHECK(writePluginZip(zipPath, QStringLiteral("com.inst.cancel"), QStringLiteral("1.0.0")));
+
+    const QString requestId = installer.installFromZip(zipPath);
+    CHECK(!requestId.isEmpty());
+
+    // Cancel immediately: the stages are queued, so this lands before the commit.
+    CHECK(installer.cancel(requestId));
+
+    bool ok = true;
+    QString code;
+    CHECK(waitForInstall(installer, requestId, &ok, &code, nullptr));
+    CHECK(!ok);
+    CHECK(code == QStringLiteral("cancelled"));
+
+    // Nothing installed.
+    CHECK(!QDir(reg.pluginDir(QStringLiteral("com.inst.cancel"))).exists());
+    CHECK(reg.count() == 0);
+    CHECK(!installer.isBusy());
+
+    // Cancelling an unknown request is a no-op, not a crash.
+    CHECK(!installer.cancel(QStringLiteral("no-such-request")));
+}
+
+} // namespace
+
 int main(int argc, char **argv)
 {
     QCoreApplication app(argc, argv);
+
+    // 真实程序由 CMake 注入 APP_VERSION；测试进程必须同样设定，否则
+    // PluginManifest::checkEngine 会因为"宿主版本无法解析"而失败，
+    // 让 incompatible-version 的断言在错误的原因上"通过"。
+    QCoreApplication::setApplicationVersion(QStringLiteral("0.3.0"));
 
 #ifdef PLUGIN_TEST_QML_IMPORT_PATH
     // Must be set before the first QQmlEngine is constructed: the engine snapshots
@@ -1484,6 +2155,18 @@ int main(int argc, char **argv)
     testManagerUninstall();
     testManagerStartupLoad();
     testLoaderPages();
+
+    testPluginSpec();
+    testPluginSpecLocalPath();
+    testArchiveEntryNames();
+    testArchiveExtract();
+    testArchiveRejects();
+
+    testInstallerSuccess();
+    testInstallerPreCommitFailures();
+    testInstallerAlreadyInstalledAndUpgrade();
+    testInstallerBusy();
+    testInstallerCancel();
 
     std::printf("\n----------------------------------------\n");
     std::printf("checks: %d   failures: %d\n", g_checks, g_failures);

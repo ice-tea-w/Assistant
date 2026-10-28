@@ -2,6 +2,10 @@
 
 #include "core/plugin/PluginManager.h"
 
+#include <QFileDialog>
+#include <QStandardPaths>
+#include <QUrl>
+
 PluginBridge::PluginBridge(PluginManager *manager, QObject *parent)
     : QObject(parent)
     , m_manager(manager)
@@ -15,6 +19,13 @@ PluginBridge::PluginBridge(PluginManager *manager, QObject *parent)
             this, &PluginBridge::navigationChanged);
     connect(m_manager, &PluginManager::toast,
             this, &PluginBridge::toast);
+
+    connect(m_manager, &PluginManager::installProgress,
+            this, &PluginBridge::installProgress);
+    connect(m_manager, &PluginManager::installLog,
+            this, &PluginBridge::installLog);
+    connect(m_manager, &PluginManager::installFinished,
+            this, &PluginBridge::installFinished);
 }
 
 // ---------------------------------------------------------------------------
@@ -78,21 +89,41 @@ void PluginBridge::install(const QString &id)
 {
     if (!m_manager)
         return;
-    // M2 wires PluginInstaller; until then this must not pretend to work.
+    // Market lookups need PluginCatalog (M1). Side-loading is available now.
     emit toast(QStringLiteral("error"),
-               QStringLiteral("安装功能尚未接入（%1）").arg(id));
+               QStringLiteral("从市场安装尚未接入（%1），可先用「从文件安装」").arg(id));
+}
+
+void PluginBridge::pickAndInstall()
+{
+    if (!m_manager)
+        return;
+
+    const QString startDir =
+        QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
+
+    const QString path = QFileDialog::getOpenFileName(
+        nullptr,
+        QStringLiteral("选择插件包"),
+        startDir,
+        QStringLiteral("插件包 (*.zip);;所有文件 (*)"));
+
+    if (path.isEmpty())
+        return;    // user cancelled the picker — not an error
+
+    m_manager->installFromZip(path);
 }
 
 void PluginBridge::installFromZip(const QString &zipPath)
 {
-    Q_UNUSED(zipPath)
-    emit toast(QStringLiteral("error"), QStringLiteral("侧载功能尚未接入"));
+    if (m_manager)
+        m_manager->installFromZip(zipPath);
 }
 
 void PluginBridge::cancelInstall(const QString &requestId)
 {
-    Q_UNUSED(requestId)
-    emit toast(QStringLiteral("error"), QStringLiteral("没有正在进行的安装"));
+    if (m_manager)
+        m_manager->cancelInstall(requestId);
 }
 
 void PluginBridge::setEnabled(const QString &id, bool enabled)
