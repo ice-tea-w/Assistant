@@ -74,7 +74,7 @@ file(APPEND \"\${OUT_FILE}\" \"QmlImports = Qt6/qml\\n\")
 add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
     COMMAND ${CMAKE_COMMAND}
         -D "OUT_FILE=$<TARGET_FILE_DIR:${PROJECT_NAME}>/qt.conf"
-        -D "QT_PREFIX=$<IF:$<CONFIG:Debug>,C:/vcpkg/installed/x64-windows/debug,C:/vcpkg/installed/x64-windows>"
+        -D "QT_PREFIX=$<IF:$<CONFIG:Debug>,${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/debug,${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}>"
         -P "${CMAKE_CURRENT_BINARY_DIR}/write_qt_conf.cmake"
     COMMENT "Generating qt.conf (vcpkg Qt6)"
 )
@@ -90,7 +90,7 @@ file(APPEND \"\${OUT_FILE}\" \"start \\\"\\\" \\\"\${EXE_NAME}\\\"\\n\")
 add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
     COMMAND ${CMAKE_COMMAND}
         -D "OUT_FILE=$<TARGET_FILE_DIR:${PROJECT_NAME}>/run.bat"
-        -D "QT_PATH=$<IF:$<CONFIG:Debug>,C:/vcpkg/installed/x64-windows/debug,C:/vcpkg/installed/x64-windows>"
+        -D "QT_PATH=$<IF:$<CONFIG:Debug>,${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/debug,${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}>"
         -D "EXE_DIR=$<TARGET_FILE_DIR:${PROJECT_NAME}>"
         -D "EXE_NAME=$<TARGET_FILE_NAME:${PROJECT_NAME}>"
         -P "${CMAKE_CURRENT_BINARY_DIR}/write_run_bat.cmake"
