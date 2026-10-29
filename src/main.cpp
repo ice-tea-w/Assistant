@@ -1,5 +1,6 @@
 #include <QApplication>
 #include <QQmlApplicationEngine>
+#include <QQuickStyle>
 #include <QWindow>
 #include <QQmlContext>
 #include <QStandardPaths>
@@ -27,6 +28,10 @@
 
 int main(int argc, char *argv[])
 {
+    // 走 Fusion 样式：Windows11 原生样式自己画浅色控件底、基本无视 palette，
+    // 深色主题下会变成"白底浅字"。Fusion 是纯 QML 自绘，完全跟随窗口 palette。
+    QQuickStyle::setStyle(QStringLiteral("Fusion"));
+
     // Required by QStandardPaths::AppConfigLocation (used by ConfigManager)
     // --instance <名字>：同机跑第二个实例时用。配置/数据库/日志目录随应用名分开，
     // 于是两台"设备"能在只有一台电脑的场合互相同步（答辩演示常用）。
@@ -183,9 +188,21 @@ int main(int argc, char *argv[])
     QObject::connect(&backend, &AppBridge::mainPanelRequested, &app, showMainPanel);
     QObject::connect(&tray, &TrayManager::mainPanelRequested, &app, showMainPanel);
 
-    // 调试开关：带 --show-panel 启动时立即弹主面板（界面检查/截图用）
-    if (qApp->arguments().contains(QStringLiteral("--show-panel")))
-        QTimer::singleShot(400, &app, showMainPanel);
+    // 调试开关：带 --show-panel 启动时立即弹主面板（界面检查/截图用）；
+    // 附加 --page=N 可直接打开指定页（0 待办 / 1 记事本 / 2 剪贴板 / 3 设备同步 / 4 设置）
+    if (qApp->arguments().contains(QStringLiteral("--show-panel"))) {
+        QTimer::singleShot(400, &app, [&]() {
+            for (const QString &arg : qApp->arguments()) {
+                if (!arg.startsWith(QStringLiteral("--page=")))
+                    continue;
+                bool ok = false;
+                const int page = arg.mid(7).toInt(&ok);
+                if (ok && page >= 0 && panelWindow)
+                    panelWindow->setProperty("selectedIndex", page);
+            }
+            showMainPanel();
+        });
+    }
 
     tray.init();
 
