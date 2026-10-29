@@ -22,13 +22,17 @@ Rectangle {
     property string localShareName: "SyncHub"
     property string localIp: ""
 
-    // 角色由共享目录的形态决定：
-    //   本地路径（E:\SyncHub）    → 主机：我把文件夹共享出去
-    //   \\IP\共享名 / //IP/共享名 → 客户端：我连别人的共享
+    // 角色（显式选择）：0 = 我开共享让别人连（主机），1 = 我连别人的共享（连接方）
+    // 初始值按已保存的共享目录形态推断，用户点过单选后以选择为准
+    property int roleMode: 0
+    readonly property bool isHostMode: roleMode === 0
+
     readonly property string sharedDirInput: sharedDirField.text.trim()
     readonly property bool isUnc: sharedDirInput.indexOf("\\\\") === 0
                                    || sharedDirInput.indexOf("//") === 0
-    readonly property bool isHostMode: sharedDirInput.length > 0 && !isUnc
+    // 地址形态和角色对不上：连接方却填了本地路径，或主机却填了 UNC
+    readonly property bool dirMismatch: sharedDirInput.length > 0
+                                        && (isHostMode === isUnc)
 
     // 对端清单里推断出的别名（客户端模式下才有意义）
     readonly property var remoteAliasList: sharedCheckResult && sharedCheckResult.aliases
@@ -77,6 +81,8 @@ Rectangle {
 
     Component.onCompleted: {
         localIp = sync.localIpv4()
+        var saved = String(sync.sharedDir)
+        roleMode = (saved.indexOf("\\\\") === 0 || saved.indexOf("//") === 0) ? 1 : 0
         var d = String(sync.sharedDir).replace(/\\/g, "/")
         var parts = d.split("/").filter(function (p) { return p.length > 0 })
         if (parts.length > 0) {
@@ -176,10 +182,23 @@ Rectangle {
                     spacing: 10
 
                     Text {
-                        text: syncPage.isHostMode ? "本机共享给别人（主机）"
-                              : (syncPage.sharedDirInput.length > 0 ? "连接别人的共享（客户端）" : "连接")
+                        text: syncPage.isHostMode ? "本机共享给别人连（主机）" : "连接别人的共享（连接方）"
                         color: syncPage.mutedColor
                         font.pixelSize: 12
+                    }
+
+                    RowLayout {
+                        spacing: 16
+                        RadioButton {
+                            text: "我开共享，让别人连我"
+                            checked: syncPage.roleMode === 0
+                            onClicked: syncPage.roleMode = 0
+                        }
+                        RadioButton {
+                            text: "我连别人的共享"
+                            checked: syncPage.roleMode === 1
+                            onClicked: syncPage.roleMode = 1
+                        }
                     }
 
                     Text {
@@ -189,9 +208,7 @@ Rectangle {
                         font.pixelSize: Style.captionSize
                         text: syncPage.isHostMode
                               ? "这台机器当主机：把本地文件夹共享出去，再把下面「让对方连我」的地址发给对方。"
-                              : (syncPage.sharedDirInput.length > 0
-                                 ? "这台机器当客户端：填对方发给你的地址，填完点「检查」确认能连上。"
-                                 : "先决定这台机器的角色：填本地路径 = 我共享给别人；填 \\\\对方IP\\共享名 = 我连别人的共享。")
+                              : "这台机器当连接方：填对方发给你的 \\\\IP\\共享名，点「检查」确认能连上。"
                     }
 
                     RowLayout {
@@ -199,8 +216,7 @@ Rectangle {
                         spacing: 8
 
                         Text {
-                            text: syncPage.isHostMode ? "本机共享目录"
-                                  : (syncPage.sharedDirInput.length > 0 ? "对方共享目录" : "共享目录")
+                            text: syncPage.isHostMode ? "本机共享目录" : "对方共享目录"
                             color: syncPage.mutedColor
                             font.pixelSize: Style.captionSize
                             Layout.preferredWidth: 90
@@ -220,7 +236,9 @@ Rectangle {
                                 anchors.leftMargin: 8
                                 anchors.rightMargin: 8
                                 text: sync.sharedDir
-                                placeholderText: "\\\\对端IP\\共享名，或两台都可见的文件夹（网盘/本地目录）"
+                                placeholderText: syncPage.isHostMode
+                                                 ? "\\\\本机文件夹，例如 E:\\SyncHub"
+                                                 : "\\\\对方IP\\共享名，例如 \\\\100.116.234.107\\SyncHub"
                                 color: syncPage.textColor
                                 placeholderTextColor: syncPage.mutedColor
                                 font.pixelSize: Style.bodySize

@@ -23,6 +23,30 @@ ApplicationWindow {
     readonly property color accentColor: Style.accentColor
     readonly property color borderColor: Style.borderColor
 
+    // 控件调色板（Qt 6.5+ 的 Window.palette），向下传给面板里所有 Quick Controls。
+    // 不设的话 Fusion 默认调色板始终是浅色的 —— 深色主题下按钮 / 单选 / 下拉
+    // 的文字会是深色压在深灰底上，几乎看不清。
+    palette.window: bgColor
+    palette.windowText: textColor
+    palette.base: panelColor
+    palette.alternateBase: panelColor
+    palette.text: textColor
+    palette.button: Style.controlColor
+    palette.buttonText: textColor
+    palette.brightText: "#ffffff"
+    palette.highlight: accentColor
+    palette.highlightedText: Style.accentTextColor
+    palette.placeholderText: mutedColor
+    palette.toolTipBase: panelColor
+    palette.toolTipText: textColor
+    palette.light: Style.borderColor
+    palette.midlight: Style.borderColor
+    palette.mid: Style.borderColor
+    palette.dark: mutedColor
+    palette.shadow: "#000000"
+    palette.link: accentColor
+    palette.linkVisited: accentColor
+
     property int selectedIndex: 0
 
     // 左侧导航前三项（从上到下）；设置项单独固定在底部。
