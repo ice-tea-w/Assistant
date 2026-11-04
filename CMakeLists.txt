@@ -186,6 +186,8 @@ add_test(NAME a3_prune           COMMAND assistant_a3 --prune)
 # **vcpkg 的 app-local 拷贝不含 sqlite3.dll**（构建目录里只自动拷了 Qt6*.dll）。
 # Debug 下一直被 run.bat / 调试命令里的 vcpkg PATH 掩盖着，ctest 才暴露出来。
 # 打包阶段必须补上这个依赖 —— 见 `docs/devlog/2026-10-22.md` 的"部署缺口"。
+# 路径由 toolchain 提供，不再硬编码 C:/vcpkg（本机 vcpkg 实际在 D:/STUDY/vcpkg，
+# 硬编码会让 ctest 在别的机器/别的 vcpkg 位置上假失败）。
 set_tests_properties(a3_migrate PROPERTIES
-    ENVIRONMENT "PATH=C:/vcpkg/installed/x64-windows/bin;$ENV{PATH}")
+    ENVIRONMENT "PATH=${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/bin;$ENV{PATH}")
 
