@@ -1,5 +1,6 @@
 # Build outputs
 build/
+build-tests/
 out/
 _probe/
 *.exe
