@@ -457,6 +457,7 @@ Rectangle {
 | **参考插件** | `examples/text-tools/` | 纯本地、零权限的最小可用插件：文本大小写/去重/统计。抄它最快 |
 | **生成骨架** | `tools/plugin-new.ps1` | `-Id com.me.hello -Name "Hello"` → 出清单 + 入口 + 页面 + README |
 | **打包 + 算摘要** | `tools/plugin-pack.ps1` | 校验清单 → 打 zip（根目录是 `plugin.json`）→ 输出 sha256 与市场索引条目 |
+| **本地市场演示** | `tools/demo-market.ps1` | 一条命令起本地市场（打包 1.0.0/1.1.0 + 生成索引 + 静态 HTTP），配合 `演示与展示.md` |
 | **API 金丝雀** | `tests/fixtures/plugin-full/` | 用到 `host` **每一个**属性与方法；改 `PluginHost` 时它会变红 |
 
 两个脚本在本机默认被执行策略挡住，用这个方式跑：
@@ -464,6 +465,8 @@ Rectangle {
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\plugin-pack.ps1 -PluginDir .\examples\text-tools -OutDir .\dist
 ```
+
+> 要给现场讲这套接口怎么对外，看 `演示与展示.md`（五分钟分镜 + 高频提问的标准回答）。
 
 **给宿主开发者的一条义务**：动 `PluginHost`（加/删/改属性或方法）时，必须同步改
 `tests/fixtures/plugin-full/main.qml` 并在 `tests/` 里跑一遍——否则新能力没有回归保护，
