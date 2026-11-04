@@ -64,6 +64,13 @@ struct PluginManifest
     /// Empty means "does not declare compatibility" (not "incompatible").
     QString enginesAssistant;
 
+    /// Raw `engines.api` range over `contract::kApiVersion`, interpreted by checkApi().
+    /// Empty means "does not declare an API requirement" — accepted, with no gate.
+    /// This is a **separate axis** from enginesAssistant: that one tracks the host
+    /// product version, this one tracks the plugin API surface (see
+    /// `include/contract/IHostApi.h`).
+    QString enginesApi;
+
     QStringList permissions;
 
     QList<PageContribution>     pages;
@@ -84,4 +91,10 @@ struct PluginManifest
     /// Returns true when the range is absent (caller should warn, not fail).
     /// @param error on mismatch, a ready-to-show message
     bool checkEngine(const QString &appVersion, QString *error) const;
+
+    /// Check `engines.api` against the host's plugin API version.
+    /// The range is written in SemVer form (`>=1.0.0`); @p hostApiVersion `1` is
+    /// compared as `1.0.0`. Returns true when the range is absent.
+    /// @param error on mismatch, a ready-to-show message
+    bool checkApi(int hostApiVersion, QString *error) const;
 };

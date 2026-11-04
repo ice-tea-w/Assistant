@@ -405,6 +405,57 @@ void testCheckEngine()
     }
 }
 
+void testApiContract()
+{
+    SECTION("contract / engines.api");
+
+    // 宿主暴露的 apiVersion 必须来自契约头，不能在别处另写一个数字。
+    {
+        PluginHost host(QStringLiteral("com.a.b"), QStringLiteral("x"),
+                        QStringLiteral("1.0.0"), QString(), nullptr);
+        CHECK(host.apiVersion() == contract::kApiVersion);
+        CHECK(host.apiVersion() >= 1);
+    }
+
+    // 声明了区间且满足 / 不满足。
+    {
+        QString err;
+        const auto m = PluginManifest::parse(manifestOf(R"({
+            "manifestVersion":1,"id":"com.a.b","name":"x","version":"1.0.0","main":"main.qml",
+            "engines":{"api":">=1.0.0 <2.0.0"}
+        })"), &err);
+        CHECK(m.has_value());
+        if (m) {
+            CHECK(m->checkApi(1, &err));
+            // 2 会被比较成 2.0.0，不满足 <2.0.0 —— 证明这条轴真的参与门控。
+            CHECK(!m->checkApi(2, &err));
+        }
+    }
+
+    // 未声明 → 通过（与 engines.assistant 同一约定：不声明不算不兼容）。
+    {
+        QString err;
+        const auto m = PluginManifest::parse(manifestOf(R"({
+            "manifestVersion":1,"id":"com.a.b","name":"x","version":"1.0.0","main":"main.qml"
+        })"), &err);
+        CHECK(m.has_value());
+        if (m) {
+            CHECK(m->enginesApi.isEmpty());
+            CHECK(m->checkApi(contract::kApiVersion, &err));
+        }
+    }
+
+    // 区间语法非法 → 清单在解析阶段就被拒，不留到启用时才炸。
+    {
+        QString err;
+        const auto bad = PluginManifest::parse(manifestOf(R"({
+            "manifestVersion":1,"id":"com.a.b","name":"x","version":"1.0.0","main":"main.qml",
+            "engines":{"api":"*"}
+        })"), &err);
+        CHECK(!bad.has_value());
+    }
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -2619,6 +2670,7 @@ int main(int argc, char **argv)
     testManifestInvalid();
     testManifestContributions();
     testCheckEngine();
+    testApiContract();
 
     testRegistryPaths();
     testRegistryFirstRun();

@@ -7,6 +7,8 @@
 #include "core/plugin/PluginRegistry.h"
 #include "core/plugin/SemVer.h"
 
+#include "contract/IHostApi.h"
+
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDesktopServices>
@@ -385,6 +387,13 @@ bool PluginManager::enablePlugin(const QString &id)
     // Environment gate: a plugin that declares a range we do not satisfy is a
     // compatibility problem, not a load failure — the UI should say so.
     if (!manifest.checkEngine(QCoreApplication::applicationVersion(), &error)) {
+        setProblem(id, QStringLiteral("incompatible-version"), error);
+        return false;
+    }
+
+    // API gate: `engines.api` 声明的是"宿主插件 API 面"的区间，与产品版本是两条轴
+    // （见 include/contract/IHostApi.h）。旧宿主 + 新插件、新宿主 + 旧插件都靠它挡。
+    if (!manifest.checkApi(contract::kApiVersion, &error)) {
         setProblem(id, QStringLiteral("incompatible-version"), error);
         return false;
     }
