@@ -546,6 +546,20 @@ void PluginInstaller::runCommit()
 
     const QString target = m_registry->pluginDir(job.manifest.id);
 
+    // 升级时 data/ 不能跟着旧目录一起进 .trash：用户攒的设置全在 data/ 下，
+    // 旧实现最后会 removeRecursively 掉 backup，等于每次升级都清空用户数据。
+    // 先把 data/ 摘出来，提交成功再放回去；任何失败路径都要还原。
+    const QString dataDir = target + QStringLiteral("/data");
+    QString preservedData;
+    if (QDir(dataDir).exists()) {
+        QDir().mkpath(m_registry->tmpDir());
+        const QString hold = m_registry->tmpDir() + QStringLiteral("/data-") + stamp();
+        if (QDir().rename(dataDir, hold))
+            preservedData = hold;
+        else
+            emitLog(QStringLiteral("警告：插件数据目录无法暂存，本次升级会丢失设置"));
+    }
+
     QString backup;
     if (QDir(target).exists()) {
         QDir().mkpath(m_registry->trashDir());
@@ -553,6 +567,9 @@ void PluginInstaller::runCommit()
                + QStringLiteral("-") + stamp();
 
         if (!QDir().rename(target, backup)) {
+            if (!preservedData.isEmpty())
+                QDir().rename(preservedData, dataDir);
+
             fail(QStringLiteral("permission"),
                  QStringLiteral("无法移除旧版本目录：%1").arg(target));
             return;
@@ -565,9 +582,20 @@ void PluginInstaller::runCommit()
         if (!backup.isEmpty())
             QDir().rename(backup, target);
 
+        if (!preservedData.isEmpty())
+            QDir().rename(preservedData, dataDir);
+
         fail(QStringLiteral("permission"),
              QStringLiteral("无法写入插件目录：%1").arg(target));
         return;
+    }
+
+    if (!preservedData.isEmpty()) {
+        if (QDir().rename(preservedData, target + QStringLiteral("/data")))
+            emitLog(QStringLiteral("已保留插件数据目录（设置未丢）"));
+        else
+            emitLog(QStringLiteral("警告：插件数据回填失败，原数据留在 %1")
+                        .arg(preservedData));
     }
 
     emitLog(QStringLiteral("已写入 %1").arg(target));
@@ -583,12 +611,20 @@ void PluginInstaller::runCommit()
     entry.id          = job.manifest.id;
     entry.version     = job.manifest.version;
     entry.installedAt = QDateTime::currentDateTimeUtc();
-    entry.enabled     = false;                    // PluginManager decides to enable
     entry.origin.kind = job.url.isEmpty() ? QStringLiteral("local")
                                           : QStringLiteral("market");
     entry.origin.url    = job.url.isEmpty() ? QString() : job.url.toString();
     entry.origin.sha256 = job.expectedSha256;
     entry.origin.path   = job.url.isEmpty() ? job.zipPath : QString();
+
+    // 升级要延续用户的选择：停用着的插件升级完不该自己亮起来。
+    // 新装一律 false —— 由 PluginManager 决定装完是否启用。
+    entry.enabled = false;
+    if (!job.replacedVersion.isEmpty()) {
+        const auto previous = m_registry->get(entry.id);
+        if (previous)
+            entry.enabled = previous->enabled;
+    }
 
     QString saveError;
     if (!m_registry->upsertAndSave(entry, &saveError)) {
@@ -657,7 +693,7 @@ void PluginInstaller::succeed()
 
     cleanupTemp();
 
-    emit installed(pluginId, version);
+    emit installed(pluginId, version, it->replacedVersion);
     emit finished(requestId, true, QString(), QString());
 
     m_jobs.remove(requestId);

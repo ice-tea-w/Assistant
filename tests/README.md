@@ -55,6 +55,8 @@ $env:PATH = "D:\STUDY\vcpkg\installed\x64-windows\bin;$env:PATH"
 | `contract` 契约 | `host.apiVersion` 与 `contract::kApiVersion` 一致；`engines.api` 满足/不满足；未声明放行；非法区间在解析阶段被拒 |
 | **金丝雀** `fixtures/plugin-full` | `host` 全部属性取值正确、`setting/setSetting` 往返并落盘、`log` 四级别、`openPath` 拒绝越界、`toast` 通道、页面懒创建并能看到 `host`、卸载后清空 |
 | **示例插件** `examples/text-tools` | 清单可解析、零权限、`engines.*` 门控通过、`main.qml` 可加载（页面依赖 Controls，测试里不实例化） |
+| `PluginInstaller` **升级** | 装 v2 覆盖 v1：`data/settings.json` 内容保留、`enabled=true` 延续；停用状态装 v3 仍保持停用 |
+| `PluginManager` **更新检测** | 市场 2.0.0 vs 已装 1.2.0 → `update-available` + `latestVersion`；已是最新 → 回到 `installed`。seed 数据不参与检测 |
 
 ## 新增模块时怎么加测试
 

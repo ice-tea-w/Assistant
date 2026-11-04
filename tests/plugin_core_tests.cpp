@@ -2248,6 +2248,23 @@ void testInstallerAlreadyInstalledAndUpgrade()
     // A newer version replaces it.
     const QString v2 = scratch.path + QStringLiteral("/v2.zip");
     CHECK(writePluginZip(v2, QStringLiteral("com.inst.up"), QStringLiteral("2.0.0")));
+
+    // 升级前：给插件留一份"用户数据"，并把用户选择记为启用。
+    // 旧实现会把旧目录整个挪进 .trash 再删掉 —— data/ 和 enabled 都会丢。
+    const QString dataDir = reg.pluginDir(QStringLiteral("com.inst.up"))
+                            + QStringLiteral("/data");
+    CHECK(QDir().mkpath(dataDir));
+    CHECK(writeTextFile(dataDir + QStringLiteral("/settings.json"),
+                        QByteArray(R"({"runCount":7})")));
+    {
+        auto e = reg.get(QStringLiteral("com.inst.up"));
+        CHECK(e.has_value());
+        if (e) {
+            e->enabled = true;
+            CHECK(reg.upsertAndSave(*e));
+        }
+    }
+
     {
         const QString requestId = installer.installFromZip(v2);
         bool ok = false;
@@ -2257,8 +2274,46 @@ void testInstallerAlreadyInstalledAndUpgrade()
 
     const auto entry = reg.get(QStringLiteral("com.inst.up"));
     CHECK(entry.has_value());
-    if (entry)
+    if (entry) {
         CHECK(entry->version == QStringLiteral("2.0.0"));
+        CHECK(entry->enabled);                    // 用户开着 → 升级后仍开着
+    }
+
+    // data/ 必须跟着新版目录活下来，且内容原样
+    CHECK(QFile::exists(dataDir + QStringLiteral("/settings.json")));
+    {
+        QFile f(dataDir + QStringLiteral("/settings.json"));
+        CHECK(f.open(QIODevice::ReadOnly));
+        CHECK(f.readAll().contains("runCount"));
+        f.close();
+    }
+
+    // 停用状态也要延续：升级不等于"帮用户打开"
+    const QString v3 = scratch.path + QStringLiteral("/v3.zip");
+    CHECK(writePluginZip(v3, QStringLiteral("com.inst.up"), QStringLiteral("3.0.0")));
+    {
+        auto e = reg.get(QStringLiteral("com.inst.up"));
+        CHECK(e.has_value());
+        if (e) {
+            e->enabled = false;
+            CHECK(reg.upsertAndSave(*e));
+        }
+    }
+    {
+        const QString requestId = installer.installFromZip(v3);
+        bool ok = false;
+        CHECK(waitForInstall(installer, requestId, &ok, nullptr, nullptr));
+        CHECK(ok);
+    }
+    {
+        const auto after = reg.get(QStringLiteral("com.inst.up"));
+        CHECK(after.has_value());
+        if (after) {
+            CHECK(after->version == QStringLiteral("3.0.0"));
+            CHECK(!after->enabled);               // 用户关着 → 升级后仍关着
+        }
+    }
+    CHECK(QFile::exists(dataDir + QStringLiteral("/settings.json")));
 
     // Old version must not be left in the plugin directory.
     CHECK(!QDir(reg.pluginDir(QStringLiteral("com.inst.up"))).entryList().isEmpty());
@@ -2523,6 +2578,85 @@ void testCatalogIncompatible()
         CHECK(row.value(QStringLiteral("state")).toString() == QStringLiteral("incompatible"));
         CHECK(row.value(QStringLiteral("badgeKind")).toString() == QStringLiteral("orange"));
         CHECK(row.value(QStringLiteral("problem")).toString().contains(QStringLiteral("99.0.0")));
+    }
+}
+
+void testUpdateDetection()
+{
+    SECTION("PluginManager / 更新检测（市场版本更高）");
+
+    ScratchDir scratch;
+    if (!scratch.isValid()) { CHECK(false); return; }
+
+    PluginRegistry reg(scratch.pluginRoot());
+    CHECK(reg.load());
+
+    // 已装 1.2.0
+    InstalledPlugin installed;
+    installed.id          = QStringLiteral("com.assistant.weather");
+    installed.version     = QStringLiteral("1.2.0");
+    installed.enabled     = true;
+    installed.origin.kind = QStringLiteral("market");
+    CHECK(reg.upsertAndSave(installed));
+
+    // 索引声明 2.0.0，写在缓存里；市场 URL 指向不可达地址，走"网络失败→缓存"降级。
+    // 关键是 m_marketUrl 非空：seed 数据不参与更新检测（示例数据不该冒出"更新"）。
+    const QByteArray index = R"({
+      "schemaVersion": 1,
+      "plugins": [
+        { "id": "com.assistant.weather", "name": "天气", "summary": "s",
+          "latest": { "version": "2.0.0", "minAppVersion": "0.3.0" } }
+      ]
+    })";
+    CHECK(writeTextFile(reg.marketCacheFile(),
+                        QByteArray(R"({"schemaVersion":1,"index":)") + index + "}"));
+
+    PluginLoader loader;
+    PluginManager mgr(&reg, &loader);
+    PluginCatalog catalog(&reg);
+    mgr.setCatalog(&catalog);
+    catalog.setMarketUrl(QStringLiteral("http://127.0.0.1:1/index.json"));
+
+    QEventLoop loop;
+    QTimer timer;
+    bool fired = false;
+    QObject::connect(&catalog, &PluginCatalog::fetched, &loop,
+                     [&](bool, const QString &) { fired = true; loop.quit(); });
+    QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
+    timer.setSingleShot(true);
+    timer.start(8000);
+    catalog.fetch(true);
+    if (!fired)
+        loop.exec();
+    CHECK(fired);
+
+    const QVariantList rows = mgr.installedRows();
+    CHECK(rows.size() == 1);
+    if (rows.size() == 1) {
+        const QVariantMap row = rows.at(0).toMap();
+        CHECK(row.value(QStringLiteral("state")).toString()
+              == QStringLiteral("update-available"));
+        CHECK(row.value(QStringLiteral("badge")).toString() == QStringLiteral("更新"));
+        CHECK(row.value(QStringLiteral("latestVersion")).toString() == QStringLiteral("2.0.0"));
+        CHECK(row.value(QStringLiteral("hasUpdate")).toBool());
+    }
+
+    // 已经是最高版本 → 不再提示更新
+    {
+        auto e = reg.get(QStringLiteral("com.assistant.weather"));
+        CHECK(e.has_value());
+        if (e) {
+            e->version = QStringLiteral("2.0.0");
+            CHECK(reg.upsertAndSave(*e));
+        }
+
+        const QVariantList after = mgr.installedRows();
+        CHECK(after.size() == 1);
+        if (after.size() == 1) {
+            const QVariantMap row = after.at(0).toMap();
+            CHECK(row.value(QStringLiteral("state")).toString() == QStringLiteral("installed"));
+            CHECK(!row.value(QStringLiteral("hasUpdate")).toBool());
+        }
     }
 }
 
@@ -2885,6 +3019,7 @@ int main(int argc, char **argv)
     testCatalogCorruptCache();
     testCatalogMergeIntoRows();
     testCatalogIncompatible();
+    testUpdateDetection();
 
     testMarketInstallSuccess();
     testMarketInstallChecksumMismatch();
