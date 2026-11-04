@@ -9,10 +9,20 @@
 #include <string>
 #include <vector>
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 static std::shared_ptr<spdlog::logger> g_logger;
 
 void Logger::init(const std::string &logDir, const std::string &level)
 {
+#ifdef _WIN32
+    // Windows 控制台默认使用 GBK(936)，UTF-8 日志字节会被按 GBK 误解码成乱码
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
+#endif
+
     // Build sinks
     std::vector<spdlog::sink_ptr> sinks;
 

@@ -12,7 +12,7 @@ endif()
 
 # ---- 查找 Qt6（QML 方案） ----
 find_package(Qt6 REQUIRED COMPONENTS
-    Core Quick QuickControls2 Network Widgets Sql
+    Core Quick QuickControls2 Network Widgets Sql Test
 )
 
 # ---- 查找其他依赖 ----
@@ -79,6 +79,12 @@ endif()
 # 开发阶段：在 exe 旁生成 qt.conf，指向 vcpkg 的 Qt6 安装目录。
 # qt.conf 负责：platforms/、qml/ 的路径（Qt 内部查找）
 # 但同时需要 vcpkg/bin 在 PATH 中（Windows DLL 加载器查找）
+
+# Qt 安装前缀由 vcpkg toolchain 提供，不硬编码路径（换机器或换 vcpkg 位置都无需改这里）。
+# 未定义只可能是没用 vcpkg toolchain 配置，此时静默生成错误路径比直接报错难查得多。
+if(NOT VCPKG_INSTALLED_DIR)
+    message(FATAL_ERROR "VCPKG_INSTALLED_DIR 未定义：请按 CLAUDE.md 的命令带 CMAKE_TOOLCHAIN_FILE 配置")
+endif()
 
 # 1. 生成 qt.conf（POST_BUILD，build 阶段执行）
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/write_qt_conf.cmake"
@@ -186,6 +192,46 @@ add_test(NAME a3_prune           COMMAND assistant_a3 --prune)
 # **vcpkg 的 app-local 拷贝不含 sqlite3.dll**（构建目录里只自动拷了 Qt6*.dll）。
 # Debug 下一直被 run.bat / 调试命令里的 vcpkg PATH 掩盖着，ctest 才暴露出来。
 # 打包阶段必须补上这个依赖 —— 见 `docs/devlog/2026-10-22.md` 的"部署缺口"。
-set_tests_properties(a3_migrate PROPERTIES
-    ENVIRONMENT "PATH=C:/vcpkg/installed/x64-windows/bin;$ENV{PATH}")
+set(VCPKG_BIN_DIR "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/bin")
+set(VCPKG_DBG_BIN_DIR "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/debug/bin")
 
+set_tests_properties(a3_migrate PROPERTIES
+    ENVIRONMENT "PATH=${VCPKG_BIN_DIR};${VCPKG_DBG_BIN_DIR};$ENV{PATH}")
+
+# ---- 测试（QTest；用 vcpkg 已装的 Qt6Test，不引入 GTest） ----
+# 只编被测的纯逻辑与存储层，不编 UI/main：
+# SyncEngine/SyncBridge 依赖线程与 QML，留给集成测试（单机双实例手工走查）。
+
+add_executable(assistant_tests
+    tests/test_sync.cpp
+    # Q_OBJECT 头必须列进目标源，否则 AUTOMOC 不会为它生成 moc
+    include/core/sync/SyncEngine.h
+    include/core/ConfigManager.h
+    src/core/Logger.cpp
+    src/core/sync/ConflictResolver.cpp
+    src/core/sync/PathGuard.cpp
+    src/core/sync/FolderTransport.cpp
+    src/core/sync/SyncEngine.cpp
+    src/core/sync/DeliveryNaming.cpp
+    src/database/SyncDatabase.cpp
+    # 配置层往返也要测（同步根列表靠它持久化）
+    src/core/ConfigManager.cpp
+    src/core/AutoStart.cpp
+)
+
+target_include_directories(assistant_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+)
+
+target_link_libraries(assistant_tests PRIVATE
+    Qt6::Core
+    Qt6::Sql
+    Qt6::Test
+    spdlog::spdlog
+    nlohmann_json::nlohmann_json
+)
+
+add_test(NAME sync_unit COMMAND assistant_tests)
+# 同步单测会加载 QML 插件（qmlplugin.dll），需要 Qt 的 bin 在 PATH 里
+set_tests_properties(sync_unit PROPERTIES
+    ENVIRONMENT "PATH=${VCPKG_BIN_DIR};${VCPKG_DBG_BIN_DIR};$ENV{PATH}")

@@ -14,8 +14,12 @@ public:
 
     void init();
 
+    /// 托盘气泡通知（收到投递文件等）
+    void notify(const QString &title, const QString &body);
+
 signals:
     void toggleWindowRequested();
+    void mainPanelRequested();
     void quitRequested();
 
 private slots:
@@ -25,5 +29,6 @@ private:
     QSystemTrayIcon *m_trayIcon = nullptr;
     QMenu           *m_trayMenu = nullptr;
     QAction         *m_showAction = nullptr;
+    QAction         *m_panelAction = nullptr;
     QAction         *m_quitAction = nullptr;
 };

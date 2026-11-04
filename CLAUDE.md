@@ -1,4 +1,4 @@
-# CLAUDE.md — Assistant 桌面助手项目
+﻿# CLAUDE.md — Assistant 桌面助手项目
 
 ## 项目概要
 
@@ -26,6 +26,10 @@ cmake --build build --config Debug
 ```
 
 新增/删除源文件后必须重新 configure，因为用了 `file(GLOB_RECURSE)`。
+
+> **另一台机器的写法**（同步模块开发机）：vcpkg 在 `D:\vcpkg`、生成器是 `Visual Studio 18 2026`、
+> cmake 在 `D:\vcpkg\downloads\tools\cmake-4.4.3-windows-x86_64\bin\cmake.exe`（PATH 里没有）。
+> 两者可替换：`-G` 与 `CMAKE_TOOLCHAIN_FILE` 跟着机器走，其余命令不变。
 
 > **环境注意（本机 sandbox）**：编译必须用 `danger-full-access`。受限模式下 CMake/AUTOMOC 调 `moc.exe` 子进程会被拦（`libuv process spawn failed: operation not permitted`），`workspace-write` 不够。
 
@@ -70,6 +74,17 @@ cmake --build build --config Debug
 - **M4 插件市场（2026-11-04 合入 main）**：M0–M4 全链路 —— 本地插件管理、市场目录（内置 seed + 缓存 + HTTP）、
   本地 zip 与在线安装（zip-slip 防护 + sha256 校验）、启用/禁用/卸载、插件贡献页面进入左侧导航。
   主面板导航同时从 `StackLayout + selectedIndex` 改为 `Loader + selectedKey`（插件页是运行时才知道的）。
+
+**设备同步（M2）· 渠道目录通道**（`docs/architecture/设备同步功能-设计文档.md`）：
+- [x] `ITransport` 抽象 + `FolderTransport`（投递区 = 共享文件夹，**新增第三方依赖 0**）
+- [x] `SyncEngine` 三方差集（本地现状 / 上次基线 / 对端清单 → 唯一动作）+ `ConflictResolver` 冲突副本
+- [x] `PathGuard`（穿越 / 保留名 / junction 解引用后复核）+ `SyncDatabase`（`sync.db`：devices / sync_state / conflicts / received）
+- [x] 主面板「设备同步」页 + `SyncBridge`（工作线程跑引擎，独立 DB 连接）
+- [x] 快捷同步与投递区：拖拽 → 共享目录 `_投递/` → 对端轮询领取到收件箱 + 托盘通知
+- [x] 多本地文件夹（`SyncRoot{localPath, alias}`）、同步锁、UNC 共享目录
+- [x] QTest 用例（`tests/test_sync.cpp`，2026-10 时为 51 个）
+- [ ] 冲突列表 UI、多文件夹版界面未真机走查
+- [ ] 直连通道 `LanTransport` + 帧协议：**只有设计，没有代码**（分支内 `grep QTcpSocket` 零命中）
 
 Phase 3 剩余（收尾中，写在这里便于续接）：
 - [x] 热键自定义（设置页捕获组合键 → `PanelBridge::applyHotkey` → `HotkeyManager::reRegister`，失败自动回滚原热键）
@@ -162,9 +177,17 @@ Phase 3 剩余（收尾中，写在这里便于续接）：
 | PluginInstaller | `include/core/plugin/PluginInstaller.h` | 安装流水线 `inspect→download→extract→validate→commit`；zip-slip 防护、sha256 校验、失败清理 |
 | PluginCatalog | `include/core/plugin/PluginCatalog.h` | 市场索引：内置 `seed-index.json` → 本地缓存 → HTTP（`ASSISTANT_MARKET_URL`） |
 | PluginBridge | `include/ui/PluginBridge.h`, `src/ui/PluginBridge.cpp` | 插件市场页 QML↔C++ 桥：列表、安装/取消/卸载、导航条目 |
+| SyncBridge | `include/ui/SyncBridge.h`, `src/ui/SyncBridge.cpp` | 设备同步页的桥：Q_PROPERTY + Q_INVOKABLE，工作线程跑引擎，独立 DB 连接 |
+| SyncEngine | `include/core/sync/SyncEngine.h`, `src/core/sync/SyncEngine.cpp` | 三方差集同步引擎（本地现状 / 上次基线 / 对端清单） |
+| ITransport | `include/core/sync/ITransport.h` | 传输通道接口：`probe` / `listRemote` / `fetch` / `push` / `removeRemote` |
+| FolderTransport | `include/core/sync/FolderTransport.h`, `src/core/sync/FolderTransport.cpp` | 共享目录通道（异地靠网盘搬运） |
+| ConflictResolver | `include/core/sync/ConflictResolver.h` | `decide(L,S,R)` 纯函数判定表 + 冲突副本命名 |
+| PathGuard | `include/core/sync/PathGuard.h` | 相对路径安全校验 + junction 解引用后复核前缀 |
+| SyncDatabase | `include/database/SyncDatabase.h` | `sync.db`（独立连接 `sync`）：devices / sync_state / conflicts / received |
 
 > **DB 约定**：每个功能一个独立 DB 文件 + 独立 `QSqlDatabase` 连接名（见 `ClipboardDatabase`），不要共用一个连接。
-> **QML 约定**：搜索浮窗走 `AppBridge`，主面板走 `PanelBridge`，两个窗口各管自己的桥。
+> **QML 约定**：搜索浮窗走 `AppBridge`，主面板走 `PanelBridge`，同步页走 `SyncBridge`（第三个桥，注入面板引擎）。
+> **测试约定**：QTest（`Qt6::Test`），不是 GTest；`tests/*.cpp` 里要 `#include "<名字>.moc"` 让 AUTOMOC 处理 `Q_OBJECT`。
 
 ## Git 规范
 

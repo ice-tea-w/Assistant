@@ -21,6 +21,10 @@ QtObject {
     readonly property color borderColor:  isDark ? "#3d3d3d" : "#d0d0d0"
     readonly property color activeBorder: isDark ? "#5a8ec9" : "#4a90d9"
 
+    // 控件背景（按钮 / 输入框 / 下拉框）。必须和 bgColor 拉开一点，否则控件
+    // 和卡片糊成一片；同时配浅色文字，避免深色主题下出现"黑字灰底"。
+    readonly property color controlColor: isDark ? "#3a3a3a" : "#e8e8e8"
+
     // 状态栏文字（搜索浮窗底部"3 result(s)"那行）
     readonly property color statusTextColor: isDark ? "#888888" : "#777777"
 

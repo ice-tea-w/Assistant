@@ -2,14 +2,32 @@
 #include "core/AutoStart.h"
 #include "core/Logger.h"
 
+#include <QCoreApplication>
 #include <QDir>
 #include <QFile>
 #include <QStandardPaths>
+#include <QSysInfo>
 
 // nlohmann/json — use the single-header include
 // (vcpkg installs into include/nlohmann/json.hpp)
 #include <nlohmann/json.hpp>
 using json = nlohmann::json;
+
+namespace {
+
+// 同机双实例共用一个主机名，默认设备名要带实例后缀，否则投递文件名前缀撞车，
+// 两边都会把对方投的文件当成自己发的而跳过领取。
+QString defaultDeviceName()
+{
+    QString name = QSysInfo::machineHostName();
+    const QString prefix = QStringLiteral("Assistant-");
+    const QString appName = QCoreApplication::applicationName();
+    if (appName.startsWith(prefix))
+        name += QLatin1Char('-') + appName.mid(prefix.size());
+    return name;
+}
+
+}
 
 ConfigManager::ConfigManager(QObject *parent)
     : QObject(parent)
@@ -52,6 +70,17 @@ void ConfigManager::applyDefaults()
     // 改成 "legacy"，旧 FileSearcher 在 A7 之前一直保留。
     m_fileIndexEngine  = "v2";
     m_fileIndexHardLimit = 1000000;   // §3.3 硬保护上限（软预算 30 万只记日志）
+
+    // 设备同步：路径留空由用户在设置页填；设备名默认取主机名
+    m_syncLocalRoot.clear();
+    m_syncRoots.clear();
+    m_syncSharedDir.clear();
+    m_syncPeerAddress.clear();
+    m_syncPort = 45871;
+    m_syncDeviceName = defaultDeviceName();
+    m_syncAutoIntervalMinutes = 0;
+    m_syncWatchFiles = true;
+    m_syncInboxDir.clear();
 }
 
 /// 只认 "legacy" / "v2" 两个值；写错（或旧版 config 里没有这一节）都按 legacy。
@@ -122,6 +151,32 @@ void ConfigManager::load()
                     m_fileIndexHardLimit = v;
             }
         }
+        // sync（设备同步）
+        if (j.contains("sync")) {
+            auto &s = j["sync"];
+            if (s.contains("localRoot"))  m_syncLocalRoot  = QString::fromStdString(s["localRoot"]);
+            if (s.contains("roots") && s["roots"].is_array()) {
+                m_syncRoots.clear();
+                for (const auto &item : s["roots"]) {
+                    if (!item.is_object())
+                        continue;
+                    QVariantMap one;
+                    one.insert("localPath", QString::fromStdString(item.value("localPath", "")));
+                    one.insert("alias",     QString::fromStdString(item.value("alias", "")));
+                    if (!one.value("localPath").toString().isEmpty())
+                        m_syncRoots.append(one);
+                }
+            }
+            if (s.contains("sharedDir"))  m_syncSharedDir  = QString::fromStdString(s["sharedDir"]);
+            if (s.contains("peerAddress")) m_syncPeerAddress = QString::fromStdString(s["peerAddress"]);
+            if (s.contains("port"))       m_syncPort       = s["port"];
+            if (s.contains("deviceName")) m_syncDeviceName = QString::fromStdString(s["deviceName"]);
+            if (s.contains("autoIntervalMinutes")) m_syncAutoIntervalMinutes = s["autoIntervalMinutes"];
+            if (s.contains("watchFiles"))  m_syncWatchFiles  = s["watchFiles"];
+            if (s.contains("inboxDir"))    m_syncInboxDir    = QString::fromStdString(s["inboxDir"]);
+        }
+        if (m_syncDeviceName.isEmpty())
+            m_syncDeviceName = defaultDeviceName();
 
         Logger::get().info("ConfigManager: loaded {}", m_filePath.toStdString());
     } catch (const std::exception &e) {
@@ -157,6 +212,24 @@ void ConfigManager::save()
         {"engine",            m_fileIndexEngine.toStdString()},
         {"hardLimitEntries",  m_fileIndexHardLimit}
     };
+    j["sync"] = {
+        {"localRoot",  m_syncLocalRoot.toStdString()},
+        {"sharedDir",  m_syncSharedDir.toStdString()},
+        {"peerAddress", m_syncPeerAddress.toStdString()},
+        {"port",       m_syncPort},
+        {"deviceName", m_syncDeviceName.toStdString()},
+        {"autoIntervalMinutes", m_syncAutoIntervalMinutes},
+        {"watchFiles", m_syncWatchFiles},
+        {"inboxDir",   m_syncInboxDir.toStdString()}
+    };
+    j["sync"]["roots"] = json::array();
+    for (const QVariant &v : m_syncRoots) {
+        const QVariantMap m = v.toMap();
+        j["sync"]["roots"].push_back({
+            {"localPath", m.value("localPath").toString().toStdString()},
+            {"alias",     m.value("alias").toString().toStdString()}
+        });
+    }
 
     QFile file(m_filePath);
     if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
@@ -180,6 +253,16 @@ QString ConfigManager::logLevel() const       { return m_logLevel; }
 bool    ConfigManager::autoStart() const      { return m_autoStart; }
 QString ConfigManager::fileIndexEngine() const { return m_fileIndexEngine; }
 int     ConfigManager::fileIndexHardLimitEntries() const { return m_fileIndexHardLimit; }
+
+QString ConfigManager::syncLocalRoot() const  { return m_syncLocalRoot; }
+QVariantList ConfigManager::syncRoots() const { return m_syncRoots; }
+QString ConfigManager::syncSharedDir() const  { return m_syncSharedDir; }
+QString ConfigManager::syncPeerAddress() const { return m_syncPeerAddress; }
+int     ConfigManager::syncPort() const       { return m_syncPort; }
+QString ConfigManager::syncDeviceName() const { return m_syncDeviceName; }
+int     ConfigManager::syncAutoIntervalMinutes() const { return m_syncAutoIntervalMinutes; }
+bool    ConfigManager::syncWatchFiles() const { return m_syncWatchFiles; }
+QString ConfigManager::syncInboxDir() const { return m_syncInboxDir; }
 
 // ---- setters ----
 
@@ -253,4 +336,87 @@ void ConfigManager::setFileIndexHardLimitEntries(int entries)
     m_fileIndexHardLimit = entries;
     save();
     emit fileIndexHardLimitChanged();
+}
+
+// ---- 设备同步 setters ----
+
+void ConfigManager::setSyncLocalRoot(const QString &path)
+{
+    if (m_syncLocalRoot == path)
+        return;
+    m_syncLocalRoot = path;
+    save();
+    emit syncChanged();
+}
+
+void ConfigManager::setSyncRoots(const QVariantList &roots)
+{
+    if (m_syncRoots == roots)
+        return;
+    m_syncRoots = roots;
+    save();
+    emit syncChanged();
+}
+
+void ConfigManager::setSyncSharedDir(const QString &path)
+{
+    if (m_syncSharedDir == path)
+        return;
+    m_syncSharedDir = path;
+    save();
+    emit syncChanged();
+}
+
+void ConfigManager::setSyncPeerAddress(const QString &address)
+{
+    if (m_syncPeerAddress == address)
+        return;
+    m_syncPeerAddress = address;
+    save();
+    emit syncChanged();
+}
+
+void ConfigManager::setSyncPort(int port)
+{
+    if (m_syncPort == port)
+        return;
+    m_syncPort = port;
+    save();
+    emit syncChanged();
+}
+
+void ConfigManager::setSyncDeviceName(const QString &name)
+{
+    if (m_syncDeviceName == name)
+        return;
+    m_syncDeviceName = name;
+    save();
+    emit syncChanged();
+}
+
+void ConfigManager::setSyncAutoIntervalMinutes(int minutes)
+{
+    if (m_syncAutoIntervalMinutes == minutes)
+        return;
+    m_syncAutoIntervalMinutes = minutes;
+    save();
+    emit syncChanged();
+}
+
+void ConfigManager::setSyncWatchFiles(bool enabled)
+{
+    if (m_syncWatchFiles == enabled)
+        return;
+    m_syncWatchFiles = enabled;
+    save();
+    emit syncChanged();
+}
+
+void ConfigManager::setSyncInboxDir(const QString &path)
+{
+    if (m_syncInboxDir == path)
+        return;
+    m_syncInboxDir = path;
+    save();
+    emit syncChanged();
 }

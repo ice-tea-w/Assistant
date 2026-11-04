@@ -2,6 +2,7 @@
 
 #include <QObject>
 #include <QString>
+#include <QVariantList>
 
 class ConfigManager : public QObject
 {
@@ -15,6 +16,15 @@ class ConfigManager : public QObject
     Q_PROPERTY(bool autoStart READ autoStart NOTIFY autoStartChanged)
     Q_PROPERTY(QString fileIndexEngine READ fileIndexEngine NOTIFY fileIndexEngineChanged)
     Q_PROPERTY(int fileIndexHardLimitEntries READ fileIndexHardLimitEntries NOTIFY fileIndexHardLimitChanged)
+    Q_PROPERTY(QString syncLocalRoot READ syncLocalRoot NOTIFY syncChanged)
+    Q_PROPERTY(QVariantList syncRoots READ syncRoots NOTIFY syncChanged)
+    Q_PROPERTY(QString syncSharedDir READ syncSharedDir NOTIFY syncChanged)
+    Q_PROPERTY(QString syncPeerAddress READ syncPeerAddress NOTIFY syncChanged)
+    Q_PROPERTY(int syncPort READ syncPort NOTIFY syncChanged)
+    Q_PROPERTY(QString syncDeviceName READ syncDeviceName NOTIFY syncChanged)
+    Q_PROPERTY(int syncAutoIntervalMinutes READ syncAutoIntervalMinutes NOTIFY syncChanged)
+    Q_PROPERTY(bool syncWatchFiles READ syncWatchFiles NOTIFY syncChanged)
+    Q_PROPERTY(QString syncInboxDir READ syncInboxDir NOTIFY syncChanged)
 
 public:
     explicit ConfigManager(QObject *parent = nullptr);
@@ -45,6 +55,17 @@ public:
     /// 索引硬保护上限（架构 §3.3）：到了就**停止索引**，不驱逐已有条目。
     /// 默认 100 万；软预算（30 万）只记日志，不动作。
     int fileIndexHardLimitEntries() const;
+    // ---- 设备同步（Phase: 联网功能）----
+    QString syncLocalRoot() const;             // 本地共享根（单根时代的旧字段，保留兼容）
+    /// 要同步的本地文件夹列表，每项 {localPath, alias}。为空时回退到 syncLocalRoot。
+    QVariantList syncRoots() const;
+    QString syncSharedDir() const;             // 共享目录（网盘中转）
+    QString syncPeerAddress() const;           // 直连通道对端地址（预留）
+    int     syncPort() const;                  // 直连通道端口（预留）
+    QString syncDeviceName() const;            // 本机名，用于冲突副本命名
+    int     syncAutoIntervalMinutes() const;   // 0 = 关闭自动同步
+    bool    syncWatchFiles() const;            // 本地文件变化时自动同步
+    QString syncInboxDir() const;              // 投递文件落地目录（空 = 文档/Assistant 收件箱）
 
     // ---- setters (persist immediately) ----
     Q_INVOKABLE void setTheme(const QString &theme);
@@ -54,6 +75,16 @@ public:
     Q_INVOKABLE void setAutoStart(bool enabled);
     Q_INVOKABLE void setFileIndexEngine(const QString &engine);
     Q_INVOKABLE void setFileIndexHardLimitEntries(int entries);
+
+    Q_INVOKABLE void setSyncLocalRoot(const QString &path);
+    Q_INVOKABLE void setSyncRoots(const QVariantList &roots);
+    Q_INVOKABLE void setSyncSharedDir(const QString &path);
+    Q_INVOKABLE void setSyncPeerAddress(const QString &address);
+    Q_INVOKABLE void setSyncPort(int port);
+    Q_INVOKABLE void setSyncDeviceName(const QString &name);
+    Q_INVOKABLE void setSyncAutoIntervalMinutes(int minutes);
+    Q_INVOKABLE void setSyncWatchFiles(bool enabled);
+    Q_INVOKABLE void setSyncInboxDir(const QString &path);
 
     // ---- config file path (read-only, for debugging) ----
     QString filePath() const;
@@ -66,6 +97,7 @@ signals:
     void autoStartChanged();
     void fileIndexEngineChanged();
     void fileIndexHardLimitChanged();
+    void syncChanged();
     void configLoaded();
 
 private:
@@ -85,4 +117,14 @@ private:
     QString m_fileIndexEngine;     // "legacy" | "v2"（A2 的 A/B 开关）
     int     m_fileIndexHardLimit = 1000000;   // 架构 §3.3 的硬保护上限
     QString m_filePath;
+
+    QString m_syncLocalRoot;
+    QVariantList m_syncRoots;
+    QString m_syncSharedDir;
+    QString m_syncPeerAddress;
+    int     m_syncPort = 45871;
+    QString m_syncDeviceName;
+    int     m_syncAutoIntervalMinutes = 0;
+    bool    m_syncWatchFiles = true;
+    QString m_syncInboxDir;
 };

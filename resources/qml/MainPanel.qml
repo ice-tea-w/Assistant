@@ -33,6 +33,30 @@ ApplicationWindow {
     readonly property color accentColor: Style.accentColor
     readonly property color borderColor: Style.borderColor
 
+    // 控件调色板（Qt 6.5+ 的 Window.palette），向下传给面板里所有 Quick Controls。
+    // 不设的话 Fusion 默认调色板始终是浅色的 —— 深色主题下按钮 / 单选 / 下拉
+    // 的文字会是深色压在深灰底上，几乎看不清。
+    palette.window: bgColor
+    palette.windowText: textColor
+    palette.base: panelColor
+    palette.alternateBase: panelColor
+    palette.text: textColor
+    palette.button: Style.controlColor
+    palette.buttonText: textColor
+    palette.brightText: "#ffffff"
+    palette.highlight: accentColor
+    palette.highlightedText: Style.accentTextColor
+    palette.placeholderText: mutedColor
+    palette.toolTipBase: panelColor
+    palette.toolTipText: textColor
+    palette.light: Style.borderColor
+    palette.midlight: Style.borderColor
+    palette.mid: Style.borderColor
+    palette.dark: mutedColor
+    palette.shadow: "#000000"
+    palette.link: accentColor
+    palette.linkVisited: accentColor
+
     // ---- 导航状态：以 key 为准，不以索引对齐 ----
     property string selectedKey: "todo"
 
@@ -47,9 +71,9 @@ ApplicationWindow {
         { "key": "todo",    "icon": "✓",  "label": "待办事项" },
         { "key": "notes",   "icon": "📝", "label": "记事本"   },
         { "key": "clip",    "icon": "📋", "label": "剪贴板"   },
+        { "key": "sync",    "icon": "🔄", "label": "设备同步" },
         { "key": "plugins", "icon": "🧩", "label": "插件市场" }
     ]
-
     // 插件贡献的页面 → 统一成导航项的形状。
     // key 形如 "com.assistant.demo:demo"；依赖 pluginApi.navigationEntries，
     // 后者在 loaded / unloaded 时通过 navigationChanged 通知。
@@ -82,6 +106,7 @@ ApplicationWindow {
         case "todo":    return "qrc:/qml/TodoPage.qml"
         case "notes":   return "qrc:/qml/NotesPage.qml"
         case "clip":    return "qrc:/qml/ClipboardPage.qml"
+        case "sync":    return "qrc:/qml/SyncPage.qml"
         case "plugins": return "qrc:/qml/PluginsPage.qml"
         case "settings":return "qrc:/qml/SettingsPage.qml"
         }
