@@ -18,12 +18,28 @@ find_package(Qt6 REQUIRED COMPONENTS
 # ---- 查找其他依赖 ----
 find_package(spdlog REQUIRED)
 find_package(nlohmann_json REQUIRED)
+# 插件市场：zip 解压（Qt6 没有公开的 zip API，QZipReader 是私有头）
+find_package(miniz CONFIG REQUIRED)
 # find_package(SQLite3 REQUIRED)    # Phase 2: uncomment when adding HistoryDatabase
 # find_package(GTest REQUIRED)
 
 # ---- 源文件 ----
 file(GLOB_RECURSE SOURCES src/*.cpp)
 file(GLOB_RECURSE HEADERS include/*.h)
+
+# ---- 资源依赖（重要）----
+# AUTORCC 的依赖扫描并不可靠地覆盖 .qrc 里"仅被列出"的文件：
+# 只改 .qml 内容时可能不触发重新打包，于是"改了界面但跑起来还是旧的"。
+# 显式把它们声明成 resources.qrc 的依赖，改任何一个 QML 都会重新 rcc。
+file(GLOB_RECURSE QRC_RESOURCE_FILES
+    resources/qml/*.qml
+    resources/qml/qmldir
+    resources/market/*.json
+)
+if (QRC_RESOURCE_FILES)
+    set_property(SOURCE resources/resources.qrc PROPERTY
+        OBJECT_DEPENDS "${QRC_RESOURCE_FILES}")
+endif()
 
 # ---- 主程序 ----
 add_executable(${PROJECT_NAME}
@@ -51,6 +67,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     Qt6::Sql
     nlohmann_json::nlohmann_json
     spdlog::spdlog
+    miniz::miniz
 )
 
 # AppIndexer uses the Windows Shell Link COM interface (IShellLink, SHGetKnownFolderPath)
@@ -74,7 +91,7 @@ file(APPEND \"\${OUT_FILE}\" \"QmlImports = Qt6/qml\\n\")
 add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
     COMMAND ${CMAKE_COMMAND}
         -D "OUT_FILE=$<TARGET_FILE_DIR:${PROJECT_NAME}>/qt.conf"
-        -D "QT_PREFIX=$<IF:$<CONFIG:Debug>,C:/vcpkg/installed/x64-windows/debug,C:/vcpkg/installed/x64-windows>"
+        -D "QT_PREFIX=$<IF:$<CONFIG:Debug>,${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/debug,${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}>"
         -P "${CMAKE_CURRENT_BINARY_DIR}/write_qt_conf.cmake"
     COMMENT "Generating qt.conf (vcpkg Qt6)"
 )
@@ -90,7 +107,7 @@ file(APPEND \"\${OUT_FILE}\" \"start \\\"\\\" \\\"\${EXE_NAME}\\\"\\n\")
 add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
     COMMAND ${CMAKE_COMMAND}
         -D "OUT_FILE=$<TARGET_FILE_DIR:${PROJECT_NAME}>/run.bat"
-        -D "QT_PATH=$<IF:$<CONFIG:Debug>,C:/vcpkg/installed/x64-windows/debug,C:/vcpkg/installed/x64-windows>"
+        -D "QT_PATH=$<IF:$<CONFIG:Debug>,${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/debug,${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}>"
         -D "EXE_DIR=$<TARGET_FILE_DIR:${PROJECT_NAME}>"
         -D "EXE_NAME=$<TARGET_FILE_NAME:${PROJECT_NAME}>"
         -P "${CMAKE_CURRENT_BINARY_DIR}/write_run_bat.cmake"
