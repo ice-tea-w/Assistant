@@ -7,6 +7,8 @@
 #include "core/plugin/PluginRegistry.h"
 #include "core/plugin/SemVer.h"
 
+#include "contract/IHostApi.h"
+
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDesktopServices>
@@ -95,18 +97,34 @@ void PluginManager::setInstaller(PluginInstaller *installer)
     // A fresh install is enabled right away: the user just asked for it, and a
     // plugin that lands disabled looks like nothing happened. If loading fails,
     // enablePlugin() records a problem and the row turns red — still honest.
+    //
+    // An **upgrade** must not flip a plugin the user had switched off: the
+    // installer already carried the old `enabled` over, so only re-load when it
+    // stays enabled.
     connect(m_installer, &PluginInstaller::installed, this,
-            [this](const QString &pluginId, const QString &version) {
-                Logger::get().info("PluginManager: installed {} v{}, enabling",
-                                   pluginId.toStdString(), version.toStdString());
-                enablePlugin(pluginId);
+            [this](const QString &pluginId, const QString &version,
+                   const QString &replacedVersion) {
+                const bool isUpgrade = !replacedVersion.isEmpty();
 
                 auto entry = m_registry ? m_registry->get(pluginId) : std::nullopt;
-                if (entry) {
-                    entry->enabled = true;
-                    QString error;
-                    if (!m_registry->upsertAndSave(*entry, &error))
-                        emit toast(QStringLiteral("error"), error);
+                const bool shouldEnable = entry && entry->enabled;
+
+                if (isUpgrade && !shouldEnable) {
+                    Logger::get().info("PluginManager: upgraded {} to v{} (stays disabled)",
+                                       pluginId.toStdString(), version.toStdString());
+                    emit toast(QStringLiteral("info"),
+                               QStringLiteral("已升级到 %1，保持停用状态").arg(version));
+                } else {
+                    Logger::get().info("PluginManager: installed {} v{}, enabling",
+                                       pluginId.toStdString(), version.toStdString());
+                    enablePlugin(pluginId);
+
+                    if (entry) {
+                        entry->enabled = true;
+                        QString error;
+                        if (!m_registry->upsertAndSave(*entry, &error))
+                            emit toast(QStringLiteral("error"), error);
+                    }
                 }
 
                 emit viewChanged();
@@ -389,6 +407,13 @@ bool PluginManager::enablePlugin(const QString &id)
         return false;
     }
 
+    // API gate: `engines.api` 声明的是"宿主插件 API 面"的区间，与产品版本是两条轴
+    // （见 include/contract/IHostApi.h）。旧宿主 + 新插件、新宿主 + 旧插件都靠它挡。
+    if (!manifest.checkApi(contract::kApiVersion, &error)) {
+        setProblem(id, QStringLiteral("incompatible-version"), error);
+        return false;
+    }
+
     if (!m_loader->load(manifest, m_registry->pluginDir(id), &error)) {
         setProblem(id, QStringLiteral("load-failed"), error);
         return false;
@@ -593,6 +618,32 @@ QVariantList PluginManager::rowsFrom(const QStringList &ids) const
             permissions = manifest.permissions;
         row.insert(QStringLiteral("permissions"), permissions);
 
+        // 更新检测：市场里有比已装版本更高的发行版吗？
+        //
+        // 只在**非 seed** 时做：seed 是编译进程序的示例数据，拿它去和已装版本比
+        // 会凭空冒出"更新"，比不提示更糟。
+        QString latestVersion;
+        bool hasUpdate = false;
+        if (m_catalog && !m_catalog->isSeedData()) {
+            for (const MarketEntry &candidate : m_catalog->entries()) {
+                if (candidate.id != id)
+                    continue;
+                latestVersion = candidate.latest.version;
+                break;
+            }
+
+            if (!latestVersion.isEmpty() && latestVersion != entry->version) {
+                const auto installed = semver::parse(QStringView(entry->version));
+                const auto latest    = semver::parse(QStringView(latestVersion));
+                // 版本串解析不了就按"不同即更新"，宁可多提示一次也不漏
+                hasUpdate = (installed && latest) ? semver::compare(*latest, *installed) > 0
+                                                  : true;
+            }
+        }
+
+        row.insert(QStringLiteral("latestVersion"), latestVersion);
+        row.insert(QStringLiteral("hasUpdate"), hasUpdate);
+
         // State is decided here, never in QML (LLD §9.3).
         QString state;
         QString badge;
@@ -606,6 +657,11 @@ QVariantList PluginManager::rowsFrom(const QStringList &ids) const
             state = QStringLiteral("bundled");
             badge = QStringLiteral("内置");
             badgeKind = QStringLiteral("gray");
+        } else if (hasUpdate) {
+            // 更新优先于"已停用"：两件事同时成立时，用户更需要看见能升级
+            state = QStringLiteral("update-available");
+            badge = QStringLiteral("更新");
+            badgeKind = QStringLiteral("accent");
         } else {
             state = QStringLiteral("installed");
             if (!entry->enabled) {

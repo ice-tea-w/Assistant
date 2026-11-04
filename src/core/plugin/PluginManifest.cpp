@@ -213,6 +213,19 @@ std::optional<PluginManifest> PluginManifest::parse(const QByteArray &raw, QStri
                 return fail(QStringLiteral("engines.assistant 无法解析（%1）：%2")
                                 .arg(why, m.enginesAssistant));
         }
+
+        // engines.api —— 单独一个轴：声明的区间是对 contract::kApiVersion 的，
+        // 不是对宿主产品版本的。写错的区间在这里就拒，别留到启用时才炸。
+        present = false;
+        if (!readString(engines, "api", &m.enginesApi, &present, error))
+            return std::nullopt;
+
+        if (!m.enginesApi.isEmpty()) {
+            QString why;
+            if (!semver::isValidRange(QStringView(m.enginesApi), &why))
+                return fail(QStringLiteral("engines.api 无法解析（%1）：%2")
+                                .arg(why, m.enginesApi));
+        }
     }
 
     // ---- permissions ----
@@ -386,6 +399,44 @@ bool PluginManifest::checkEngine(const QString &appVersion, QString *error) cons
         if (error) {
             *error = QStringLiteral("该插件要求 Assistant %1，当前 %2")
                          .arg(enginesAssistant, appVersion);
+        }
+        return false;
+    }
+
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// checkApi
+// ---------------------------------------------------------------------------
+
+bool PluginManifest::checkApi(int hostApiVersion, QString *error) const
+{
+    // Same convention as checkEngine: no declaration is not an incompatibility.
+    if (enginesApi.isEmpty())
+        return true;
+
+    if (hostApiVersion <= 0) {
+        if (error)
+            *error = QStringLiteral("宿主插件 API 版本无效：%1").arg(hostApiVersion);
+        return false;
+    }
+
+    // `engines.api` is written in SemVer form; API version 1 is compared as "1.0.0".
+    // Kept as a named QString: QStringView over a temporary would dangle inside
+    // the parse call below.
+    const QString hostText = QStringLiteral("%1.0.0").arg(hostApiVersion);
+    const auto host = semver::parse(QStringView(hostText));
+    if (!host) {
+        if (error)
+            *error = QStringLiteral("宿主插件 API 版本号无法解析：%1").arg(hostText);
+        return false;
+    }
+
+    if (!semver::satisfies(*host, QStringView(enginesApi))) {
+        if (error) {
+            *error = QStringLiteral("该插件要求插件 API %1，当前 API %2")
+                         .arg(enginesApi, QString::number(hostApiVersion));
         }
         return false;
     }

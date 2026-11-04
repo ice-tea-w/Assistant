@@ -84,7 +84,12 @@ signals:
 
     /// Emitted just before finished(ok=true): what landed on disk, so the manager
     /// can enable it without re-reading the registry.
-    void installed(const QString &pluginId, const QString &version);
+    ///
+    /// @param replacedVersion the version that was just replaced; **empty means this
+    ///        was a fresh install**. The manager uses it to decide whether a plugin
+    ///        the user had disabled should stay disabled after an upgrade.
+    void installed(const QString &pluginId, const QString &version,
+                   const QString &replacedVersion);
 
 private:
     struct Job

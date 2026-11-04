@@ -4,6 +4,8 @@
 #include <QString>
 #include <QVariant>
 
+#include "contract/IHostApi.h"
+
 /// The **only** surface a plugin is allowed to touch.
 ///
 /// Design rule (插件市场-模块框架.md §4.5): the host gives "data + actions", never
@@ -30,6 +32,13 @@ class PluginHost : public QObject
     Q_PROPERTY(QString dataDir    READ dataDir    CONSTANT)
     Q_PROPERTY(bool    isDark     READ isDark     NOTIFY themeChanged)
 
+    /// 宿主实现的插件 API 版本（`contract::kApiVersion`）。
+    ///
+    /// 插件用它判断"宿主支持我要的 API 吗"；清单里对应的声明是 `engines.api`。
+    /// 与 `appVersion`（宿主产品版本）不是一回事，二者都要看：
+    /// API 版本管能力面，产品版本管行为/界面。
+    Q_PROPERTY(int apiVersion READ apiVersion CONSTANT)
+
 public:
     /// @param dataDir the plugin's writable directory; created on first write
     PluginHost(QString pluginId, QString pluginName, QString version,
@@ -41,6 +50,7 @@ public:
     QString appVersion() const { return m_appVersion; }
     QString dataDir() const { return m_dataDir; }
     bool isDark() const { return m_isDark; }
+    int  apiVersion() const { return contract::kApiVersion; }
 
     /// Set by PluginLoader from the running application; not plugin-controlled.
     void setAppVersion(const QString &appVersion);

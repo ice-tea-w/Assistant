@@ -38,6 +38,14 @@
 
 #include <cstdio>
 
+// 夹具与示例目录由 tests/CMakeLists.txt 注入。缺省值让直接跑 IDE 时也能工作。
+#ifndef PLUGIN_TEST_FIXTURES
+#define PLUGIN_TEST_FIXTURES "fixtures"
+#endif
+#ifndef PLUGIN_TEST_EXAMPLES
+#define PLUGIN_TEST_EXAMPLES "../examples"
+#endif
+
 namespace {
 
 int g_checks = 0;
@@ -402,6 +410,57 @@ void testCheckEngine()
             CHECK(none->enginesAssistant.isEmpty());
             CHECK(none->checkEngine(QStringLiteral("0.3.0"), &e2));
         }
+    }
+}
+
+void testApiContract()
+{
+    SECTION("contract / engines.api");
+
+    // 宿主暴露的 apiVersion 必须来自契约头，不能在别处另写一个数字。
+    {
+        PluginHost host(QStringLiteral("com.a.b"), QStringLiteral("x"),
+                        QStringLiteral("1.0.0"), QString(), nullptr);
+        CHECK(host.apiVersion() == contract::kApiVersion);
+        CHECK(host.apiVersion() >= 1);
+    }
+
+    // 声明了区间且满足 / 不满足。
+    {
+        QString err;
+        const auto m = PluginManifest::parse(manifestOf(R"({
+            "manifestVersion":1,"id":"com.a.b","name":"x","version":"1.0.0","main":"main.qml",
+            "engines":{"api":">=1.0.0 <2.0.0"}
+        })"), &err);
+        CHECK(m.has_value());
+        if (m) {
+            CHECK(m->checkApi(1, &err));
+            // 2 会被比较成 2.0.0，不满足 <2.0.0 —— 证明这条轴真的参与门控。
+            CHECK(!m->checkApi(2, &err));
+        }
+    }
+
+    // 未声明 → 通过（与 engines.assistant 同一约定：不声明不算不兼容）。
+    {
+        QString err;
+        const auto m = PluginManifest::parse(manifestOf(R"({
+            "manifestVersion":1,"id":"com.a.b","name":"x","version":"1.0.0","main":"main.qml"
+        })"), &err);
+        CHECK(m.has_value());
+        if (m) {
+            CHECK(m->enginesApi.isEmpty());
+            CHECK(m->checkApi(contract::kApiVersion, &err));
+        }
+    }
+
+    // 区间语法非法 → 清单在解析阶段就被拒，不留到启用时才炸。
+    {
+        QString err;
+        const auto bad = PluginManifest::parse(manifestOf(R"({
+            "manifestVersion":1,"id":"com.a.b","name":"x","version":"1.0.0","main":"main.qml",
+            "engines":{"api":"*"}
+        })"), &err);
+        CHECK(!bad.has_value());
     }
 }
 
@@ -1081,6 +1140,167 @@ void testLoaderUnloadAll()
     loader.unloadAll();
     CHECK(loader.count() == 0);
     CHECK(loader.loadedIds().isEmpty());
+}
+
+// ---------------------------------------------------------------------------
+// 金丝雀：`host` 的每一个属性与每一个方法（tests/fixtures/plugin-full）
+// ---------------------------------------------------------------------------
+
+/// 把夹具目录里的文件（只拷根层，不递归）复制到 @p to。
+///
+/// 必须复制后再加载：PluginHost 会在插件目录下建 `data/settings.json`，
+/// 直接用仓库里的夹具会把写入痕迹留在工作区（测试不该改仓库）。
+bool copyPluginFiles(const QString &from, const QString &to)
+{
+    const QDir src(from);
+    if (!src.exists())
+        return false;
+    if (!QDir().mkpath(to))
+        return false;
+
+    const QFileInfoList files = src.entryInfoList(QDir::Files, QDir::Name);
+    bool ok = !files.isEmpty();
+    for (const QFileInfo &fi : files) {
+        const QString dest = to + QLatin1Char('/') + fi.fileName();
+        QFile::remove(dest);
+        ok = QFile::copy(fi.absoluteFilePath(), dest) && ok;
+    }
+    return ok;
+}
+
+void testCanaryFullApi()
+{
+    SECTION("canary / host 全部属性与方法");
+
+    const QString fixture = QStringLiteral(PLUGIN_TEST_FIXTURES) + QStringLiteral("/plugin-full");
+
+    ScratchDir scratch;
+    if (!scratch.isValid()) { CHECK(false); return; }
+
+    const QString dir = scratch.path + QStringLiteral("/canary");
+    CHECK(copyPluginFiles(fixture, dir));
+
+    QFile file(dir + QStringLiteral("/plugin.json"));
+    CHECK(file.open(QIODevice::ReadOnly));
+    const QByteArray raw = file.readAll();
+    file.close();
+
+    QString error;
+    const auto m = PluginManifest::parse(raw, &error);
+    if (!m)
+        std::printf("  manifest error: %s\n", error.toUtf8().constData());
+    CHECK(m.has_value());
+    if (!m)
+        return;
+
+    // 金丝雀自己必须能过两道门控，否则它验的是"装不上"而不是"接口还在"。
+    CHECK(m->checkEngine(QCoreApplication::applicationVersion(), &error));
+    CHECK(m->checkApi(contract::kApiVersion, &error));
+    CHECK(m->enginesApi == QStringLiteral(">=1.0.0"));
+    CHECK(m->permissions.size() == 2);
+    CHECK(m->pages.size() == 1);
+
+    QQmlEngine engine;
+    PluginLoader loader;
+    loader.setEngine(&engine);
+
+    QStringList toasts;
+    QObject::connect(&loader, &PluginLoader::toastRequested,
+                     [&toasts](const QString &, const QString &text) { toasts << text; });
+
+    CHECK(loader.load(*m, dir, &error));
+    if (!error.isEmpty())
+        std::printf("  load error: %s\n", error.toUtf8().constData());
+
+    QObject *object = loader.pluginObject(m->id);
+    CHECK(object != nullptr);
+    if (!object)
+        return;
+
+    // ---- 属性 ----
+    CHECK(object->property("seenId").toString() == m->id);
+    CHECK(object->property("seenName").toString() == m->name);
+    CHECK(object->property("seenVersion").toString() == m->version);
+    CHECK(object->property("seenAppVersion").toString() == QCoreApplication::applicationVersion());
+    CHECK(object->property("seenDataDir").toString() == dir + QStringLiteral("/data"));
+    CHECK(object->property("seenApi").toInt() == contract::kApiVersion);
+
+    // ---- setting / setSetting：默认值、往返、落盘 ----
+    CHECK(object->property("fallbackSeen").toString() == QStringLiteral("FALLBACK"));
+    CHECK(object->property("setSettingOk").toBool());
+    CHECK(object->property("readBack").toString() == QStringLiteral("canaryValue"));
+    CHECK(QFile::exists(dir + QStringLiteral("/data/settings.json")));
+
+    // ---- openPath：该拒的必须拒（成功路径会拉起系统程序，测试不碰）----
+    CHECK(object->property("openEmptyRefused").toBool());
+    CHECK(object->property("openOutsideRefused").toBool());
+
+    // ---- toast：onCompleted 阶段宿主还没接线，所以用显式调用验证通道 ----
+    const bool invoked = QMetaObject::invokeMethod(
+        object, "fireToast", Q_ARG(QVariant, QStringLiteral("from-test")));
+    CHECK(invoked);
+    CHECK(toasts.contains(QStringLiteral("from-test")));
+
+    // ---- 页面：懒创建、同样看得到 host、装卸后消失 ----
+    QObject *page = loader.createPage(m->id, QStringLiteral("canary"), &error);
+    CHECK(page != nullptr);
+    if (page) {
+        CHECK(page->property("marker").toString() == QStringLiteral("canary-page"));
+        CHECK(page->property("apiSeen").toInt() == contract::kApiVersion);
+        CHECK(page->property("ownerId").toString() == m->id);
+    }
+
+    loader.unload(m->id);
+    CHECK(!loader.isLoaded(m->id));
+    CHECK(loader.count() == 0);
+}
+
+// ---------------------------------------------------------------------------
+// 示例插件：保证 examples/ 里的东西永远能装
+// ---------------------------------------------------------------------------
+
+void testExampleTextTools()
+{
+    SECTION("examples / text-tools 可解析且可加载");
+
+    const QString exampleDir = QStringLiteral(PLUGIN_TEST_EXAMPLES)
+                               + QStringLiteral("/text-tools");
+
+    ScratchDir scratch;
+    if (!scratch.isValid()) { CHECK(false); return; }
+
+    const QString dir = scratch.path + QStringLiteral("/text-tools");
+    CHECK(copyPluginFiles(exampleDir, dir));
+
+    QFile file(dir + QStringLiteral("/plugin.json"));
+    CHECK(file.open(QIODevice::ReadOnly));
+    const QByteArray raw = file.readAll();
+    file.close();
+
+    QString error;
+    const auto m = PluginManifest::parse(raw, &error);
+    if (!m)
+        std::printf("  manifest error: %s\n", error.toUtf8().constData());
+    CHECK(m.has_value());
+    if (!m)
+        return;
+
+    CHECK(m->checkEngine(QCoreApplication::applicationVersion(), &error));
+    CHECK(m->checkApi(contract::kApiVersion, &error));
+    CHECK(m->permissions.isEmpty());        // 示例宣称零权限；悄悄加权限会让这条变红
+    CHECK(m->pages.size() == 1);
+
+    QQmlEngine engine;
+    PluginLoader loader;
+    loader.setEngine(&engine);
+
+    CHECK(loader.load(*m, dir, &error));
+    if (!error.isEmpty())
+        std::printf("  load error: %s\n", error.toUtf8().constData());
+    CHECK(loader.isLoaded(m->id));
+
+    // 页面是 QtQuick.Controls 写的，测试工程没链 GUI 控件模块，这里只验主入口。
+    loader.unload(m->id);
 }
 
 } // namespace
@@ -2028,6 +2248,23 @@ void testInstallerAlreadyInstalledAndUpgrade()
     // A newer version replaces it.
     const QString v2 = scratch.path + QStringLiteral("/v2.zip");
     CHECK(writePluginZip(v2, QStringLiteral("com.inst.up"), QStringLiteral("2.0.0")));
+
+    // 升级前：给插件留一份"用户数据"，并把用户选择记为启用。
+    // 旧实现会把旧目录整个挪进 .trash 再删掉 —— data/ 和 enabled 都会丢。
+    const QString dataDir = reg.pluginDir(QStringLiteral("com.inst.up"))
+                            + QStringLiteral("/data");
+    CHECK(QDir().mkpath(dataDir));
+    CHECK(writeTextFile(dataDir + QStringLiteral("/settings.json"),
+                        QByteArray(R"({"runCount":7})")));
+    {
+        auto e = reg.get(QStringLiteral("com.inst.up"));
+        CHECK(e.has_value());
+        if (e) {
+            e->enabled = true;
+            CHECK(reg.upsertAndSave(*e));
+        }
+    }
+
     {
         const QString requestId = installer.installFromZip(v2);
         bool ok = false;
@@ -2037,8 +2274,46 @@ void testInstallerAlreadyInstalledAndUpgrade()
 
     const auto entry = reg.get(QStringLiteral("com.inst.up"));
     CHECK(entry.has_value());
-    if (entry)
+    if (entry) {
         CHECK(entry->version == QStringLiteral("2.0.0"));
+        CHECK(entry->enabled);                    // 用户开着 → 升级后仍开着
+    }
+
+    // data/ 必须跟着新版目录活下来，且内容原样
+    CHECK(QFile::exists(dataDir + QStringLiteral("/settings.json")));
+    {
+        QFile f(dataDir + QStringLiteral("/settings.json"));
+        CHECK(f.open(QIODevice::ReadOnly));
+        CHECK(f.readAll().contains("runCount"));
+        f.close();
+    }
+
+    // 停用状态也要延续：升级不等于"帮用户打开"
+    const QString v3 = scratch.path + QStringLiteral("/v3.zip");
+    CHECK(writePluginZip(v3, QStringLiteral("com.inst.up"), QStringLiteral("3.0.0")));
+    {
+        auto e = reg.get(QStringLiteral("com.inst.up"));
+        CHECK(e.has_value());
+        if (e) {
+            e->enabled = false;
+            CHECK(reg.upsertAndSave(*e));
+        }
+    }
+    {
+        const QString requestId = installer.installFromZip(v3);
+        bool ok = false;
+        CHECK(waitForInstall(installer, requestId, &ok, nullptr, nullptr));
+        CHECK(ok);
+    }
+    {
+        const auto after = reg.get(QStringLiteral("com.inst.up"));
+        CHECK(after.has_value());
+        if (after) {
+            CHECK(after->version == QStringLiteral("3.0.0"));
+            CHECK(!after->enabled);               // 用户关着 → 升级后仍关着
+        }
+    }
+    CHECK(QFile::exists(dataDir + QStringLiteral("/settings.json")));
 
     // Old version must not be left in the plugin directory.
     CHECK(!QDir(reg.pluginDir(QStringLiteral("com.inst.up"))).entryList().isEmpty());
@@ -2303,6 +2578,85 @@ void testCatalogIncompatible()
         CHECK(row.value(QStringLiteral("state")).toString() == QStringLiteral("incompatible"));
         CHECK(row.value(QStringLiteral("badgeKind")).toString() == QStringLiteral("orange"));
         CHECK(row.value(QStringLiteral("problem")).toString().contains(QStringLiteral("99.0.0")));
+    }
+}
+
+void testUpdateDetection()
+{
+    SECTION("PluginManager / 更新检测（市场版本更高）");
+
+    ScratchDir scratch;
+    if (!scratch.isValid()) { CHECK(false); return; }
+
+    PluginRegistry reg(scratch.pluginRoot());
+    CHECK(reg.load());
+
+    // 已装 1.2.0
+    InstalledPlugin installed;
+    installed.id          = QStringLiteral("com.assistant.weather");
+    installed.version     = QStringLiteral("1.2.0");
+    installed.enabled     = true;
+    installed.origin.kind = QStringLiteral("market");
+    CHECK(reg.upsertAndSave(installed));
+
+    // 索引声明 2.0.0，写在缓存里；市场 URL 指向不可达地址，走"网络失败→缓存"降级。
+    // 关键是 m_marketUrl 非空：seed 数据不参与更新检测（示例数据不该冒出"更新"）。
+    const QByteArray index = R"({
+      "schemaVersion": 1,
+      "plugins": [
+        { "id": "com.assistant.weather", "name": "天气", "summary": "s",
+          "latest": { "version": "2.0.0", "minAppVersion": "0.3.0" } }
+      ]
+    })";
+    CHECK(writeTextFile(reg.marketCacheFile(),
+                        QByteArray(R"({"schemaVersion":1,"index":)") + index + "}"));
+
+    PluginLoader loader;
+    PluginManager mgr(&reg, &loader);
+    PluginCatalog catalog(&reg);
+    mgr.setCatalog(&catalog);
+    catalog.setMarketUrl(QStringLiteral("http://127.0.0.1:1/index.json"));
+
+    QEventLoop loop;
+    QTimer timer;
+    bool fired = false;
+    QObject::connect(&catalog, &PluginCatalog::fetched, &loop,
+                     [&](bool, const QString &) { fired = true; loop.quit(); });
+    QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
+    timer.setSingleShot(true);
+    timer.start(8000);
+    catalog.fetch(true);
+    if (!fired)
+        loop.exec();
+    CHECK(fired);
+
+    const QVariantList rows = mgr.installedRows();
+    CHECK(rows.size() == 1);
+    if (rows.size() == 1) {
+        const QVariantMap row = rows.at(0).toMap();
+        CHECK(row.value(QStringLiteral("state")).toString()
+              == QStringLiteral("update-available"));
+        CHECK(row.value(QStringLiteral("badge")).toString() == QStringLiteral("更新"));
+        CHECK(row.value(QStringLiteral("latestVersion")).toString() == QStringLiteral("2.0.0"));
+        CHECK(row.value(QStringLiteral("hasUpdate")).toBool());
+    }
+
+    // 已经是最高版本 → 不再提示更新
+    {
+        auto e = reg.get(QStringLiteral("com.assistant.weather"));
+        CHECK(e.has_value());
+        if (e) {
+            e->version = QStringLiteral("2.0.0");
+            CHECK(reg.upsertAndSave(*e));
+        }
+
+        const QVariantList after = mgr.installedRows();
+        CHECK(after.size() == 1);
+        if (after.size() == 1) {
+            const QVariantMap row = after.at(0).toMap();
+            CHECK(row.value(QStringLiteral("state")).toString() == QStringLiteral("installed"));
+            CHECK(!row.value(QStringLiteral("hasUpdate")).toBool());
+        }
     }
 }
 
@@ -2619,6 +2973,7 @@ int main(int argc, char **argv)
     testManifestInvalid();
     testManifestContributions();
     testCheckEngine();
+    testApiContract();
 
     testRegistryPaths();
     testRegistryFirstRun();
@@ -2636,6 +2991,8 @@ int main(int argc, char **argv)
     testLoaderLoadAndUnload();
     testLoaderNavigation();
     testLoaderUnloadAll();
+    testCanaryFullApi();
+    testExampleTextTools();
 
     testManagerDiscovery();
     testManagerRows();
@@ -2662,6 +3019,7 @@ int main(int argc, char **argv)
     testCatalogCorruptCache();
     testCatalogMergeIntoRows();
     testCatalogIncompatible();
+    testUpdateDetection();
 
     testMarketInstallSuccess();
     testMarketInstallChecksumMismatch();

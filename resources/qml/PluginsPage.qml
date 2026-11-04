@@ -21,6 +21,62 @@ Rectangle {
     property string detailId: ""
     property bool   detailOpen: false
 
+    // ---- 安装前确认（信任提示）----
+    // 为什么要有它：插件在宿主机进程内、以用户权限运行，`permissions` 只是声明、
+    // 宿主**不会**据此拦截（见 docs/plugins/README.md §9）。不给这句提示，
+    // UI 会让人误以为有沙箱。
+    property bool   confirmOpen: false
+    property string confirmId: ""
+    property bool   confirmIsUpdate: false
+
+    function confirmRow() {
+        return page.findRow(page.confirmId)
+    }
+
+    function requestInstall(pluginId) {
+        var row = page.findRow(pluginId)
+        if (!row)
+            return
+        page.confirmId     = pluginId
+        page.confirmIsUpdate = (row.state === "update-available")
+        page.confirmOpen   = true
+    }
+
+    function doInstall() {
+        var id = page.confirmId
+        page.confirmOpen = false
+        if (id !== "" && page.api)
+            page.api.install(id)
+    }
+
+    // 能力名 → 人话。声明是给人看的，别直接把 fs.write 丢到界面上。
+    function permissionText(name) {
+        switch (name) {
+            case "network":         return "访问网络"
+            case "fs.read":         return "读取你的文件"
+            case "fs.write":        return "写入你的文件"
+            case "clipboard.read":  return "读取剪贴板"
+            case "clipboard.write": return "写入剪贴板"
+            case "hotkey":          return "注册全局热键"
+            case "shell":           return "打开外部程序或链接"
+            default:                return name
+        }
+    }
+
+    function confirmVersionText() {
+        var r = page.confirmRow()
+        if (!r)
+            return ""
+        if (page.confirmIsUpdate && r.latestVersion)
+            return "v" + r.version + "  →  v" + r.latestVersion
+        return "v" + r.version
+    }
+
+    function confirmPermissions() {
+        var r = page.confirmRow()
+        return (r && r.permissions) ? r.permissions : []
+    }
+
     // ---- 安装进度（完全由 PluginInstaller 的信号驱动，QML 不猜进度）----
     property bool   installVisible: false
     property bool   installFinished: false
@@ -145,6 +201,7 @@ Rectangle {
 
     focus: true
     Keys.onEscapePressed: {
+        if (confirmOpen) { confirmOpen = false; return }
         if (installVisible) { installVisible = false; return }
         if (detailOpen)  { detailOpen = false; return }
     }
@@ -357,8 +414,8 @@ Rectangle {
                     pluginEnabled: modelData.pluginEnabled
 
                     onInstallClicked: {
-                        // 市场安装要等 M1（PluginCatalog）；这里只提示，不假装开始安装
-                        if (page.api) page.api.install(pluginId)
+                        // 先弹确认（信任提示 + 权限清单），确认后才真的开始安装
+                        page.requestInstall(pluginId)
                     }
                     onCancelClicked: {
                         if (page.api) page.api.cancelInstall(pluginId)
@@ -375,7 +432,8 @@ Rectangle {
                         page.detailOpen = true
                     }
                     onUpdateClicked: {
-                        if (page.api) page.api.install(pluginId)
+                        // 更新 = 装新版覆盖（同一个安装器路径），确认框里说明"会保留设置"
+                        page.requestInstall(pluginId)
                     }
                 }
             }
@@ -674,6 +732,198 @@ Rectangle {
                     color: page.mutedColor
                     font.pixelSize: 10
                     wrapMode: Text.Wrap
+                }
+            }
+        }
+    }
+
+    // ══════════ 安装确认（信任提示）══════════
+    // 这一步存在的唯一理由：把"插件以你的权限运行、宿主不拦截"说清楚。
+    // 不做这一步，界面看起来就像有沙箱。
+    Item {
+        id: confirmOverlay
+        anchors.fill: parent
+        visible: page.confirmOpen
+        z: 19
+
+        Rectangle {
+            anchors.fill: parent
+            color: "#000000"
+            opacity: 0.25
+
+            MouseArea {
+                anchors.fill: parent
+                onClicked: page.confirmOpen = false
+            }
+        }
+
+        Rectangle {
+            width: 420
+            anchors.centerIn: parent
+            // 高度由内容撑开；但 ColumnLayout **不能** anchors.fill 父矩形，
+            // 否则 parent.height ↔ layout.implicitHeight 互相绑定（binding loop）。
+            height: confirmColumn.implicitHeight + 32
+            radius: Style.radius
+            color: page.panelColor
+            border.width: 1
+            border.color: page.borderColor
+
+            ColumnLayout {
+                id: confirmColumn
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.margins: 16
+                spacing: 10
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 10
+
+                    Text {
+                        text: page.confirmRow() && page.confirmRow().icon
+                              ? page.confirmRow().icon : "🧩"
+                        font.pixelSize: 22
+                    }
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 2
+
+                        Text {
+                            text: (page.confirmIsUpdate ? "更新 " : "安装 ")
+                                  + (page.confirmRow() ? page.confirmRow().name : "")
+                            color: page.textColor
+                            font.pixelSize: 14
+                            font.bold: true
+                        }
+
+                        Text {
+                            text: page.confirmVersionText()
+                            color: page.mutedColor
+                            font.pixelSize: 11
+                        }
+                    }
+
+                    Item {
+                        width: 16; height: 16
+                        Text {
+                            anchors.centerIn: parent
+                            text: "✕"
+                            color: page.mutedColor
+                            font.pixelSize: 14
+                        }
+                        MouseArea {
+                            anchors.fill: parent
+                            anchors.margins: -6
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: page.confirmOpen = false
+                        }
+                    }
+                }
+
+                // ---- 权限声明 ----
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 3
+                    visible: page.confirmPermissions().length > 0
+
+                    Text {
+                        text: "这个插件声明需要："
+                        color: page.mutedColor
+                        font.pixelSize: 11
+                    }
+
+                    Repeater {
+                        model: page.confirmPermissions()
+
+                        Text {
+                            text: "• " + page.permissionText(modelData)
+                            color: page.textColor
+                            font.pixelSize: 11
+                        }
+                    }
+                }
+
+                // ---- 信任提示（常驻，不可折叠）----
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: trustText.implicitHeight + 16
+                    radius: Style.radiusSmall
+                    color: Style.isDark ? "#2a2422" : "#fff8f0"
+                    border.width: 1
+                    border.color: Style.isDark ? "#4a3b32" : "#f0d9bd"
+
+                    Text {
+                        id: trustText
+                        anchors.fill: parent
+                        anchors.margins: 8
+                        text: "插件会以你的权限在本程序内运行，能读写你的文件、访问网络。"
+                              + "宿主只校验包完整性，不限制插件行为（当前版本没有沙箱）。\n"
+                              + "只安装你信任的来源。已安装的插件不会自动更新。"
+                        color: page.textColor
+                        font.pixelSize: 11
+                        wrapMode: Text.Wrap
+                        lineHeight: 1.25
+                    }
+                }
+
+                Text {
+                    Layout.fillWidth: true
+                    visible: page.confirmIsUpdate
+                    text: "更新会保留插件的数据目录（设置不会丢），但需要重启 Assistant 才生效。"
+                    color: page.mutedColor
+                    font.pixelSize: 10
+                    wrapMode: Text.Wrap
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+
+                    Item { Layout.fillWidth: true }
+
+                    Rectangle {
+                        Layout.preferredWidth: 64
+                        Layout.preferredHeight: 30
+                        radius: Style.radiusSmall
+                        color: "transparent"
+                        border.width: 1
+                        border.color: page.borderColor
+
+                        Text {
+                            anchors.centerIn: parent
+                            text: "取消"
+                            color: page.textColor
+                            font.pixelSize: 12
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: page.confirmOpen = false
+                        }
+                    }
+
+                    Rectangle {
+                        Layout.preferredWidth: 84
+                        Layout.preferredHeight: 30
+                        radius: Style.radiusSmall
+                        color: Style.accentColor
+
+                        Text {
+                            anchors.centerIn: parent
+                            text: page.confirmIsUpdate ? "更新" : "安装"
+                            color: Style.accentTextColor
+                            font.pixelSize: 12
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: page.doInstall()
+                        }
+                    }
                 }
             }
         }
