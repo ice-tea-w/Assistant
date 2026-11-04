@@ -41,6 +41,10 @@ cmake --build build --config Debug
 > **环境注意（本机 sandbox）**：**运行也需要 `danger-full-access`**。应用要写 `%LOCALAPPDATA%/AssistantTeam/Assistant/`（日志 / 配置 / 4 个 DB），`workspace-write` 下写入被拒 → `Logger::init` 失败退回 console-only，**日志不落盘**，容易误判成"启动正常"。
 > 冒烟判断启动是否成功时**不要看 stdout**：spdlog 的 console sink 在重定向后是全缓冲的，进程被强杀会丢输出；看 `%LOCALAPPDATA%\AssistantTeam\Assistant\logs\assistant.log` 才可靠。
 
+> **文件索引引擎开关（A2 起）**：`config.json` 的 `fileIndex.engine` —— `"v2"`（默认，`FileIndex` 门面 + 后台扫描）
+> 或 `"legacy"`（旧 `FileSearcher` 同步建索引，A1 行为，A7 之前一直保留）。子进程驱动应用做验收时用
+> `_probe/hotkey_probe.ps1`（`PostMessage(WM_HOTKEY)` 走真实消息链，见 `docs/devlog/2026-10-16.md`）。
+
 ## Qt 部署原理（vcpkg 开发阶段）
 
 两层机制：
@@ -75,10 +79,29 @@ Phase 3 剩余（收尾中，写在这里便于续接）：
 - [x] **A1 止血**（2026-09-24，独立 patch）：P0-1 不跟随 junction（`NoSymLinks` 实测无效 → 自控递归 + `isJunction()`）、
       P0-2 目录级剪枝、P1-5 历史写入挪到执行路径、P1-6 QML 防抖 + IME 拦截；三条验收全过。
       详见 `docs/devlog/2026-09-24.md`
-- [ ] A2 结构（门面 + COW 快照 + 后台扫描）… A8 拼音首字母
+- [x] **A2 结构**（2026-10-16）：`FileIndex` 门面 + `FileSnapshot`（不可变只读快照）+ `SnapshotManager`（COW 发布，
+      `std::atomic<std::shared_ptr<const T>>`）+ 后台扫描线程；`fileIndex.engine = "v2"`（默认）| `"legacy"`（一行可退）。
+      三条验收全过（真机冷启动 + 20 万条 golden 132 项 0 失败）。详见 `docs/devlog/2026-10-16.md`
+- [x] **A3 采集**（2026-10-22）：`FileScanner`（Win32 `FindFirstFileExW` **句柄栈** DFS，顺序与 A1 递归逐条相同）+
+      `FileIndexDatabase`（dirs/files/roots + 三方差集差量）+ `DatabaseMigrator`（user_version 前向迁移，v1→v2 加治理字段）。
+      四条验收全过（吞吐 6.7 万文件/s、剪枝 97.7%、迁移 14 项、差集收敛 0）。详见 `docs/devlog/2026-10-22.md`
+- [x] **A4 查询 + baseline**（2026-10-22）：`QueryParser`（自由词 AND + `-否定`）+ `ScoreEngine`（tier 判定 +
+  **贪心 O(m) 子序列** + 有界编辑距离，全程零分配）+ `QueryEngine`（top-K min-heap）；`FileIndex::query()` 瘦成转发。
+  三条验收全过（语义 golden 全绿、baseline 落盘、与旧版对比 107 项无回归）。详见 `docs/devlog/2026-10-22.md`
+- [ ] A5 增量（`FileWatcher` + 事件分发）… A8 拼音首字母
 
-> ⚠️ 本机实测：Desktop 3.5 万文件撞 20000 上限，索引**全是 Desktop 的**，`Documents`/`Downloads` 一个文件都搜不到。
-> 属 P0-3，实施清单原计划留给 A3 —— **实际优先级应提前**。
+> ✅ **P0-3 已修掉**：不再套 2 万条任意截断，真机索引 20000 → **31845** 条，
+> `Documents`/`Downloads` 终于进得来。A3 的 Win32 扫描器扫 31845 条只要 **459–502 ms**。
+> ✅ **查询已提速 2–8 倍**（A4，Release）：2 万条 1–3 字符 **3.9 ms**（旧 18.7，4.8×）、
+> 20 万条 1–3 字符 **35.4 ms**（旧 275，7.8×）；4–8 字符档 1.8–2.0×。
+> 冷启动到可查询 **28.7 ms**（§9 目标 <150 ms）。
+> ⚠️ **但离 §9 目标仍差一个数量级**：20 万条 P50 35 ms vs 目标 3 ms；快照内存 **64.4 MB**
+> 已过 60 MB 的"必须动手"线。baseline（`assistant_bench`）指向下一步：**§4.2 位图预筛** + **§3.1 目录字典编码**。
+> ⚠️ **测性能必须用 Release**：同一份 2 万条查询，Debug 114 ms、Release 3.9 ms（差 30 倍）。
+
+> 🐞 **部署缺口（打包前必须补）**：构建目录的 app-local 拷贝只拷 `Qt6*.dll`，
+> **不含 `sqlite3.dll`**（`qsqlite.dll` 链接它）。Debug 一直被 `run.bat` / 调试命令里的 vcpkg PATH 掩盖，
+> ctest 才暴露。已在 `a3_migrate` 的 ctest 环境里补 PATH；正式打包要显式带上。
 
 > 已知限制：热键捕获时，**当前已注册的全局热键**（如 Alt+Space）会被系统先消费，QML 收不到该按键。
 > 想重新绑定成同一个组合键无效，绑定成别的组合键正常。
@@ -105,9 +128,18 @@ Phase 3 剩余（收尾中，写在这里便于续接）：
 | HistoryDatabase | `include/database/HistoryDatabase.h`, `src/database/HistoryDatabase.cpp` | SQLite 3 张表 (search/command/app_launch history) |
 | AppBridge | `include/ui/AppBridge.h`, `src/ui/AppBridge.cpp` | QML↔C++ 桥梁, Q_PROPERTY + Q_INVOKABLE |
 | SearchResult | `include/ui/SearchResult.h` | 统一搜索模型 (id, title, subtitle, type, priority, score, resultText, path) |
-| FuzzyMatcher | `include/core/FuzzyMatcher.h`, `src/core/FuzzyMatcher.cpp` | 五级模糊匹配打分 (精确>前缀>词边界>包含>编辑距离) |
+| FuzzyMatcher | `include/core/FuzzyMatcher.h`, `src/core/FuzzyMatcher.cpp` | 五级模糊匹配打分 (精确>前缀>词边界>包含>编辑距离)。**A4 起只剩 `legacy` 退路与"跨模块分数尺度"的参照**，文件查询走 `ScoreEngine` |
+| ScoreEngine | `include/core/ScoreEngine.h`, `src/core/ScoreEngine.cpp` | 打分内核：tier 判定（四档数值与 `FuzzyMatcher` **逐位相同**）+ **贪心 O(m) 子序列**（351–399 空档）+ 有界编辑距离；全程零分配 |
+| QueryParser | `include/core/QueryParser.h`, `src/core/QueryParser.cpp` | A 阶段最小语法：自由词按空白 **AND**、`-词` 否定；整串只 `toLower` 一次 |
+| QueryEngine | `include/core/QueryEngine.h`, `src/core/QueryEngine.cpp` | 查询引擎：Parser → 逐条打分 → **top-K min-heap**（替代全排序）；只依赖快照只读接口 |
 | AppIndexer | `include/core/AppIndexer.h`, `src/core/AppIndexer.cpp` | 扫描 Start Menu `.lnk` (IShellLink COM), 解析目标路径, 去重排序 |
-| FileSearcher | `include/core/FileSearcher.h`, `src/core/FileSearcher.cpp` | 自控前序 DFS（`walkDir`，不跟随 junction、目录级剪枝）+ FuzzyMatcher 打分 top-N, 索引上限 2 万 |
+| FileSearcher | `include/core/FileSearcher.h`, `src/core/FileSearcher.cpp` | 自控前序 DFS（`walkDir`，不跟随 junction、目录级剪枝）+ FuzzyMatcher 打分 top-N, 索引上限 2 万。**A2 起是 `engine=legacy` 的退路**，A7 删除 |
+| FileSnapshot | `include/core/FileSnapshot.h` | 不可变只读快照（`Builder` 写入 → `nameAt/lowerAt/pathAt/sizeAt/mtimeAt` 读出）；物理表示藏在这层之后，查询层不摸容器 |
+| SnapshotManager | `include/core/SnapshotManager.h`, `src/core/SnapshotManager.cpp` | 快照的 COW 发布（`std::atomic<std::shared_ptr<const T>>`）；读侧取一份即用，无需加锁 |
+| FileIndex | `include/core/FileIndex.h`, `src/core/FileIndex.cpp` | 文件索引**门面**（薄）：`startAsync` 后台扫描 + `query` + `stats`；`engine=v2` 时经 AppBridge 提供文件结果。扫描/写库都在 worker 线程（`QSqlDatabase` 线程亲和） |
+| FileScanner | `include/core/FileScanner.h`, `src/core/FileScanner.cpp` | 采集层：Win32 **句柄栈 DFS**（`FindFirstFileExW` + `FindExInfoBasic` + `LARGE_FETCH`）；目录级剪枝、不跟随 reparse point、长路径 `\\?\`、权限拒绝计数、可取消。剪枝名单只有这一份 |
+| FileIndexDatabase | `include/database/FileIndexDatabase.h`, `src/database/FileIndexDatabase.cpp` | `file_index.db`（独立连接 `file_index`）：dirs/files/roots 三表、三方差集、UPSERT 批量事务。**派生数据**，可删库重扫 |
+| DatabaseMigrator | `include/database/DatabaseMigrator.h`, `src/database/DatabaseMigrator.cpp` | `PRAGMA user_version` **前向**迁移，每步一事务；高版本库拒绝；禁止 DROP+重建 |
 | Calculator | `include/core/Calculator.h`, `src/core/Calculator.cpp` | 递归下降解析器, PEMDAS + 一元正负号 + 括号 |
 | TrayManager | `include/ui/TrayManager.h`, `src/ui/TrayManager.cpp` | 系统托盘图标 + 右键菜单 |
 | HotkeyManager | `include/core/HotkeyManager.h`, `src/core/HotkeyManager.cpp` | Windows RegisterHotKey 全局热键（可重注册） |
@@ -137,7 +169,13 @@ Phase 3 剩余（收尾中，写在这里便于续接）：
 ## 文档结构
 
 - `GUIDE.md` — 完整开发流程指南（长期维护）
-- `docs/architecture/` — 架构设计（**文件检索重构方案 / 文件治理功能设计 / v0.4-实施清单**）
+- `docs/architecture/` — 架构设计（**文件检索重构方案 / 文件治理功能设计 / v0.4-实施清单**；
+  `文件系统四模块-关联与方案.md` 是四模块（管理/传输/安全/插件）扩展的**提案 v2**：
+  四项边界决策已定（网关只做授权协调 / 首版不做 mDNS / 插件进程内完全信任 / 保险箱只承诺静止态加密），
+  **排期未变**，实现前须先验证 Qt TLS 后端可用性；
+  `四模块完整架构.md` 是**架构基线 v1.0**：分工、契约 C1–C4、线程与存储、启动顺序、四条端到端时序、
+  依赖矩阵与不变量清单（决策仍以提案为准，本文只答"是什么/谁负责/怎么接/现状到哪"）；
+  `四分支整合方案.md` 是三条支线（plugin-market / qianju / file_guard）合并进 main 的顺序与裁剪清单）
 - `docs/devlog/` — 开发日志（按日期）
 - `docs/features/` — 功能设计 idea
 - `docs/learning/` — 学习笔记

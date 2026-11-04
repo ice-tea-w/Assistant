@@ -45,6 +45,21 @@ void ConfigManager::applyDefaults()
     m_windowX          = -1;   // -1 means "not saved — let the caller decide"
     m_windowY          = -1;
     m_logLevel         = "info";
+    // A2 已通过验收（见 docs/devlog/2026-10-16.md），默认切 v2。
+    // 真机实测：v2 索引 31810 条 vs legacy 的 20000 条上限，而单遍全表扫描
+    // 326 ms vs 333 ms —— 多收 1.2 万个文件（Documents/Downloads 终于进得来了）
+    // 没有换来查询变慢。要退回去就把这里或 config.json 的 fileIndex.engine
+    // 改成 "legacy"，旧 FileSearcher 在 A7 之前一直保留。
+    m_fileIndexEngine  = "v2";
+    m_fileIndexHardLimit = 1000000;   // §3.3 硬保护上限（软预算 30 万只记日志）
+}
+
+/// 只认 "legacy" / "v2" 两个值；写错（或旧版 config 里没有这一节）都按 legacy。
+QString ConfigManager::normalizedEngine(const QString &raw)
+{
+    return raw.compare(QStringLiteral("v2"), Qt::CaseInsensitive) == 0
+               ? QStringLiteral("v2")
+               : QStringLiteral("legacy");
 }
 
 // ---- load ----
@@ -96,6 +111,18 @@ void ConfigManager::load()
             if (log.contains("level")) m_logLevel = QString::fromStdString(log["level"]);
         }
 
+        // file index engine (A2 的 A/B 开关) + 硬保护上限 (A3, §3.3)
+        if (j.contains("fileIndex")) {
+            auto &fi = j["fileIndex"];
+            if (fi.contains("engine"))
+                m_fileIndexEngine = normalizedEngine(QString::fromStdString(fi["engine"]));
+            if (fi.contains("hardLimitEntries")) {
+                const int v = fi["hardLimitEntries"].get<int>();
+                if (v > 0)
+                    m_fileIndexHardLimit = v;
+            }
+        }
+
         Logger::get().info("ConfigManager: loaded {}", m_filePath.toStdString());
     } catch (const std::exception &e) {
         Logger::get().warn("ConfigManager: parse error — {} — using defaults", e.what());
@@ -126,6 +153,10 @@ void ConfigManager::save()
     j["logging"] = {
         {"level", m_logLevel.toStdString()}
     };
+    j["fileIndex"] = {
+        {"engine",            m_fileIndexEngine.toStdString()},
+        {"hardLimitEntries",  m_fileIndexHardLimit}
+    };
 
     QFile file(m_filePath);
     if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
@@ -147,6 +178,8 @@ QString ConfigManager::hotkeyModifiers() const { return m_hotkeyModifiers; }
 QString ConfigManager::hotkeyKey() const       { return m_hotkeyKey; }
 QString ConfigManager::logLevel() const       { return m_logLevel; }
 bool    ConfigManager::autoStart() const      { return m_autoStart; }
+QString ConfigManager::fileIndexEngine() const { return m_fileIndexEngine; }
+int     ConfigManager::fileIndexHardLimitEntries() const { return m_fileIndexHardLimit; }
 
 // ---- setters ----
 
@@ -199,4 +232,25 @@ void ConfigManager::setAutoStart(bool enabled)
 
     m_autoStart = enabled;
     emit autoStartChanged();
+}
+
+void ConfigManager::setFileIndexEngine(const QString &engine)
+{
+    const QString normalized = normalizedEngine(engine);
+    if (m_fileIndexEngine == normalized)
+        return;
+
+    m_fileIndexEngine = normalized;
+    save();
+    emit fileIndexEngineChanged();
+}
+
+void ConfigManager::setFileIndexHardLimitEntries(int entries)
+{
+    if (entries <= 0 || m_fileIndexHardLimit == entries)
+        return;
+
+    m_fileIndexHardLimit = entries;
+    save();
+    emit fileIndexHardLimitChanged();
 }
