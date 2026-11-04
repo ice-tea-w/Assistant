@@ -15,21 +15,25 @@
 ## 构建与运行
 
 ```powershell
-$cmake = "D:\STUDY\Visual Studio\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
-$proj  = "D:\STUDY\软件工程\文件管理助手"
-$build = "D:\Software\Deepseek Harness\_plugin-tests-build"   # 故意放仓库外，别污染 git
-
-& $cmake -S "$proj\tests" -B $build -G "Visual Studio 17 2022" -A x64 `
-  -DCMAKE_TOOLCHAIN_FILE="D:/STUDY/vcpkg/scripts/buildsystems/vcpkg.cmake" `
+# 仓库根目录下执行；本机 vcpkg 在 C:\vcpkg，构建目录放仓库内（已被 .gitignore 忽略）
+cmake -S tests -B build/plugin_tests -G "Visual Studio 17 2022" -A x64 `
+  -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake `
   -DVCPKG_TARGET_TRIPLET=x64-windows
 
-& $cmake --build $build --config Release
+cmake --build build/plugin_tests --config Release
 
-$env:PATH = "D:\STUDY\vcpkg\installed\x64-windows\bin;$env:PATH"
-& "$build\Release\assistant_core_tests.exe"
+# 关键：必须把 vcpkg 的 bin 放进 PATH
+$env:PATH = "C:\vcpkg\installed\x64-windows\bin;$env:PATH"
+.\build\plugin_tests\Release\assistant_core_tests.exe
 ```
 
-`RESULT: PASS` 且退出码 0 即为通过。
+`checks: 625   failures: 0` / `RESULT: PASS` 且退出码 0 即为通过。
+
+> **为什么要手动加 PATH**：测试 exe 只会被拷到直接依赖的 DLL，`QtQml` 的插件
+> `qmlplugin.dll` 还有传递依赖（Qt6Quick 等）。缺 PATH 时报的是
+> `Cannot load library …\Qt6\qml\QtQml\qmlplugin.dll: 找不到指定的模块`，
+> 失败项集中在 `PluginLoader` / `PluginManager` 的"加载成功"断言上——
+> 那是测试进程缺 DLL，不是插件代码坏了（见 `docs/devlog/2026-11-04.md`）。
 
 ## 当前覆盖范围
 
@@ -52,6 +56,10 @@ $env:PATH = "D:\STUDY\vcpkg\installed\x64-windows\bin;$env:PATH"
 | `PluginRegistry` schema 不匹配 | `schemaVersion: 99` 按损坏处理，绝不半解读 |
 | `PluginRegistry` **写失败回滚** | 状态路径不可写时，内存必须回滚（`upsertAndSave` 与 `removeAndSave` 都验） |
 | `PluginRegistry` 数据目录 | `ensureDataDir` 创建且幂等 |
+| `PluginArchive` | zip 读取、条目过滤、zip-slip（`..` / 盘符 / ADS）拒绝 |
+| `PluginInstaller` | 五阶段流水线、sha256 不符、HTTP 404、包内版本与索引不一致、下载中取消、升级与同版本拒绝 |
+| `PluginLoader` | 加载/卸载、`PluginHost` 注入、导航条目、失败路径不留残留、`unloadAll` |
+| `PluginManager` | 启动加载、问题插件隔离、启用/禁用、发现未注册插件 |
 
 ## 新增模块时怎么加测试
 

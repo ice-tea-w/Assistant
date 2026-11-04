@@ -15,6 +15,7 @@ Windows 桌面助手软件，C++20 + Qt6 Quick (QML) + CMake + vcpkg。学习项
 | JSON | nlohmann_json (vcpkg) |
 | 日志 | spdlog (vcpkg, `SPDLOG_FMT_EXTERNAL`) |
 | 数据库 | Qt6::Sql (内置 SQLite 驱动, WAL 模式) |
+| 插件解压 | miniz (vcpkg, `find_package(miniz CONFIG REQUIRED)`；Qt6 无公开 zip API) |
 | 配置路径 | `%LOCALAPPDATA%/AssistantTeam/Assistant/` |
 
 ## 编译命令
@@ -55,7 +56,7 @@ cmake --build build --config Debug
 
 ## 当前开发阶段
 
-**Phase 3 收尾中**（扩展功能）
+**v0.4.0 文件子系统 A 阶段** + **M4 插件市场已合并**（2026-11-04）
 
 已完成：
 - Phase 0: Hello 窗口、编译环境
@@ -66,6 +67,9 @@ cmake --build build --config Debug
 - Phase 3 记事本: `NotesDatabase` + `NotesPage`（CRUD + 编辑）
 - Phase 3 剪贴板: `ClipboardDatabase` + `ClipboardPage` + `startClipboardMonitor`
 - Phase 3 设置页: 主题切换 / 日志级别 / 当前热键显示
+- **M4 插件市场（2026-11-04 合入 main）**：M0–M4 全链路 —— 本地插件管理、市场目录（内置 seed + 缓存 + HTTP）、
+  本地 zip 与在线安装（zip-slip 防护 + sha256 校验）、启用/禁用/卸载、插件贡献页面进入左侧导航。
+  主面板导航同时从 `StackLayout + selectedIndex` 改为 `Loader + selectedKey`（插件页是运行时才知道的）。
 
 Phase 3 剩余（收尾中，写在这里便于续接）：
 - [x] 热键自定义（设置页捕获组合键 → `PanelBridge::applyHotkey` → `HotkeyManager::reRegister`，失败自动回滚原热键）
@@ -118,6 +122,10 @@ Phase 3 剩余（收尾中，写在这里便于续接）：
 
 > `GUIDE.md` 的 **Phase 0–4 是项目阶段**；架构文档里的 **Phase A–E 是文件子系统内部阶段**，两者不是一套编号。
 > 落地顺序：Phase 3 收尾 → 文件子系统 A（搜索基建）→ B → C/D/E → 插件系统 + 发布。**插件系统必须排在 A 之后**（GUIDE 自己要求"核心架构稳定后再做"，A 阶段的 `ISearchProvider` 就是那个稳定点）。
+>
+> **例外（2026-11-04）**：M4 插件市场已提前合入 main（`docs/devlog/2026-11-04.md`）。
+> 这是"代码先合、版本后追"：能力模型（capability 校验、宿主解析身份）与签名策略仍未做，
+> 版本号仍按 `v0.6.0` 规划，**合并 ≠ 发布**。
 
 ## 核心模块
 
@@ -147,6 +155,13 @@ Phase 3 剩余（收尾中，写在这里便于续接）：
 | TodoDatabase | `include/database/TodoDatabase.h`, `src/database/TodoDatabase.cpp` | SQLite 待办（独立连接 `todo`，`todo.db`） |
 | NotesDatabase | `include/database/NotesDatabase.h`, `src/database/NotesDatabase.cpp` | SQLite 笔记（独立连接 `notes`，`notes.db`） |
 | ClipboardDatabase | `include/database/ClipboardDatabase.h`, `src/database/ClipboardDatabase.cpp` | SQLite 剪贴板历史（独立连接 `clipboard`，`clipboard.db`，同内容去重） |
+| PluginManager | `include/core/plugin/PluginManager.h`, `src/core/plugin/PluginManager.cpp` | M4 **门面**：唯一持有 Registry/Loader/Installer/Catalog 四个协作者，编排加载与安装，对外只发信号 |
+| PluginRegistry | `include/core/plugin/PluginRegistry.h` | 插件安装目录布局 `plugins/<id>/`、`plugins.json` 清单；不加载代码 |
+| PluginLoader | `include/core/plugin/PluginLoader.h` | QML 加载与页面对象生命周期；每个插件一个 `PluginHost`，卸载先销毁页面再删目录 |
+| PluginHost | `include/core/plugin/PluginHost.h` | 插件**唯一**可见的宿主面：只读属性 + 自己的 `data/` + toast；不暴露引擎/注册表/管理器 |
+| PluginInstaller | `include/core/plugin/PluginInstaller.h` | 安装流水线 `inspect→download→extract→validate→commit`；zip-slip 防护、sha256 校验、失败清理 |
+| PluginCatalog | `include/core/plugin/PluginCatalog.h` | 市场索引：内置 `seed-index.json` → 本地缓存 → HTTP（`ASSISTANT_MARKET_URL`） |
+| PluginBridge | `include/ui/PluginBridge.h`, `src/ui/PluginBridge.cpp` | 插件市场页 QML↔C++ 桥：列表、安装/取消/卸载、导航条目 |
 
 > **DB 约定**：每个功能一个独立 DB 文件 + 独立 `QSqlDatabase` 连接名（见 `ClipboardDatabase`），不要共用一个连接。
 > **QML 约定**：搜索浮窗走 `AppBridge`，主面板走 `PanelBridge`，两个窗口各管自己的桥。
