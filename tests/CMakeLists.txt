@@ -90,6 +90,12 @@ if (DEFINED VCPKG_INSTALLED_DIR AND DEFINED VCPKG_TARGET_TRIPLET)
     endif()
 endif()
 
+# 夹具（金丝雀插件）与示例插件的位置。测试会把它们复制到 scratch 目录再加载，
+# 因为 PluginHost 会在插件目录下写 data/ —— 直接读仓库夹具会污染工作区。
+target_compile_definitions(assistant_core_tests PRIVATE
+    "PLUGIN_TEST_FIXTURES=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures\""
+    "PLUGIN_TEST_EXAMPLES=\"${CMAKE_CURRENT_SOURCE_DIR}/../examples\"")
+
 # The sources contain UTF-8 Chinese string literals (manifest error messages).
 if (MSVC)
     target_compile_options(assistant_core_tests PRIVATE /utf-8)

@@ -1,0 +1,19 @@
+{
+  "manifestVersion": 1,
+  "id": "com.assistant.texttools",
+  "name": "文本工具",
+  "version": "1.0.0",
+  "description": "大小写转换 / 去空行去重 / 行数字数统计，纯本地、不要网络",
+  "author": "AssistantTeam",
+  "license": "MIT",
+  "icon": "🔤",
+  "runtime": "qml",
+  "engines": { "assistant": ">=0.3.0", "api": ">=1.0.0" },
+  "main": "main.qml",
+  "permissions": [],
+  "contributes": {
+    "pages": [
+      { "id": "text", "title": "文本工具", "icon": "🔤", "source": "Page.qml" }
+    ]
+  }
+}

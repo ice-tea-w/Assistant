@@ -38,6 +38,14 @@
 
 #include <cstdio>
 
+// 夹具与示例目录由 tests/CMakeLists.txt 注入。缺省值让直接跑 IDE 时也能工作。
+#ifndef PLUGIN_TEST_FIXTURES
+#define PLUGIN_TEST_FIXTURES "fixtures"
+#endif
+#ifndef PLUGIN_TEST_EXAMPLES
+#define PLUGIN_TEST_EXAMPLES "../examples"
+#endif
+
 namespace {
 
 int g_checks = 0;
@@ -1132,6 +1140,167 @@ void testLoaderUnloadAll()
     loader.unloadAll();
     CHECK(loader.count() == 0);
     CHECK(loader.loadedIds().isEmpty());
+}
+
+// ---------------------------------------------------------------------------
+// 金丝雀：`host` 的每一个属性与每一个方法（tests/fixtures/plugin-full）
+// ---------------------------------------------------------------------------
+
+/// 把夹具目录里的文件（只拷根层，不递归）复制到 @p to。
+///
+/// 必须复制后再加载：PluginHost 会在插件目录下建 `data/settings.json`，
+/// 直接用仓库里的夹具会把写入痕迹留在工作区（测试不该改仓库）。
+bool copyPluginFiles(const QString &from, const QString &to)
+{
+    const QDir src(from);
+    if (!src.exists())
+        return false;
+    if (!QDir().mkpath(to))
+        return false;
+
+    const QFileInfoList files = src.entryInfoList(QDir::Files, QDir::Name);
+    bool ok = !files.isEmpty();
+    for (const QFileInfo &fi : files) {
+        const QString dest = to + QLatin1Char('/') + fi.fileName();
+        QFile::remove(dest);
+        ok = QFile::copy(fi.absoluteFilePath(), dest) && ok;
+    }
+    return ok;
+}
+
+void testCanaryFullApi()
+{
+    SECTION("canary / host 全部属性与方法");
+
+    const QString fixture = QStringLiteral(PLUGIN_TEST_FIXTURES) + QStringLiteral("/plugin-full");
+
+    ScratchDir scratch;
+    if (!scratch.isValid()) { CHECK(false); return; }
+
+    const QString dir = scratch.path + QStringLiteral("/canary");
+    CHECK(copyPluginFiles(fixture, dir));
+
+    QFile file(dir + QStringLiteral("/plugin.json"));
+    CHECK(file.open(QIODevice::ReadOnly));
+    const QByteArray raw = file.readAll();
+    file.close();
+
+    QString error;
+    const auto m = PluginManifest::parse(raw, &error);
+    if (!m)
+        std::printf("  manifest error: %s\n", error.toUtf8().constData());
+    CHECK(m.has_value());
+    if (!m)
+        return;
+
+    // 金丝雀自己必须能过两道门控，否则它验的是"装不上"而不是"接口还在"。
+    CHECK(m->checkEngine(QCoreApplication::applicationVersion(), &error));
+    CHECK(m->checkApi(contract::kApiVersion, &error));
+    CHECK(m->enginesApi == QStringLiteral(">=1.0.0"));
+    CHECK(m->permissions.size() == 2);
+    CHECK(m->pages.size() == 1);
+
+    QQmlEngine engine;
+    PluginLoader loader;
+    loader.setEngine(&engine);
+
+    QStringList toasts;
+    QObject::connect(&loader, &PluginLoader::toastRequested,
+                     [&toasts](const QString &, const QString &text) { toasts << text; });
+
+    CHECK(loader.load(*m, dir, &error));
+    if (!error.isEmpty())
+        std::printf("  load error: %s\n", error.toUtf8().constData());
+
+    QObject *object = loader.pluginObject(m->id);
+    CHECK(object != nullptr);
+    if (!object)
+        return;
+
+    // ---- 属性 ----
+    CHECK(object->property("seenId").toString() == m->id);
+    CHECK(object->property("seenName").toString() == m->name);
+    CHECK(object->property("seenVersion").toString() == m->version);
+    CHECK(object->property("seenAppVersion").toString() == QCoreApplication::applicationVersion());
+    CHECK(object->property("seenDataDir").toString() == dir + QStringLiteral("/data"));
+    CHECK(object->property("seenApi").toInt() == contract::kApiVersion);
+
+    // ---- setting / setSetting：默认值、往返、落盘 ----
+    CHECK(object->property("fallbackSeen").toString() == QStringLiteral("FALLBACK"));
+    CHECK(object->property("setSettingOk").toBool());
+    CHECK(object->property("readBack").toString() == QStringLiteral("canaryValue"));
+    CHECK(QFile::exists(dir + QStringLiteral("/data/settings.json")));
+
+    // ---- openPath：该拒的必须拒（成功路径会拉起系统程序，测试不碰）----
+    CHECK(object->property("openEmptyRefused").toBool());
+    CHECK(object->property("openOutsideRefused").toBool());
+
+    // ---- toast：onCompleted 阶段宿主还没接线，所以用显式调用验证通道 ----
+    const bool invoked = QMetaObject::invokeMethod(
+        object, "fireToast", Q_ARG(QVariant, QStringLiteral("from-test")));
+    CHECK(invoked);
+    CHECK(toasts.contains(QStringLiteral("from-test")));
+
+    // ---- 页面：懒创建、同样看得到 host、装卸后消失 ----
+    QObject *page = loader.createPage(m->id, QStringLiteral("canary"), &error);
+    CHECK(page != nullptr);
+    if (page) {
+        CHECK(page->property("marker").toString() == QStringLiteral("canary-page"));
+        CHECK(page->property("apiSeen").toInt() == contract::kApiVersion);
+        CHECK(page->property("ownerId").toString() == m->id);
+    }
+
+    loader.unload(m->id);
+    CHECK(!loader.isLoaded(m->id));
+    CHECK(loader.count() == 0);
+}
+
+// ---------------------------------------------------------------------------
+// 示例插件：保证 examples/ 里的东西永远能装
+// ---------------------------------------------------------------------------
+
+void testExampleTextTools()
+{
+    SECTION("examples / text-tools 可解析且可加载");
+
+    const QString exampleDir = QStringLiteral(PLUGIN_TEST_EXAMPLES)
+                               + QStringLiteral("/text-tools");
+
+    ScratchDir scratch;
+    if (!scratch.isValid()) { CHECK(false); return; }
+
+    const QString dir = scratch.path + QStringLiteral("/text-tools");
+    CHECK(copyPluginFiles(exampleDir, dir));
+
+    QFile file(dir + QStringLiteral("/plugin.json"));
+    CHECK(file.open(QIODevice::ReadOnly));
+    const QByteArray raw = file.readAll();
+    file.close();
+
+    QString error;
+    const auto m = PluginManifest::parse(raw, &error);
+    if (!m)
+        std::printf("  manifest error: %s\n", error.toUtf8().constData());
+    CHECK(m.has_value());
+    if (!m)
+        return;
+
+    CHECK(m->checkEngine(QCoreApplication::applicationVersion(), &error));
+    CHECK(m->checkApi(contract::kApiVersion, &error));
+    CHECK(m->permissions.isEmpty());        // 示例宣称零权限；悄悄加权限会让这条变红
+    CHECK(m->pages.size() == 1);
+
+    QQmlEngine engine;
+    PluginLoader loader;
+    loader.setEngine(&engine);
+
+    CHECK(loader.load(*m, dir, &error));
+    if (!error.isEmpty())
+        std::printf("  load error: %s\n", error.toUtf8().constData());
+    CHECK(loader.isLoaded(m->id));
+
+    // 页面是 QtQuick.Controls 写的，测试工程没链 GUI 控件模块，这里只验主入口。
+    loader.unload(m->id);
 }
 
 } // namespace
@@ -2688,6 +2857,8 @@ int main(int argc, char **argv)
     testLoaderLoadAndUnload();
     testLoaderNavigation();
     testLoaderUnloadAll();
+    testCanaryFullApi();
+    testExampleTextTools();
 
     testManagerDiscovery();
     testManagerRows();

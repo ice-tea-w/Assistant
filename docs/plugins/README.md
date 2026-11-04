@@ -449,6 +449,27 @@ Rectangle {
 
 ---
 
+## 11.5 示例与工具（在仓库里）
+
+| 东西 | 位置 | 用途 |
+|---|---|---|
+| **参考插件** | `examples/text-tools/` | 纯本地、零权限的最小可用插件：文本大小写/去重/统计。抄它最快 |
+| **生成骨架** | `tools/plugin-new.ps1` | `-Id com.me.hello -Name "Hello"` → 出清单 + 入口 + 页面 + README |
+| **打包 + 算摘要** | `tools/plugin-pack.ps1` | 校验清单 → 打 zip（根目录是 `plugin.json`）→ 输出 sha256 与市场索引条目 |
+| **API 金丝雀** | `tests/fixtures/plugin-full/` | 用到 `host` **每一个**属性与方法；改 `PluginHost` 时它会变红 |
+
+两个脚本在本机默认被执行策略挡住，用这个方式跑：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\plugin-pack.ps1 -PluginDir .\examples\text-tools -OutDir .\dist
+```
+
+**给宿主开发者的一条义务**：动 `PluginHost`（加/删/改属性或方法）时，必须同步改
+`tests/fixtures/plugin-full/main.qml` 并在 `tests/` 里跑一遍——否则新能力没有回归保护，
+旧能力被改坏也没人发现。接口对外承诺的前提是这条能守住。
+
+---
+
 ## 12. 发布到市场（当前还不存在）
 
 宿主这边的协议已经定了：一个静态 `index.json` + 一堆 zip。但**公共索引还没有**，默认用的是编译进程序的示例数据（界面上标着"示例数据 · 安装功能尚未接入真实市场"）。

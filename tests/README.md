@@ -52,6 +52,9 @@ $env:PATH = "D:\STUDY\vcpkg\installed\x64-windows\bin;$env:PATH"
 | `PluginRegistry` schema 不匹配 | `schemaVersion: 99` 按损坏处理，绝不半解读 |
 | `PluginRegistry` **写失败回滚** | 状态路径不可写时，内存必须回滚（`upsertAndSave` 与 `removeAndSave` 都验） |
 | `PluginRegistry` 数据目录 | `ensureDataDir` 创建且幂等 |
+| `contract` 契约 | `host.apiVersion` 与 `contract::kApiVersion` 一致；`engines.api` 满足/不满足；未声明放行；非法区间在解析阶段被拒 |
+| **金丝雀** `fixtures/plugin-full` | `host` 全部属性取值正确、`setting/setSetting` 往返并落盘、`log` 四级别、`openPath` 拒绝越界、`toast` 通道、页面懒创建并能看到 `host`、卸载后清空 |
+| **示例插件** `examples/text-tools` | 清单可解析、零权限、`engines.*` 门控通过、`main.qml` 可加载（页面依赖 Controls，测试里不实例化） |
 
 ## 新增模块时怎么加测试
 
