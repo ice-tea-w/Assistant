@@ -42,17 +42,17 @@ PASS   : TestSync::folderTransportFetchMissing()
 PASS   : TestSync::folderTransportLockHeld()
 PASS   : TestSync::folderTransportLockTakeover()
 PASS   : TestSync::folderTransportRemoteAliases()
-QWARN  : TestSync::engineTwoDevicesSequential() QTemporaryDir: Unable to remove "C:\\Users\\idea\\AppData\\Local\\Temp\\assistant_tests-QxirDP" most likely due to the presence of read-only files.
+QWARN  : TestSync::engineTwoDevicesSequential() QTemporaryDir: Unable to remove "C:\\Users\\idea\\AppData\\Local\\Temp\\assistant_tests-CLMnJa" most likely due to the presence of read-only files.
 PASS   : TestSync::engineTwoDevicesSequential()
-QWARN  : TestSync::engineTwoRootsNoCollision() QTemporaryDir: Unable to remove "C:\\Users\\idea\\AppData\\Local\\Temp\\assistant_tests-LfJygO" most likely due to the presence of read-only files.
+QWARN  : TestSync::engineTwoRootsNoCollision() QTemporaryDir: Unable to remove "C:\\Users\\idea\\AppData\\Local\\Temp\\assistant_tests-bmolDW" most likely due to the presence of read-only files.
 PASS   : TestSync::engineTwoRootsNoCollision()
-QWARN  : TestSync::engineSkipsWhenRemoteEmpty() QTemporaryDir: Unable to remove "C:\\Users\\idea\\AppData\\Local\\Temp\\assistant_tests-zzKZKg" most likely due to the presence of read-only files.
+QWARN  : TestSync::engineSkipsWhenRemoteEmpty() QTemporaryDir: Unable to remove "C:\\Users\\idea\\AppData\\Local\\Temp\\assistant_tests-NbeALM" most likely due to the presence of read-only files.
 PASS   : TestSync::engineSkipsWhenRemoteEmpty()
 PASS   : TestSync::configRootsRoundTrip()
 PASS   : TestSync::deliveryNameRoundTrip()
 PASS   : TestSync::deliveryOwnCheck()
 PASS   : TestSync::deliveryPlaceIncoming()
-QWARN  : TestSync::databaseReceived() QTemporaryDir: Unable to remove "C:\\Users\\idea\\AppData\\Local\\Temp\\assistant_tests-WCRsEw" most likely due to the presence of read-only files.
+QWARN  : TestSync::databaseReceived() QTemporaryDir: Unable to remove "C:\\Users\\idea\\AppData\\Local\\Temp\\assistant_tests-EfZlDp" most likely due to the presence of read-only files.
 PASS   : TestSync::databaseReceived()
 PASS   : TestSync::configWatchInboxRoundTrip()
 PASS   : TestSync::shareBat(plain)
@@ -61,6 +61,7 @@ PASS   : TestSync::shareNameValidation()
 PASS   : TestSync::suggestShareNameRules()
 PASS   : TestSync::connectArgsBuild()
 PASS   : TestSync::explainExitCodes()
+PASS   : TestSync::probeErrorDistinguishesFailures()
 PASS   : TestSync::cleanupTestCase()
-Totals: 58 passed, 0 failed, 0 skipped, 0 blacklisted, 368ms
+Totals: 59 passed, 0 failed, 0 skipped, 0 blacklisted, 342ms
 ********* Finished testing of TestSync *********
