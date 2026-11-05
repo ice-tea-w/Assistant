@@ -78,13 +78,17 @@ cmake --build build --config Debug
 **设备同步（M2）· 渠道目录通道**（`docs/architecture/设备同步功能-设计文档.md`）：
 - [x] `ITransport` 抽象 + `FolderTransport`（投递区 = 共享文件夹，**新增第三方依赖 0**）
 - [x] `SyncEngine` 三方差集（本地现状 / 上次基线 / 对端清单 → 唯一动作）+ `ConflictResolver` 冲突副本
-- [x] `PathGuard`（穿越 / 保留名 / junction 解引用后复核）+ `SyncDatabase`（`sync.db`：sync_state / conflicts / received；`devices` 表属直连设计，**尚未建**）
+- [x] `PathGuard`（穿越 / 保留名 / junction 解引用后复核）+ `SyncDatabase`（`sync.db`：sync_state / conflicts / received / devices）
 - [x] 主面板「设备同步」页 + `SyncBridge`（工作线程跑引擎，独立 DB 连接）
 - [x] 快捷同步与投递区：拖拽 → 共享目录 `_投递/` → 对端轮询领取到收件箱 + 托盘通知
 - [x] 多本地文件夹（`SyncRoot{localPath, alias}`）、同步锁、UNC 共享目录
 - [x] QTest 用例（`tests/test_sync.cpp`，2026-10 时为 51 个）
 - [ ] 冲突列表 UI、多文件夹版界面未真机走查
-- [ ] 直连通道 `LanTransport` + 帧协议：**只有设计，没有代码**（分支内 `grep QTcpSocket` 零命中）
+- [x] 直连通道（`设备同步-公网直连设计.md`，N0–N2）：`SyncFrame`（ASYN v2 编解码）+ `PeerAddress`、
+      `Identity`（CAPI RSA-2048 自签）+ `DeviceAuth`（挑战应答 HMAC）、`SyncServer`（List 分页 / Get / Put / Delete）
+      + `NetTransport`（实现 `ITransport`，阻塞式；`SyncEngine` 一行未改）；回环 mTLS 与引擎真同步均有用例
+- [ ] 直连 N2 尾巴：按 IP 5 次失败限速、`.assistant-sync/index.json` 持久化、6 位码配对窗口、
+      `LocalDirTransport`（host 本地根与共享根对称）
 
 Phase 3 剩余（收尾中，写在这里便于续接）：
 - [x] 热键自定义（设置页捕获组合键 → `PanelBridge::applyHotkey` → `HotkeyManager::reRegister`，失败自动回滚原热键）
@@ -199,7 +203,7 @@ Phase 3 剩余（收尾中，写在这里便于续接）：
 | FolderTransport | `include/core/sync/FolderTransport.h`, `src/core/sync/FolderTransport.cpp` | 共享目录通道（异地靠网盘搬运） |
 | ConflictResolver | `include/core/sync/ConflictResolver.h` | `decide(L,S,R)` 纯函数判定表 + 冲突副本命名 |
 | PathGuard | `include/core/sync/PathGuard.h` | 相对路径安全校验 + junction 解引用后复核前缀 |
-| SyncDatabase | `include/database/SyncDatabase.h` | `sync.db`（独立连接 `sync`）：sync_state / conflicts / received（`devices` 表尚不存在，随公网直连设计新增，直接进 `kSchema` 即可） |
+| SyncDatabase | `include/database/SyncDatabase.h` | `sync.db`（独立连接 `sync`）：sync_state / conflicts / received / devices |
 | FileSystemEvent | `include/contract/FileSystemEvent.h` | C2 契约：Added/Removed/Renamed/Modified/Overflow |
 | FileWatcher | `include/core/FileWatcher.h`, `src/core/FileWatcher.cpp` | 每根一个 OVERLAPPED 句柄；`start()` 即生效；按路径合并去重；溢出显式上报 |
 | FileEventDispatcher | `include/core/FileEventDispatcher.h` | 极轻量订阅表（不是全局 EventBus）；`publish` 在调用线程执行回调 |
@@ -234,7 +238,7 @@ Phase 3 剩余（收尾中，写在这里便于续接）：
   **排期未变**，实现前须先验证 Qt TLS 后端可用性；
   `四模块完整架构.md` 是**架构基线 v1.0**：分工、契约 C1–C4、线程与存储、启动顺序、四条端到端时序、
   依赖矩阵与不变量清单（决策仍以提案为准，本文只答"是什么/谁负责/怎么接/现状到哪"）；
-  `设备同步-公网直连设计.md` 是**直连通道**的设计（状态：**N0/N1 部分实现**，ASYN v2 帧编解码与
+  `设备同步-公网直连设计.md` 是**直连通道**的设计（状态：**N0/N1 完成、N2 回环打通**，ASYN v2 帧编解码、
   身份模块已落地；TLS 1.2+（优先 1.3）走 Windows Schannel，**不需要 OpenSSL**；认证是**单向 TLS
   按指纹固定 host + 应用层挑战应答 HMAC**（Schannel 不支持客户端证书，故不做双向 mTLS），
   证书为 CAPI 生成的 RSA-2048；首配 SAS 短窗配对；公网 IPv4 端口映射 / IPv6 直连；
