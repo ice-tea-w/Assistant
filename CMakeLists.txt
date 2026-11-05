@@ -328,3 +328,17 @@ target_link_libraries(assistant_net_tests PRIVATE Qt6::Core Qt6::Network Qt6::Te
 add_test(NAME net_protocol COMMAND assistant_net_tests)
 set_tests_properties(net_protocol PROPERTIES
     ENVIRONMENT "PATH=${VCPKG_BIN_DIR};${VCPKG_DBG_BIN_DIR};$ENV{PATH}")
+
+# ---- N1：设备身份（自签 ECDSA P-256，Win32 CNG）----
+add_executable(assistant_net_identity_tests
+    tests/test_net_identity.cpp
+    src/core/net/Identity.cpp
+)
+target_include_directories(assistant_net_identity_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(assistant_net_identity_tests PRIVATE
+    Qt6::Core Qt6::Network Qt6::Test
+    bcrypt crypt32)
+
+add_test(NAME net_identity COMMAND assistant_net_identity_tests)
+set_tests_properties(net_identity PROPERTIES
+    ENVIRONMENT "PATH=${VCPKG_BIN_DIR};${VCPKG_DBG_BIN_DIR};$ENV{PATH}")
