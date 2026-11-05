@@ -12,6 +12,7 @@
 #include <QFileInfo>
 #include <QStandardPaths>
 #include <QTemporaryDir>
+#include <QSslSocket>
 
 #include "core/ConfigManager.h"
 #include "core/Logger.h"
@@ -109,6 +110,9 @@ private slots:
 
     // probe() 失败必须能说清是哪一关（否则界面只有一句"不可访问或不可写"）
     void probeErrorDistinguishesFailures();
+
+    // 网络通道前提：TLS 后端在打包/部署后是否还在
+    void tlsBackendSelfCheck();
 };
 
 void TestSync::initTestCase()
@@ -935,6 +939,19 @@ void TestSync::probeErrorDistinguishesFailures()
         QVERIFY(t.probe());
         QVERIFY(t.probeError().isEmpty());
     }
+}
+
+void TestSync::tlsBackendSelfCheck()
+{
+    const QStringList backends = QSslSocket::availableBackends();
+    qInfo("TLS 支持: %s | 当前后端: [%s] | 可用后端: [%s] | 版本: %s",
+          QSslSocket::supportsSsl() ? "是" : "否",
+          qUtf8Printable(QSslSocket::activeBackend()),
+          qUtf8Printable(backends.join(QStringLiteral(", "))),
+          qUtf8Printable(QSslSocket::sslLibraryVersionString()));
+
+    QVERIFY2(QSslSocket::supportsSsl(), "没有可用的 TLS 后端：直连通道无法启用");
+    QVERIFY(!backends.isEmpty());
 }
 
 QTEST_MAIN(TestSync)

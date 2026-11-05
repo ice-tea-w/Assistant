@@ -232,6 +232,8 @@ target_include_directories(assistant_tests PRIVATE
 target_link_libraries(assistant_tests PRIVATE
     Qt6::Core
     Qt6::Sql
+    # 直连通道前提自检要 QSslSocket（TLS 后端是否可用）
+    Qt6::Network
     Qt6::Test
     spdlog::spdlog
     nlohmann_json::nlohmann_json
