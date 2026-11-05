@@ -1,4 +1,4 @@
-﻿# CLAUDE.md — Assistant 桌面助手项目
+# CLAUDE.md — Assistant 桌面助手项目
 
 ## 项目概要
 
@@ -234,7 +234,9 @@ Phase 3 剩余（收尾中，写在这里便于续接）：
   **排期未变**，实现前须先验证 Qt TLS 后端可用性；
   `四模块完整架构.md` 是**架构基线 v1.0**：分工、契约 C1–C4、线程与存储、启动顺序、四条端到端时序、
   依赖矩阵与不变量清单（决策仍以提案为准，本文只答"是什么/谁负责/怎么接/现状到哪"）；
-  `四分支整合方案.md` 是三条支线（plugin-market / qianju / file_guard）合并进 main 的顺序与裁剪清单）
+  `四分支整合方案.md` 是三条支线（plugin-market / qianju / file_guard）合并进 main 的顺序与裁剪清单；
+  `分支整合流程.md` 是**长期整合规则**（有分支更新时先跑 `tools/branch-status.ps1` 对表，再按
+  已合并 / 可合并 / 冲突 / 历史被改写四种状态分派；已推送分支禁止 rebase/force-push））
 - `docs/reference/` — 参考实现与设计归档（`file_guard/`：M3 安全模块的 Python 原型文档，不进构建）
 - `docs/devlog/` — 开发日志（按日期）
 - `docs/features/` — 功能设计 idea
