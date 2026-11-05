@@ -315,3 +315,16 @@ target_link_libraries(assistant_search_tests PRIVATE
 add_test(NAME search_providers COMMAND assistant_search_tests)
 set_tests_properties(search_providers PROPERTIES
     ENVIRONMENT "PATH=${VCPKG_BIN_DIR};${VCPKG_DBG_BIN_DIR};$ENV{PATH}")
+
+# ---- N0：公网直连的帧编解码与地址解析（纯函数，零 IO）----
+add_executable(assistant_net_tests
+    tests/test_net_protocol.cpp
+    src/core/net/SyncFrame.cpp
+    src/core/net/PeerAddress.cpp
+)
+target_include_directories(assistant_net_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(assistant_net_tests PRIVATE Qt6::Core Qt6::Network Qt6::Test)
+
+add_test(NAME net_protocol COMMAND assistant_net_tests)
+set_tests_properties(net_protocol PROPERTIES
+    ENVIRONMENT "PATH=${VCPKG_BIN_DIR};${VCPKG_DBG_BIN_DIR};$ENV{PATH}")
