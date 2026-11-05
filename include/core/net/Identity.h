@@ -7,8 +7,9 @@
 
 namespace Sync::Net {
 
-/// 设备身份：自签 ECDSA P-256 证书 + 配套私钥，落盘为 PEM。
+/// 设备身份：自签 RSA-2048 证书 + 配套私钥，落盘为 PEM。
 /// 直连通道用它做双向 mTLS 的本地证书（设计 §4.1）。
+/// 不用 ECDSA：Schannel 后端把证书+私钥打 PKCS#12 时只接受 RSA/DSA（qsslsocket_qt.cpp:140 断言）。
 struct Identity
 {
     QSslCertificate certificate;

@@ -72,7 +72,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
 
 # AppIndexer uses the Windows Shell Link COM interface (IShellLink, SHGetKnownFolderPath)
 if(WIN32)
-    target_link_libraries(${PROJECT_NAME} PRIVATE shell32 ole32)
+    target_link_libraries(${PROJECT_NAME} PRIVATE shell32 ole32 crypt32 advapi32)
 endif()
 
 # ---- Qt 部署 ----
@@ -329,7 +329,7 @@ add_test(NAME net_protocol COMMAND assistant_net_tests)
 set_tests_properties(net_protocol PROPERTIES
     ENVIRONMENT "PATH=${VCPKG_BIN_DIR};${VCPKG_DBG_BIN_DIR};$ENV{PATH}")
 
-# ---- N1：设备身份（自签 ECDSA P-256，Win32 CNG）----
+# ---- N1：设备身份（自签 RSA-2048，CryptoAPI）----
 add_executable(assistant_net_identity_tests
     tests/test_net_identity.cpp
     src/core/net/Identity.cpp
@@ -341,4 +341,31 @@ target_link_libraries(assistant_net_identity_tests PRIVATE
 
 add_test(NAME net_identity COMMAND assistant_net_identity_tests)
 set_tests_properties(net_identity PROPERTIES
+    ENVIRONMENT "PATH=${VCPKG_BIN_DIR};${VCPKG_DBG_BIN_DIR};$ENV{PATH}")
+
+# ---- N1：回环 TLS（服务端 + 双向 mTLS，验 Schannel 能否用内存私钥）----
+add_executable(assistant_net_tls_tests
+    tests/test_net_tls.cpp
+    src/core/net/Identity.cpp
+    src/core/net/SyncFrame.cpp
+    src/core/net/DeviceAuth.cpp
+)
+target_include_directories(assistant_net_tls_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(assistant_net_tls_tests PRIVATE
+    Qt6::Core Qt6::Network Qt6::Test
+    bcrypt crypt32)
+
+add_test(NAME net_tls COMMAND assistant_net_tls_tests)
+set_tests_properties(net_tls PROPERTIES
+    ENVIRONMENT "PATH=${VCPKG_BIN_DIR};${VCPKG_DBG_BIN_DIR};$ENV{PATH}")
+# ---- N1：客户端认证（单向 TLS 之后的挑战应答，Schannel 不支持双向 mTLS）----
+add_executable(assistant_net_auth_tests
+    tests/test_net_auth.cpp
+    src/core/net/DeviceAuth.cpp
+)
+target_include_directories(assistant_net_auth_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(assistant_net_auth_tests PRIVATE Qt6::Core Qt6::Test)
+
+add_test(NAME net_auth COMMAND assistant_net_auth_tests)
+set_tests_properties(net_auth PROPERTIES
     ENVIRONMENT "PATH=${VCPKG_BIN_DIR};${VCPKG_DBG_BIN_DIR};$ENV{PATH}")
