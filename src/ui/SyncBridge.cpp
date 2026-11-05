@@ -4,6 +4,11 @@
 #include "core/sync/ElevatedRun.h"
 #include "core/sync/FolderTransport.h"
 #include "core/sync/SyncCommands.h"
+#include "core/net/Identity.h"
+#include "core/net/NetTransport.h"
+#include "core/net/PairingClient.h"
+#include "core/net/PeerAddress.h"
+#include "core/net/SyncServer.h"
 #include "core/Logger.h"
 
 #include <QClipboard>
@@ -12,6 +17,7 @@
 #include <QDateTime>
 #include <QDesktopServices>
 #include <QDir>
+#include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
 #include <QFileSystemWatcher>
@@ -19,6 +25,7 @@
 #include <QLocale>
 #include <QNetworkAddressEntry>
 #include <QNetworkInterface>
+#include <QRandomGenerator>
 #include <QSet>
 #include <QStandardPaths>
 #include <QSysInfo>
@@ -49,6 +56,8 @@ SyncBridge::SyncBridge(QObject *parent)
 
 SyncBridge::~SyncBridge()
 {
+    if (m_netThread)
+        stopNetServer();
     if (m_timer)
         m_timer->stop();
     if (m_inboxTimer)
@@ -123,6 +132,8 @@ bool SyncBridge::init(const QString &dbPath)
     applyAutoSync();
     refreshChannel();
     refreshConflicts();
+    ensureDeviceId();
+    refreshPairedDevices();
     startWatchers();
     setStatus(m_roots.isEmpty() || m_sharedDir.isEmpty()
                   ? QStringLiteral("请先添加要同步的文件夹与共享目录")
@@ -459,6 +470,332 @@ void SyncBridge::openConflictFolder(int index)
     openPath(QFileInfo(abs).exists() ? QFileInfo(abs).absolutePath() : firstRoot);
 }
 
+// ---- 直连（ASYN v2）----
+
+bool SyncBridge::netRunning() const { return m_netRunning; }
+QString SyncBridge::netStatus() const { return m_netStatus; }
+QString SyncBridge::pairCode() const { return m_pairCode; }
+bool SyncBridge::pairActive() const { return m_pairActive; }
+QVariantList SyncBridge::pairedDevices() const { return m_pairedDevices; }
+bool SyncBridge::peerPaired() const { return hasPeerCredentials(); }
+
+bool SyncBridge::hasPeerCredentials() const
+{
+    return m_config
+        && !m_config->syncPeerAddress().isEmpty()
+        && !m_config->syncPeerFingerprint().isEmpty()
+        && !m_config->syncPeerSecret().isEmpty();
+}
+
+QString SyncBridge::identityDir() const
+{
+    return QFileInfo(m_dbPath).absolutePath() + QStringLiteral("/identity");
+}
+
+QString SyncBridge::ensureDeviceId()
+{
+    if (m_config) {
+        const QString existing = m_config->syncDeviceId();
+        if (!existing.isEmpty())
+            return existing;
+    }
+    const QString id = QStringLiteral("dev-%1")
+        .arg(QRandomGenerator::system()->generate64(), 16, 16, QLatin1Char('0'));
+    if (m_config)
+        m_config->setSyncDeviceId(id);
+    return id;
+}
+
+void SyncBridge::setNetStatus(const QString &text)
+{
+    if (m_netStatus == text)
+        return;
+    m_netStatus = text;
+    Logger::get().info("SyncBridge/直连: {}", text.toStdString());
+    emit netChanged();
+}
+
+void SyncBridge::refreshPairedDevices()
+{
+    QVariantList list;
+    const QList<DeviceRecord> records = m_db.allDevices();
+    for (const DeviceRecord &rec : records) {
+        QVariantMap one;
+        one.insert(QStringLiteral("deviceId"), rec.deviceId);
+        one.insert(QStringLiteral("fingerprint"), rec.fingerprint);
+        one.insert(QStringLiteral("pairedAt"), rec.pairedAt);
+        one.insert(QStringLiteral("lastSeenAt"), rec.lastSeenAt);
+        list.append(one);
+    }
+    m_pairedDevices = list;
+    emit pairedDevicesChanged();
+}
+
+void SyncBridge::startNetServer()
+{
+    if (m_netRunning || m_netThread) {
+        setNetStatus(QStringLiteral("服务端已在运行"));
+        return;
+    }
+    if (m_sharedDir.isEmpty()) {
+        setNetStatus(QStringLiteral("先设置共享目录：服务端开放的就是这个文件夹"));
+        return;
+    }
+    if (!QDir(m_sharedDir).exists()) {
+        setNetStatus(QStringLiteral("共享目录不存在：%1").arg(m_sharedDir));
+        return;
+    }
+
+    const Sync::Net::Identity identity =
+        Sync::Net::loadOrCreateIdentity(identityDir(), m_deviceName);
+    if (!identity.isValid()) {
+        setNetStatus(QStringLiteral("身份不可用：%1").arg(identity.error));
+        return;
+    }
+
+    // 口令快照进内存：服务端线程不能碰主线程的 QSqlDatabase 连接
+    {
+        QMutexLocker locker(&m_netMutex);
+        m_netSecrets.clear();
+        const QList<DeviceRecord> records = m_db.allDevices();
+        for (const DeviceRecord &rec : records)
+            m_netSecrets.insert(rec.deviceId, rec.secret);
+    }
+
+    const QString root = m_sharedDir;
+    const quint16 wantPort = quint16(m_config ? m_config->syncPort() : 45871);
+    m_netRunning = true;
+    setNetStatus(QStringLiteral("正在监听 %1 端口…").arg(wantPort));
+
+    m_netThread = QThread::create([this, identity, root, wantPort] {
+        auto *server = new Sync::Net::SyncServer(identity, [this](const QString &deviceId) {
+            QMutexLocker locker(&m_netMutex);
+            return m_netSecrets.value(deviceId);
+        });
+        server->setPairSink([this](const Sync::Net::SyncServer::PairedDevice &dev) {
+            {
+                QMutexLocker locker(&m_netMutex);
+                m_netSecrets.insert(dev.deviceId, dev.secret);
+            }
+            // 配对回调发生在服务端线程：落库必须回主线程做
+            QMetaObject::invokeMethod(this, [this, dev] {
+                DeviceRecord rec;
+                rec.deviceId = dev.deviceId;
+                rec.fingerprint = dev.fingerprint;
+                rec.secret = dev.secret;
+                rec.pairedAt = dev.pairedAt;
+                rec.lastSeenAt = dev.pairedAt;
+                if (!m_db.upsertDevice(rec))
+                    setNetStatus(QStringLiteral("配对成功，但写入 devices 表失败"));
+                else
+                    setNetStatus(QStringLiteral("已配对设备「%1」").arg(dev.name));
+                refreshPairedDevices();
+                emit pairChanged();
+            }, Qt::QueuedConnection);
+        });
+
+        if (!server->listen(wantPort, root)) {
+            const QString err = server->lastError();
+            delete server;
+            QMetaObject::invokeMethod(this, [this, err] {
+                m_netRunning = false;
+                setNetStatus(QStringLiteral("监听失败：%1").arg(err));
+            }, Qt::QueuedConnection);
+            return;
+        }
+
+        m_netServer = server;
+        QEventLoop loop;
+        {
+            QMutexLocker locker(&m_netMutex);
+            m_netLoop = &loop;
+        }
+        const quint16 actualPort = server->port();
+        const QString fingerprint = identity.fingerprint;
+        QMetaObject::invokeMethod(this, [this, actualPort, fingerprint] {
+            setNetStatus(QStringLiteral("正在监听 %1 端口 · 本机指纹 %2")
+                             .arg(actualPort)
+                             .arg(fingerprint.left(16)));
+        }, Qt::QueuedConnection);
+
+        loop.exec();
+
+        {
+            QMutexLocker locker(&m_netMutex);
+            m_netLoop = nullptr;
+        }
+        m_netServer = nullptr;
+        delete server;
+    });
+
+    QThread *thread = m_netThread;
+    connect(thread, &QThread::finished, this, [this, thread] {
+        if (m_netThread == thread) {
+            m_netThread = nullptr;
+            m_netRunning = false;
+            emit netChanged();
+        }
+        thread->deleteLater();
+    });
+    thread->start();
+}
+
+void SyncBridge::stopNetServer()
+{
+    QObject *context = nullptr;
+    {
+        QMutexLocker locker(&m_netMutex);
+        context = m_netServer;
+    }
+    if (context && m_netRunning) {
+        QMetaObject::invokeMethod(context, [this] {
+            if (auto *server = static_cast<Sync::Net::SyncServer *>(m_netServer))
+                server->close();
+            if (m_netLoop)
+                m_netLoop->quit();
+        }, Qt::QueuedConnection);
+    }
+    if (m_netThread && !m_netThread->wait(5000))
+        Logger::get().warn("SyncBridge: 直连服务端未在 5 秒内退出");
+
+    m_netRunning = false;
+    m_pairActive = false;
+    if (!m_pairCode.isEmpty()) {
+        m_pairCode.clear();
+        emit pairChanged();
+    }
+    setNetStatus(QStringLiteral("监听已停止"));
+}
+
+void SyncBridge::startPairing()
+{
+    if (!m_netRunning) {
+        setNetStatus(QStringLiteral("先点「开始监听」"));
+        return;
+    }
+    auto *server = static_cast<Sync::Net::SyncServer *>(m_netServer);
+    if (!server) {
+        setNetStatus(QStringLiteral("服务端还没起来"));
+        return;
+    }
+
+    QString code;
+    if (QThread::currentThread() == server->thread()) {
+        code = server->openPairingWindow(300);
+    } else {
+        QMetaObject::invokeMethod(server, [server, &code] {
+            code = server->openPairingWindow(300);
+        }, Qt::BlockingQueuedConnection);
+    }
+
+    m_pairCode = code;
+    m_pairActive = !code.isEmpty();
+    emit pairChanged();
+    setNetStatus(m_pairActive
+                     ? QStringLiteral("配对窗口已打开：把 %1 念给对方，5 分钟内有效、只能用一次").arg(code)
+                     : QStringLiteral("无法打开配对窗口"));
+}
+
+void SyncBridge::stopPairing()
+{
+    auto *server = static_cast<Sync::Net::SyncServer *>(m_netServer);
+    if (server) {
+        if (QThread::currentThread() == server->thread()) {
+            server->closePairingWindow();
+        } else {
+            QMetaObject::invokeMethod(server, [server] { server->closePairingWindow(); },
+                                      Qt::BlockingQueuedConnection);
+        }
+    }
+    m_pairActive = false;
+    m_pairCode.clear();
+    emit pairChanged();
+    if (m_netRunning)
+        setNetStatus(QStringLiteral("配对窗口已关闭"));
+}
+
+void SyncBridge::pairWithPeer(const QString &address, const QString &code)
+{
+    if (!m_config) {
+        emit pairingFinished(false, QStringLiteral("配置未就绪"));
+        return;
+    }
+    const QString trimmed = code.trimmed();
+    if (trimmed.size() != 6) {
+        emit pairingFinished(false, QStringLiteral("配对码是 6 位数字"));
+        return;
+    }
+
+    const Sync::Net::PeerAddress parsed =
+        Sync::Net::parsePeerAddress(address, quint16(m_config->syncPort()));
+    if (!parsed.ok) {
+        emit pairingFinished(false, parsed.error);
+        return;
+    }
+
+    const Sync::Net::Identity identity =
+        Sync::Net::loadOrCreateIdentity(identityDir(), m_deviceName);
+    if (!identity.isValid()) {
+        emit pairingFinished(false, QStringLiteral("身份不可用：%1").arg(identity.error));
+        return;
+    }
+
+    Sync::Net::NetPeer peer;
+    peer.host = parsed.host;
+    peer.port = parsed.port;
+    peer.expectedFingerprint = m_config->syncPeerFingerprint();   // 换主机时先清空
+    peer.timeoutMs = 15000;
+    const QString clientName = m_deviceName;
+    const QString clientFingerprint = identity.fingerprint;
+
+    setNetStatus(QStringLiteral("正在连接 %1…").arg(address));
+    auto *worker = QThread::create([this, peer, trimmed, clientName, clientFingerprint] {
+        const Sync::Net::PairingOutcome outcome =
+            Sync::Net::pairWithHost(peer, trimmed, clientName, clientFingerprint);
+        QMetaObject::invokeMethod(this, [this, outcome, peer] {
+            if (!outcome.ok) {
+                setNetStatus(QStringLiteral("配对失败：%1").arg(outcome.error));
+                emit pairingFinished(false, outcome.error);
+                return;
+            }
+            m_config->setSyncPeerAddress(peer.host);
+            m_config->setSyncPort(int(peer.port));
+            m_config->setSyncPeerFingerprint(outcome.serverFingerprint);
+            m_config->setSyncPeerSecret(QString::fromLatin1(outcome.deviceSecret.toBase64()));
+            setNetStatus(QStringLiteral("已配对到 %1:%2，同步会走直连").arg(peer.host).arg(peer.port));
+            emit pairingFinished(true, QStringLiteral("配对成功"));
+        }, Qt::QueuedConnection);
+    });
+    connect(worker, &QThread::finished, this, [worker] { worker->deleteLater(); });
+    worker->start();
+}
+
+void SyncBridge::unpairPeer()
+{
+    if (!m_config)
+        return;
+    m_config->setSyncPeerFingerprint(QString());
+    m_config->setSyncPeerSecret(QString());
+    m_config->setSyncPeerAddress(QString());
+    setNetStatus(QStringLiteral("已解除与本机的直连配对"));
+    refreshChannel();
+    emit pairingFinished(true, QStringLiteral("已解除配对"));
+}
+
+void SyncBridge::forgetDevice(const QString &deviceId)
+{
+    {
+        QMutexLocker locker(&m_netMutex);
+        m_netSecrets.remove(deviceId);
+    }
+    if (!m_db.removeDevice(deviceId)) {
+        setNetStatus(QStringLiteral("解除授权失败：%1").arg(deviceId));
+        return;
+    }
+    setNetStatus(QStringLiteral("已解除设备 %1 的授权").arg(deviceId));
+    refreshPairedDevices();
+}
+
 // ---- 同步 ----
 
 void SyncBridge::syncNow()
@@ -468,8 +805,8 @@ void SyncBridge::syncNow()
         return;
     }
 
-    if (m_roots.isEmpty() || m_sharedDir.isEmpty()) {
-        setStatus(QStringLiteral("请先添加要同步的文件夹，并设置共享目录"));
+    if (m_roots.isEmpty() || (m_sharedDir.isEmpty() && !hasPeerCredentials())) {
+        setStatus(QStringLiteral("请先添加要同步的文件夹，并设置共享目录（或与主机配对）"));
         // 同步没跑起来必须有痕迹：界面上只改一行状态，用户回头查不出为什么
         Logger::get().warn("SyncBridge: 跳过同步（同步根 {} 个，共享目录「{}」）",
                            m_roots.size(), m_sharedDir.toStdString());
@@ -491,7 +828,24 @@ void SyncBridge::syncNow()
     const QString name   = m_deviceName;
     const QString dbPath = m_dbPath;
 
-    m_worker = QThread::create([this, roots, shared, name, dbPath] {
+    // 已配对就再挂一条直连通道；参数在这里定死，避免工作线程里碰 m_config
+    Sync::Net::NetPeer netPeer;
+    if (hasPeerCredentials()) {
+        const Sync::Net::PeerAddress parsed =
+            Sync::Net::parsePeerAddress(m_config->syncPeerAddress(),
+                                       quint16(m_config->syncPort()));
+        if (parsed.ok) {
+            netPeer.host = parsed.host;
+            netPeer.port = parsed.port;
+            netPeer.expectedFingerprint = m_config->syncPeerFingerprint();
+            netPeer.deviceId = ensureDeviceId();
+            netPeer.deviceSecret = QByteArray::fromBase64(m_config->syncPeerSecret().toLatin1());
+        } else {
+            Logger::get().warn("SyncBridge: 直连地址无效（{}）", parsed.error.toStdString());
+        }
+    }
+
+    m_worker = QThread::create([this, roots, shared, name, dbPath, netPeer] {
         // 工作线程自带独立连接名 —— QSqlDatabase 连接不可跨线程
         Sync::SyncResult r;
         SyncDatabase workerDb(QStringLiteral("sync_worker"));
@@ -505,7 +859,12 @@ void SyncBridge::syncNow()
             engine.setDeviceName(name);
 
             QList<std::shared_ptr<Sync::ITransport>> transports;
-            transports.append(std::make_shared<Sync::FolderTransport>(shared));
+            if (!shared.isEmpty())
+                transports.append(std::make_shared<Sync::FolderTransport>(shared));
+            if (!netPeer.deviceSecret.isEmpty() && !netPeer.host.isEmpty()) {
+                transports.append(std::make_shared<Sync::Net::NetTransport>(netPeer));
+                Logger::get().info("SyncBridge: 已挂载直连通道 {}:{}", netPeer.host.toStdString(), netPeer.port);
+            }
             engine.setTransports(transports);
 
             connect(&engine, &Sync::SyncEngine::progress, this, &SyncBridge::onEngineProgress);

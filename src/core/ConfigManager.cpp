@@ -157,6 +157,9 @@ void ConfigManager::load()
             if (s.contains("sharedDir"))  m_syncSharedDir  = QString::fromStdString(s["sharedDir"]);
             if (s.contains("peerAddress")) m_syncPeerAddress = QString::fromStdString(s["peerAddress"]);
             if (s.contains("port"))       m_syncPort       = s["port"];
+            if (s.contains("deviceId"))   m_syncDeviceId   = QString::fromStdString(s["deviceId"]);
+            if (s.contains("peerFingerprint")) m_syncPeerFingerprint = QString::fromStdString(s["peerFingerprint"]);
+            if (s.contains("peerSecret"))      m_syncPeerSecret      = QString::fromStdString(s["peerSecret"]);
             if (s.contains("deviceName")) m_syncDeviceName = QString::fromStdString(s["deviceName"]);
             if (s.contains("autoIntervalMinutes")) m_syncAutoIntervalMinutes = s["autoIntervalMinutes"];
             if (s.contains("watchFiles"))  m_syncWatchFiles  = s["watchFiles"];
@@ -203,6 +206,9 @@ void ConfigManager::save()
         {"sharedDir",  m_syncSharedDir.toStdString()},
         {"peerAddress", m_syncPeerAddress.toStdString()},
         {"port",       m_syncPort},
+        {"deviceId",   m_syncDeviceId.toStdString()},
+        {"peerFingerprint", m_syncPeerFingerprint.toStdString()},
+        {"peerSecret", m_syncPeerSecret.toStdString()},
         {"deviceName", m_syncDeviceName.toStdString()},
         {"autoIntervalMinutes", m_syncAutoIntervalMinutes},
         {"watchFiles", m_syncWatchFiles},
@@ -244,6 +250,9 @@ QVariantList ConfigManager::syncRoots() const { return m_syncRoots; }
 QString ConfigManager::syncSharedDir() const  { return m_syncSharedDir; }
 QString ConfigManager::syncPeerAddress() const { return m_syncPeerAddress; }
 int     ConfigManager::syncPort() const       { return m_syncPort; }
+QString ConfigManager::syncDeviceId() const   { return m_syncDeviceId; }
+QString ConfigManager::syncPeerFingerprint() const { return m_syncPeerFingerprint; }
+QString ConfigManager::syncPeerSecret() const { return m_syncPeerSecret; }
 QString ConfigManager::syncDeviceName() const { return m_syncDeviceName; }
 int     ConfigManager::syncAutoIntervalMinutes() const { return m_syncAutoIntervalMinutes; }
 bool    ConfigManager::syncWatchFiles() const { return m_syncWatchFiles; }
@@ -355,6 +364,33 @@ void ConfigManager::setSyncPort(int port)
     if (m_syncPort == port)
         return;
     m_syncPort = port;
+    save();
+    emit syncChanged();
+}
+
+void ConfigManager::setSyncDeviceId(const QString &id)
+{
+    if (m_syncDeviceId == id)
+        return;
+    m_syncDeviceId = id;
+    save();
+    emit syncChanged();
+}
+
+void ConfigManager::setSyncPeerFingerprint(const QString &fingerprint)
+{
+    if (m_syncPeerFingerprint == fingerprint)
+        return;
+    m_syncPeerFingerprint = fingerprint;
+    save();
+    emit syncChanged();
+}
+
+void ConfigManager::setSyncPeerSecret(const QString &secretBase64)
+{
+    if (m_syncPeerSecret == secretBase64)
+        return;
+    m_syncPeerSecret = secretBase64;
     save();
     emit syncChanged();
 }

@@ -4,12 +4,15 @@
 #include <QVariantList>
 #include <QVariantMap>
 #include <QString>
+#include <QHash>
+#include <QMutex>
 
 #include "database/SyncDatabase.h"
 #include "core/sync/SyncEngine.h"
 
 class QThread;
 class QTimer;
+class QEventLoop;
 class QFileSystemWatcher;
 class ConfigManager;
 
@@ -38,6 +41,13 @@ class SyncBridge : public QObject
     Q_PROPERTY(QString      shareStatus   READ shareStatus   NOTIFY shareStatusChanged)
     Q_PROPERTY(bool         shareBusy     READ shareBusy     NOTIFY shareBusyChanged)
     Q_PROPERTY(QString      shareAddress  READ shareAddress  NOTIFY shareAddressChanged)
+    // ---- 直连（ASYN v2）----
+    Q_PROPERTY(bool         netRunning    READ netRunning    NOTIFY netChanged)
+    Q_PROPERTY(QString      netStatus     READ netStatus     NOTIFY netChanged)
+    Q_PROPERTY(QString      pairCode      READ pairCode      NOTIFY pairChanged)
+    Q_PROPERTY(bool         pairActive    READ pairActive    NOTIFY pairChanged)
+    Q_PROPERTY(QVariantList pairedDevices READ pairedDevices NOTIFY pairedDevicesChanged)
+    Q_PROPERTY(bool         peerPaired    READ peerPaired    NOTIFY netChanged)
 
 public:
     explicit SyncBridge(QObject *parent = nullptr);
@@ -65,6 +75,13 @@ public:
     QString      shareStatus() const;
     bool         shareBusy() const;
     QString      shareAddress() const;
+
+    bool         netRunning() const;
+    QString      netStatus() const;
+    QString      pairCode() const;
+    bool         pairActive() const;
+    QVariantList pairedDevices() const;
+    bool         peerPaired() const;
 
     Q_INVOKABLE void addSharedDir(const QString &path);
     Q_INVOKABLE void removeSharedDir(const QString &path);
@@ -109,6 +126,19 @@ public:
     /// 按目录名推断共享名（前端预填）
     Q_INVOKABLE QString shareNameSuggestion(const QString &localPath) const;
 
+    /// 在本机同步端口上启动 ASYN 服务端，对外提供当前共享目录
+    Q_INVOKABLE void startNetServer();
+    Q_INVOKABLE void stopNetServer();
+    /// 打开配对窗口（5 分钟、一次性），码通过 pairCode 属性给出
+    Q_INVOKABLE void startPairing();
+    Q_INVOKABLE void stopPairing();
+    /// 连接方：用主机地址（host:port）与 6 位码配对，成功后落盘凭据
+    Q_INVOKABLE void pairWithPeer(const QString &address, const QString &code);
+    /// 连接方：忘掉已配对的主机
+    Q_INVOKABLE void unpairPeer();
+    /// 主机：解除某台已配对设备的授权
+    Q_INVOKABLE void forgetDevice(const QString &deviceId);
+
 signals:
     void statusTextChanged();
     void busyChanged();
@@ -126,6 +156,11 @@ signals:
     void shareStatusChanged();
     void shareBusyChanged();
     void shareAddressChanged();
+    void netChanged();
+    void pairChanged();
+    void pairedDevicesChanged();
+    /// 连接方配对结果（QML 用来弹提示）
+    void pairingFinished(bool ok, const QString &message);
     void fileHandled(const QString &relPath, const QString &action);
     void syncFinished(int uploaded, int downloaded, int conflicts);
     /// 从投递区领取了文件（count 个，落在 inboxDir）
@@ -154,6 +189,13 @@ private:
     void setStatus(const QString &text);
     void setBusy(bool b);
     void setProgress(int p);
+    void setNetStatus(const QString &text);
+    void refreshPairedDevices();
+    /// 身份目录：sync.db 同级的 identity/
+    QString identityDir() const;
+    /// 本机稳定标识，首次调用时生成并写进配置
+    QString ensureDeviceId();
+    bool    hasPeerCredentials() const;
 
     QString       m_dbPath;
     ConfigManager *m_config = nullptr;
@@ -182,6 +224,18 @@ private:
     QString      m_shareStatus;
     bool         m_shareBusy = false;
     QString      m_shareAddress;
+
+    // ---- 直连 ----
+    QThread     *m_netThread = nullptr;
+    QObject     *m_netServer = nullptr;   // Sync::Net::SyncServer*，仅当跨线程 context 用
+    QEventLoop  *m_netLoop = nullptr;
+    QMutex       m_netMutex;              // 保护 m_netSecrets / m_netLoop
+    QHash<QString, QByteArray> m_netSecrets;
+    bool         m_netRunning = false;
+    QString      m_netStatus;
+    QString      m_pairCode;
+    bool         m_pairActive = false;
+    QVariantList m_pairedDevices;
 
     QFileSystemWatcher *m_watcher = nullptr;
     QTimer *m_inboxTimer = nullptr;

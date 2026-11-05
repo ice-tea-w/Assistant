@@ -56,8 +56,11 @@ public:
     /// 要同步的本地文件夹列表，每项 {localPath, alias}。为空时回退到 syncLocalRoot。
     QVariantList syncRoots() const;
     QString syncSharedDir() const;             // 共享目录（网盘中转）
-    QString syncPeerAddress() const;           // 直连通道对端地址（预留）
-    int     syncPort() const;                  // 直连通道端口（预留）
+    QString syncPeerAddress() const;           // 直连通道对端地址（配对成功后的主机）
+    int     syncPort() const;                  // 直连通道端口
+    QString syncDeviceId() const;              // 本机稳定标识（首次配对时生成并写盘）
+    QString syncPeerFingerprint() const;       // 已配对主机的证书指纹（空 = 未配对）
+    QString syncPeerSecret() const;            // 主机下发的设备口令，Base64（空 = 未配对）
     QString syncDeviceName() const;            // 本机名，用于冲突副本命名
     int     syncAutoIntervalMinutes() const;   // 0 = 关闭自动同步
     bool    syncWatchFiles() const;            // 本地文件变化时自动同步
@@ -76,6 +79,9 @@ public:
     Q_INVOKABLE void setSyncSharedDir(const QString &path);
     Q_INVOKABLE void setSyncPeerAddress(const QString &address);
     Q_INVOKABLE void setSyncPort(int port);
+    Q_INVOKABLE void setSyncDeviceId(const QString &id);
+    Q_INVOKABLE void setSyncPeerFingerprint(const QString &fingerprint);
+    Q_INVOKABLE void setSyncPeerSecret(const QString &secretBase64);
     Q_INVOKABLE void setSyncDeviceName(const QString &name);
     Q_INVOKABLE void setSyncAutoIntervalMinutes(int minutes);
     Q_INVOKABLE void setSyncWatchFiles(bool enabled);
@@ -115,6 +121,9 @@ private:
     QString m_syncSharedDir;
     QString m_syncPeerAddress;
     int     m_syncPort = 45871;
+    QString m_syncDeviceId;
+    QString m_syncPeerFingerprint;
+    QString m_syncPeerSecret;
     QString m_syncDeviceName;
     int     m_syncAutoIntervalMinutes = 0;
     bool    m_syncWatchFiles = true;

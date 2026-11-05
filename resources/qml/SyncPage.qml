@@ -1000,6 +1000,168 @@ Rectangle {
                 }
             }
 
+            // ---- 直连（ASYN v2）----
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.preferredHeight: directColumn.implicitHeight + 20
+                radius: Style.radius
+                color: syncPage.panelColor
+                border.color: syncPage.borderColor
+
+                ColumnLayout {
+                    id: directColumn
+                    anchors.fill: parent
+                    anchors.margins: 10
+                    spacing: 8
+
+                    Text {
+                        text: "直连（实验）"
+                        color: syncPage.textColor
+                        font.pixelSize: Style.bodySize
+                        font.bold: true
+                    }
+
+                    Text {
+                        Layout.fillWidth: true
+                        wrapMode: Text.WordWrap
+                        color: syncPage.mutedColor
+                        font.pixelSize: Style.captionSize
+                        text: "不经过共享目录：主机开一个端口，连接方拿 6 位码配对。"
+                              + "走 ASYN v2 over TLS，只有主机出示证书，客户端靠口令认证。"
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+
+                        Button {
+                            text: sync.netRunning ? "停止监听" : "开始监听"
+                            onClicked: {
+                                if (sync.netRunning)
+                                    sync.stopNetServer()
+                                else
+                                    sync.startNetServer()
+                            }
+                        }
+
+                        Button {
+                            text: sync.pairActive ? "关闭配对窗口" : "生成配对码"
+                            enabled: sync.netRunning
+                            onClicked: {
+                                if (sync.pairActive)
+                                    sync.stopPairing()
+                                else
+                                    sync.startPairing()
+                            }
+                        }
+
+                        Text {
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            color: sync.pairActive ? syncPage.accentColor : syncPage.mutedColor
+                            font.pixelSize: sync.pairActive ? 22 : Style.captionSize
+                            font.bold: sync.pairActive
+                            elide: Text.ElideRight
+                            text: sync.pairActive ? sync.pairCode : String(sync.netStatus)
+                        }
+                    }
+
+                    Repeater {
+                        model: sync.pairedDevices
+
+                        delegate: RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+
+                            Text {
+                                Layout.fillWidth: true
+                                color: syncPage.mutedColor
+                                font.pixelSize: Style.captionSize
+                                elide: Text.ElideMiddle
+                                text: modelData.deviceId + " · "
+                                      + String(modelData.fingerprint).substring(0, 16)
+                            }
+
+                            Button {
+                                text: "解除"
+                                onClicked: sync.forgetDevice(modelData.deviceId)
+                            }
+                        }
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+
+                        Rectangle {
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: 32
+                            radius: Style.radiusSmall
+                            color: "transparent"
+                            border.color: peerField.activeFocus ? syncPage.accentColor : syncPage.borderColor
+
+                            TextField {
+                                id: peerField
+                                anchors.fill: parent
+                                anchors.leftMargin: 8
+                                anchors.rightMargin: 8
+                                placeholderText: "主机地址，例如 100.116.234.107:45871"
+                                color: syncPage.textColor
+                                placeholderTextColor: syncPage.mutedColor
+                                font.pixelSize: Style.captionSize
+                                background: null
+                            }
+                        }
+
+                        Rectangle {
+                            Layout.preferredWidth: 96
+                            Layout.preferredHeight: 32
+                            radius: Style.radiusSmall
+                            color: "transparent"
+                            border.color: codeField.activeFocus ? syncPage.accentColor : syncPage.borderColor
+
+                            TextField {
+                                id: codeField
+                                anchors.fill: parent
+                                anchors.leftMargin: 8
+                                anchors.rightMargin: 8
+                                placeholderText: "6 位码"
+                                maximumLength: 6
+                                color: syncPage.textColor
+                                placeholderTextColor: syncPage.mutedColor
+                                font.pixelSize: Style.captionSize
+                                background: null
+                            }
+                        }
+
+                        Button {
+                            text: "配对"
+                            enabled: peerField.text.length > 0 && codeField.text.length === 6
+                            onClicked: sync.pairWithPeer(peerField.text, codeField.text)
+                        }
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+                        visible: sync.peerPaired
+
+                        Text {
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            color: syncPage.mutedColor
+                            font.pixelSize: Style.captionSize
+                            text: "已与主机配对；每轮同步会同时挂载直连通道。"
+                        }
+
+                        Button {
+                            text: "解除配对"
+                            onClicked: sync.unpairPeer()
+                        }
+                    }
+                }
+            }
+
             Text {
                 text: "Assistant v" + appVersion + " · 设备同步"
                 color: syncPage.mutedColor
