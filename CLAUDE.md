@@ -46,9 +46,9 @@ cmake --build build --config Debug
 > **环境注意（本机 sandbox）**：**运行也需要 `danger-full-access`**。应用要写 `%LOCALAPPDATA%/AssistantTeam/Assistant/`（日志 / 配置 / 4 个 DB），`workspace-write` 下写入被拒 → `Logger::init` 失败退回 console-only，**日志不落盘**，容易误判成"启动正常"。
 > 冒烟判断启动是否成功时**不要看 stdout**：spdlog 的 console sink 在重定向后是全缓冲的，进程被强杀会丢输出；看 `%LOCALAPPDATA%\AssistantTeam\Assistant\logs\assistant.log` 才可靠。
 
-> **文件索引引擎开关（A2 起）**：`config.json` 的 `fileIndex.engine` —— `"v2"`（默认，`FileIndex` 门面 + 后台扫描）
-> 或 `"legacy"`（旧 `FileSearcher` 同步建索引，A1 行为，A7 之前一直保留）。子进程驱动应用做验收时用
-> `_probe/hotkey_probe.ps1`（`PostMessage(WM_HOTKEY)` 走真实消息链，见 `docs/devlog/2026-10-16.md`）。
+> **文件索引引擎（A7 起）**：v2 是**唯一**实现（`FileIndex` 门面 + 后台扫描 + A5 增量 + A6 冷启动），
+> `fileIndex.engine` 开关已删除；旧 `FileSearcher` 只剩 `golden_file_index` 的对照实现，产品路径零调用。
+> 子进程驱动应用做验收时用 `_probe/hotkey_probe.ps1`（`PostMessage(WM_HOTKEY)` 走真实消息链，见 `docs/devlog/2026-10-16.md`）。
 
 ## Qt 部署原理（vcpkg 开发阶段）
 
@@ -118,7 +118,12 @@ Phase 3 剩余（收尾中，写在这里便于续接）：
       AppBridge 在这条信号上也刷新；随后扫描校正并发 `indexReady`。真机 32953 条 **265 ms** 可查
 - [ ] **A6b 性能与 frecency**：265 ms/33k 线性外推到 20 万约 1.6 s，**未达 §9 的 <300 ms**；
       需要异步载入 + 列式/字典编码。frecency（`files.frecency` + 空查询 top-8）未做
-- [ ] A7 收尾 / A8 拼音首字母
+- [x] **A7a 检索收尾**（2026-11-05）：`ISearchProvider` + `AppBridge` 的 **k-way merge**（每个 provider 自截 top-20，
+      合并上限 50，堆按 score/priority 归并）；计算器改为 provider 内部的"先门禁后解析"；
+      **删除 `fileIndex.engine` 开关**（main / ConfigManager / AppBridge 三处），v2 是唯一实现
+- [ ] **A7b 剩余**：`FileSearcher` 仍被 `golden_file_index` 当作对照实现（产品路径零调用），删除需先重写该用例的
+      phase 2；QML `Ctrl+Enter` 打开所在文件夹、`Shift+Enter` 复制路径未做；`fileIndex.debugScore` 未做
+- [ ] A8 拼音首字母
 
 > ✅ **P0-3 已修掉**：不再套 2 万条任意截断，真机索引 20000 → **31845** 条，
 > `Documents`/`Downloads` 终于进得来。A3 的 Win32 扫描器扫 31845 条只要 **459–502 ms**。
@@ -160,14 +165,14 @@ Phase 3 剩余（收尾中，写在这里便于续接）：
 | Logger | `include/core/Logger.h`, `src/core/Logger.cpp` | 命名空间级单例, 双 sink (控制台+文件滚动 5MB×3) |
 | ConfigManager | `include/core/ConfigManager.h`, `src/core/ConfigManager.cpp` | JSON 配置读写, Q_PROPERTY 暴露给 QML |
 | HistoryDatabase | `include/database/HistoryDatabase.h`, `src/database/HistoryDatabase.cpp` | SQLite 3 张表 (search/command/app_launch history) |
-| AppBridge | `include/ui/AppBridge.h`, `src/ui/AppBridge.cpp` | QML↔C++ 桥梁, Q_PROPERTY + Q_INVOKABLE |
+| AppBridge | `include/ui/AppBridge.h`, `src/ui/AppBridge.cpp` | QML↔C++ 桥梁；A7 起内部由 provider 组成（builtin / calc / files），k-way merge 出结果 |
 | SearchResult | `include/ui/SearchResult.h` | 统一搜索模型 (id, title, subtitle, type, priority, score, resultText, path) |
 | FuzzyMatcher | `include/core/FuzzyMatcher.h`, `src/core/FuzzyMatcher.cpp` | 五级模糊匹配打分 (精确>前缀>词边界>包含>编辑距离)。**A4 起只剩 `legacy` 退路与"跨模块分数尺度"的参照**，文件查询走 `ScoreEngine` |
 | ScoreEngine | `include/core/ScoreEngine.h`, `src/core/ScoreEngine.cpp` | 打分内核：tier 判定（四档数值与 `FuzzyMatcher` **逐位相同**）+ **贪心 O(m) 子序列**（351–399 空档）+ 有界编辑距离；全程零分配 |
 | QueryParser | `include/core/QueryParser.h`, `src/core/QueryParser.cpp` | A 阶段最小语法：自由词按空白 **AND**、`-词` 否定；整串只 `toLower` 一次 |
 | QueryEngine | `include/core/QueryEngine.h`, `src/core/QueryEngine.cpp` | 查询引擎：Parser → 逐条打分 → **top-K min-heap**（替代全排序）；只依赖快照只读接口 |
 | AppIndexer | `include/core/AppIndexer.h`, `src/core/AppIndexer.cpp` | 扫描 Start Menu `.lnk` (IShellLink COM), 解析目标路径, 去重排序 |
-| FileSearcher | `include/core/FileSearcher.h`, `src/core/FileSearcher.cpp` | 自控前序 DFS（`walkDir`，不跟随 junction、目录级剪枝）+ FuzzyMatcher 打分 top-N, 索引上限 2 万。**A2 起是 `engine=legacy` 的退路**，A7 删除 |
+| FileSearcher | `include/core/FileSearcher.h`, `src/core/FileSearcher.cpp` | 自控前序 DFS（`walkDir`，不跟随 junction、目录级剪枝）+ FuzzyMatcher 打分 top-N, 索引上限 2 万。**A7 起产品路径零调用，仅剩 golden 的对照实现**（删除需先重写该用例） |
 | FileSnapshot | `include/core/FileSnapshot.h` | 不可变只读快照（`Builder` 写入 → `nameAt/lowerAt/pathAt/sizeAt/mtimeAt` 读出）；物理表示藏在这层之后，查询层不摸容器 |
 | SnapshotManager | `include/core/SnapshotManager.h`, `src/core/SnapshotManager.cpp` | 快照的 COW 发布（`std::atomic<std::shared_ptr<const T>>`）；读侧取一份即用，无需加锁 |
 | FileIndex | `include/core/FileIndex.h`, `src/core/FileIndex.cpp` | 文件索引**门面**（薄）：`startAsync` 后台扫描 + `query` + `stats` + A5b 的 `setEventSource` / `setRoots`；`engine=v2` 时经 AppBridge 提供文件结果。扫描/写库都在 worker 线程（`QSqlDatabase` 线程亲和） |
@@ -198,11 +203,12 @@ Phase 3 剩余（收尾中，写在这里便于续接）：
 | FileSystemEvent | `include/contract/FileSystemEvent.h` | C2 契约：Added/Removed/Renamed/Modified/Overflow |
 | FileWatcher | `include/core/FileWatcher.h`, `src/core/FileWatcher.cpp` | 每根一个 OVERLAPPED 句柄；`start()` 即生效；按路径合并去重；溢出显式上报 |
 | FileEventDispatcher | `include/core/FileEventDispatcher.h` | 极轻量订阅表（不是全局 EventBus）；`publish` 在调用线程执行回调 |
+| ISearchProvider | `include/core/ISearchProvider.h` | 检索来源接口（A7）：`query(text, limit) -> top-N`；内置 / 计算器 / 文件各一个实现 |
 
 > **DB 约定**：每个功能一个独立 DB 文件 + 独立 `QSqlDatabase` 连接名（见 `ClipboardDatabase`），不要共用一个连接。
 > **QML 约定**：搜索浮窗走 `AppBridge`，主面板走 `PanelBridge`，同步页走 `SyncBridge`（第三个桥，注入面板引擎）。
 > **测试约定**：QTest（`Qt6::Test`），不是 GTest；`tests/*.cpp` 里要 `#include "<名字>.moc"` 让 AUTOMOC 处理 `Q_OBJECT`。
-> **测试目标**：`assistant_tests`（同步）、`assistant_watch_tests`（A5 事件源）、`assistant_index_tests`（事件→索引→查询），外加 `assistant_golden` / `assistant_a3` / `assistant_bench`；`ctest` 一次跑全 6 项。
+> **测试目标**：`assistant_tests`（同步）、`assistant_watch_tests`（A5 事件源）、`assistant_index_tests`（事件→索引→查询）、`assistant_search_tests`（provider + k-way merge），外加 `assistant_golden` / `assistant_a3` / `assistant_bench`；`ctest` 一次跑全 7 项。
 
 ## Git 规范
 

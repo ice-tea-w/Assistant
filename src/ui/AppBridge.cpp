@@ -1,7 +1,7 @@
 #include "ui/AppBridge.h"
 #include "core/FuzzyMatcher.h"
 #include "core/Calculator.h"
-#include "core/FileSearcher.h"
+#include "core/ISearchProvider.h"
 #include "core/FileIndex.h"
 #include "database/HistoryDatabase.h"
 #include "core/Logger.h"
@@ -13,16 +13,125 @@
 #include <QApplication>
 
 #include <algorithm>
+#include <memory>
+#include <queue>
 
 #ifdef Q_OS_WIN
 #include <windows.h>
 #endif
 
 namespace {
-    /// Cap on file matches appended per search — files compete with builtins and
-    /// apps for screen space, and this keeps the list responsive on broad queries.
-    constexpr int kMaxFileResults = 20;
-}
+
+    /// 每个 provider 的 top-N 与合并后的总上限。
+    constexpr int kPerProviderLimit  = 20;
+    constexpr int kMergedResultLimit = 50;
+
+    bool betterFirst(const SearchResult &a, const SearchResult &b)
+    {
+        if (a.score != b.score)
+            return a.score > b.score;
+        return a.priority > b.priority;
+    }
+
+    /// 内置命令 + 已索引应用：五级模糊匹配，自己截断 top-N。
+    class BuiltinProvider : public ISearchProvider
+    {
+    public:
+        explicit BuiltinProvider(const QList<SearchResult> *items) : m_items(items) {}
+
+        QString providerId() const override { return QStringLiteral("builtin"); }
+
+        QList<SearchResult> query(const QString &text, int limit) override
+        {
+            QList<SearchResult> out;
+            for (const SearchResult &item : *m_items) {
+                const int score = FuzzyMatcher::score(text, item.title);
+                if (score > 0) {
+                    SearchResult hit = item;
+                    hit.score = score;
+                    out.append(hit);
+                }
+            }
+            std::sort(out.begin(), out.end(), betterFirst);
+            if (out.size() > limit)
+                out = out.mid(0, limit);
+            return out;
+        }
+
+    private:
+        const QList<SearchResult> *m_items;
+    };
+
+    /// 计算器：**先门禁再解析**（A7）—— 只在"含数字 + 含运算符 + 长度≥3"时才跑解析器。
+    class CalculatorProvider : public ISearchProvider
+    {
+    public:
+        QString providerId() const override { return QStringLiteral("calc"); }
+
+        QList<SearchResult> query(const QString &text, int limit) override
+        {
+            if (limit <= 0)
+                return {};
+
+            const QString q = text.trimmed();
+            if (q.length() < 3)
+                return {};
+
+            bool hasDigit = false;
+            bool hasOp    = false;
+            for (const QChar &c : q) {
+                if (c.isDigit())
+                    hasDigit = true;
+                if (c == QLatin1Char('+') || c == QLatin1Char('-')
+                    || c == QLatin1Char('*') || c == QLatin1Char('/'))
+                    hasOp = true;
+            }
+            if (!hasDigit || !hasOp)
+                return {};
+
+            double val = 0.0;
+            QString error;
+            if (!Calculator::tryParse(q, &val, &error))
+                return {};
+
+            QString resultStr;
+            if (std::isfinite(val) && val == static_cast<long long>(val))
+                resultStr = QString::number(static_cast<long long>(val));
+            else
+                resultStr = QString::number(val, 'g', 10);
+
+            SearchResult hit;
+            hit.id         = QStringLiteral("calc://") + q;
+            hit.title      = q;
+            hit.subtitle   = QStringLiteral("= ") + resultStr;
+            hit.resultText = hit.subtitle;
+            hit.type       = SearchResult::Calculator;
+            hit.priority   = 100;
+            hit.score      = 1001;   // 高于任何模糊匹配
+            return {hit};
+        }
+    };
+
+    /// 文件：直接转发 FileIndex（v2 是唯一实现，A7 起没有 legacy 分支）。
+    class FileProvider : public ISearchProvider
+    {
+    public:
+        explicit FileProvider(FileIndex *index) : m_index(index) {}
+
+        QString providerId() const override { return QStringLiteral("files"); }
+
+        QList<SearchResult> query(const QString &text, int limit) override
+        {
+            if (!m_index)
+                return {};
+            return m_index->query(text, limit);
+        }
+
+    private:
+        FileIndex *m_index;
+    };
+
+} // namespace
 
 AppBridge::AppBridge(QObject *parent)
     : QObject(parent)
@@ -53,6 +162,9 @@ AppBridge::AppBridge(QObject *parent)
     };
 
     m_searchResults = m_allItems;
+
+    m_providers.emplace_back(std::make_unique<BuiltinProvider>(&m_allItems));
+    m_providers.emplace_back(std::make_unique<CalculatorProvider>());
 }
 
 QVariantList AppBridge::searchResults() const
@@ -84,70 +196,15 @@ void AppBridge::setVisible(bool visible)
 
 void AppBridge::search(const QString &query)
 {
-    m_searchResults.clear();
-
     if (query.isEmpty()) {
-        m_searchResults = m_allItems;
+        m_searchResults = m_allItems;          // 空查询不跑 provider
     } else {
-        for (const auto &item : m_allItems) {
-            int s = FuzzyMatcher::score(query, item.title);
-            if (s > 0) {
-                SearchResult matched = item;
-                matched.score = s;
-                m_searchResults.append(matched);
-            }
-        }
+        QVector<QList<SearchResult>> lists;
+        lists.reserve(static_cast<int>(m_providers.size()));
+        for (const auto &provider : m_providers)
+            lists.append(provider->query(query, kPerProviderLimit));
 
-        // ---- file search (Step 6 / A2) ----
-        // Files only appear when actively searching; they are NOT part of
-        // m_allItems, otherwise the empty-query default list would be huge.
-        m_searchResults += fileResults(query);
-
-        // Sort: highest score first, then highest priority for ties
-        std::sort(m_searchResults.begin(), m_searchResults.end(),
-                  [](const SearchResult &a, const SearchResult &b) {
-                      if (a.score != b.score)
-                          return a.score > b.score;
-                      return a.priority > b.priority;
-                  });
-
-        // ---- calculator detection ----
-        // Heuristic: the query must contain at least one digit AND one operator.
-        {
-            const QString q = query.trimmed();
-            bool hasDigit = false;
-            bool hasOp    = false;
-            for (const QChar &c : q) {
-                if (c.isDigit())               hasDigit = true;
-                if (c == QLatin1Char('+') || c == QLatin1Char('-') ||
-                    c == QLatin1Char('*') || c == QLatin1Char('/'))
-                    hasOp = true;
-            }
-
-            if (hasDigit && hasOp && q.length() >= 3) {
-                double val = 0.0;
-                QString err;
-                if (Calculator::tryParse(q, &val, &err)) {
-                    // Format result — strip trailing zeros for whole numbers
-                    QString resultStr;
-                    if (val == static_cast<long long>(val) && std::isfinite(val))
-                        resultStr = QString::number(static_cast<long long>(val));
-                    else
-                        resultStr = QString::number(val, 'g', 10);
-
-                    SearchResult calcResult;
-                    calcResult.id         = QStringLiteral("calc://") + q;
-                    calcResult.title      = q;
-                    calcResult.subtitle   = QStringLiteral("= ") + resultStr;
-                    calcResult.resultText = QStringLiteral("= ") + resultStr;
-                    calcResult.type       = SearchResult::Calculator;
-                    calcResult.priority   = 100;
-                    calcResult.score      = 1001;  // above all fuzzy matches
-
-                    m_searchResults.prepend(calcResult);
-                }
-            }
-        }
+        m_searchResults = mergeTopK(lists, kMergedResultLimit);
     }
 
     emit searchResultsChanged();
@@ -167,17 +224,56 @@ void AppBridge::search(const QString &query)
     m_lastQuery = query.trimmed();
 
     // A1 修 P1-5：这里以前会对**每一次按键**（≥2 字符）INSERT 一次搜索历史。
-    // 后果有两个 —— 每按键一次磁盘事务（WAL），以及历史表被 re/rep/repo…
-    // 这类前缀垃圾淹没，真正的意图根本读不出来。现在只写"执行"的那一次。
+    // 后果有两个 —— 每按键一次磁盘事务（WAL），以及历史表被 re/re/pre… 这类前缀垃圾
+    // 淹没，真正的意图根本读不出来。现在只写"执行"的那一次。
     if (m_searchResults.isEmpty()) {
-        Logger::get().debug("AppBridge::search '{}' → 0 result(s)",
-                            query.toStdString());
+        Logger::get().debug("AppBridge::search '{}' → 0 result(s)", query.toStdString());
     } else {
         Logger::get().debug("AppBridge::search '{}' → {} result(s), top: {}",
                             query.toStdString(),
                             m_searchResults.size(),
                             m_searchResults.first().title.toStdString());
     }
+}
+
+QList<SearchResult> AppBridge::mergeTopK(const QVector<QList<SearchResult>> &lists, int limit) const
+{
+    // k-way merge：每个 provider 内部已经按 score 降序，这里只维护 k 个游标的最小堆
+    //（按 score/priority 取"更好"的那条）。复杂度 O(N log k)，不需要把全表重排。
+    struct Cursor {
+        int list = 0;
+        int item = 0;
+    };
+    struct Worse {
+        const QVector<QList<SearchResult>> *lists;
+        bool operator()(const Cursor &a, const Cursor &b) const
+        {
+            const SearchResult &x = (*lists)[a.list][a.item];
+            const SearchResult &y = (*lists)[b.list][b.item];
+            if (x.score != y.score)
+                return x.score < y.score;        // 大顶堆：score 大的优先
+            if (x.priority != y.priority)
+                return x.priority < y.priority;
+            return a.list > b.list;              // 来源顺序稳定
+        }
+    };
+
+    std::priority_queue<Cursor, std::vector<Cursor>, Worse> heap(Worse{&lists});
+    for (int i = 0; i < lists.size(); ++i) {
+        if (!lists[i].isEmpty())
+            heap.push(Cursor{i, 0});
+    }
+
+    QList<SearchResult> merged;
+    merged.reserve(qMin(limit, 64));
+    while (!heap.empty() && merged.size() < limit) {
+        const Cursor top = heap.top();
+        heap.pop();
+        merged.append(lists[top.list][top.item]);
+        if (top.item + 1 < lists[top.list].size())
+            heap.push(Cursor{top.list, top.item + 1});
+    }
+    return merged;
 }
 
 void AppBridge::executeCommand(int index)
@@ -284,6 +380,8 @@ void AppBridge::setFileIndex(FileIndex *index)
     if (!m_fileIndex)
         return;
 
+    m_providers.emplace_back(std::make_unique<FileProvider>(index));
+
     // 后台索引扫完 → 重跑最近一次查询。用户在"正在建立索引…"期间敲的字
     // 不该白敲 —— 这正是前后台分离要换来的东西。没敲过字就刷新一次默认状态，
     // 否则状态栏会一直停在"正在建立索引…"。
@@ -307,36 +405,6 @@ void AppBridge::setFileIndex(FileIndex *index)
         Logger::get().info("AppBridge: file index from cache — {} entries in {} ms", entries, ms);
         refreshFromIndex(entries, ms);
     });
-}
-
-// ---- file results: legacy FileSearcher vs v2 FileIndex ----
-
-QList<SearchResult> AppBridge::legacyFileResults(const QString &query) const
-{
-    QList<SearchResult> out;
-
-    const QList<FileSearcher::Entry> files = FileSearcher::search(query, kMaxFileResults);
-    out.reserve(files.size());
-    for (const FileSearcher::Entry &f : files) {
-        SearchResult item;
-        item.id       = QStringLiteral("file://") + f.path;
-        item.title    = f.name;
-        item.subtitle = f.path;
-        item.type     = SearchResult::File;
-        item.priority = 1;   // below builtins/apps on score ties
-        item.score    = f.score;
-        item.path     = f.path;
-        out.append(item);
-    }
-    return out;
-}
-
-QList<SearchResult> AppBridge::fileResults(const QString &query)
-{
-    if (m_fileIndex)
-        return m_fileIndex->query(query, kMaxFileResults);
-
-    return legacyFileResults(query);
 }
 
 void AppBridge::addApp(const QString &name, const QString &path)

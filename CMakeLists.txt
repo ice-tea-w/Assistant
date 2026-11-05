@@ -292,3 +292,23 @@ target_link_libraries(assistant_index_tests PRIVATE
 add_test(NAME index_incremental COMMAND assistant_index_tests)
 set_tests_properties(index_incremental PROPERTIES
     ENVIRONMENT "PATH=${VCPKG_BIN_DIR};${VCPKG_DBG_BIN_DIR};$ENV{PATH}")
+
+# ---- A7：provider + k-way merge ----
+add_executable(assistant_search_tests
+    tests/test_search_providers.cpp
+    src/ui/AppBridge.cpp
+    src/core/Calculator.cpp
+    src/database/HistoryDatabase.cpp
+    include/ui/AppBridge.h
+    include/database/HistoryDatabase.h
+    ${ASSISTANT_INDEX_TEST_SOURCES}
+)
+target_include_directories(assistant_search_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_compile_definitions(assistant_search_tests PRIVATE APP_VERSION="${PROJECT_VERSION}")
+target_link_libraries(assistant_search_tests PRIVATE
+    Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Sql Qt6::Test
+    spdlog::spdlog nlohmann_json::nlohmann_json)
+
+add_test(NAME search_providers COMMAND assistant_search_tests)
+set_tests_properties(search_providers PROPERTIES
+    ENVIRONMENT "PATH=${VCPKG_BIN_DIR};${VCPKG_DBG_BIN_DIR};$ENV{PATH}")

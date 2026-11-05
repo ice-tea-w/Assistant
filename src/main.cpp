@@ -10,7 +10,6 @@
 #include "core/Logger.h"
 #include "core/ConfigManager.h"
 #include "core/AppIndexer.h"
-#include "core/FileSearcher.h"
 #include "core/FileEventDispatcher.h"
 #include "core/FileIndex.h"
 #include "core/FileWatcher.h"
@@ -99,38 +98,28 @@ int main(int argc, char *argv[])
     for (const AppIndexer::Entry &app : AppIndexer::scan())
         backend.addApp(app.name, app.path);
 
-    // ---- file indexer (Step 6 / A2 + A3) ----
-    // v2      : FileIndex 门面 + 后台扫描（FileScanner + FileIndexDatabase 差量）。
-    //           startAsync() **立即返回**，窗口与热键先可用，索引就绪后 AppBridge
-    //           自动重跑最近一次查询（修 P0-4）。
-    // legacy  : 旧 FileSearcher 同步建索引，行为与 A1 **完全一致**，是 v2 的退路。
-    // 开关落在 config.json 的 fileIndex.engine，一行配置就能切回去。
+    // ---- file indexer（A7 起只有 v2 一条实现） ----
+    // v2 = FileIndex 门面 + 后台扫描（FileScanner + FileIndexDatabase 差量）+ A6 冷启动。
+    // 旧 FileSearcher 已从产品路径删除，只剩测试里的对照实现。
     FileIndex fileIndex;
-    const bool useFileIndexV2 = (config.fileIndexEngine() == QStringLiteral("v2"));
-    if (useFileIndexV2) {
-        // file_index.db 是**派生数据**（可随时重扫重建），和 history.db 等平级存放
-        fileIndex.setDatabasePath(QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation)
-                                  + QStringLiteral("/file_index.db"));
-        fileIndex.setEntryLimit(config.fileIndexHardLimitEntries());
-        backend.setFileIndex(&fileIndex);
+    fileIndex.setDatabasePath(QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation)
+                              + QStringLiteral("/file_index.db"));
+    fileIndex.setEntryLimit(config.fileIndexHardLimitEntries());
+    backend.setFileIndex(&fileIndex);
 
-        // A5b：扫描完之后接上增量事件源。watcher 只在 v2 引擎下有意义
-        //（legacy 是同步建索引的退路，A7 会删除）。
-        FileEventDispatcher fileEvents;
-        FileWatcher         fileWatcher;
-        fileIndex.setEventSource(&fileEvents);
-        QObject::connect(&fileWatcher, &FileWatcher::batchReady,
-                         [&fileEvents](const QVector<FileSystemEvent> &batch) {
-                             fileEvents.publish(batch);
-                         });
+    // A5b：扫描完之后接上增量事件源。
+    FileEventDispatcher fileEvents;
+    FileWatcher         fileWatcher;
+    fileIndex.setEventSource(&fileEvents);
+    QObject::connect(&fileWatcher, &FileWatcher::batchReady,
+                     [&fileEvents](const QVector<FileSystemEvent> &batch) {
+                         fileEvents.publish(batch);
+                     });
 
-        fileIndex.startAsync();          // 放在 engine.load() 之前，但不再阻塞
-        fileWatcher.start(fileIndex.roots());
-    } else {
-        FileSearcher::buildIndex();
-    }
-    Logger::get().info("FileIndex: engine = {}（硬上限 {} 条）",
-                       useFileIndexV2 ? "v2" : "legacy",
+    fileIndex.startAsync();          // 放在 engine.load() 之前，但不再阻塞
+    fileWatcher.start(fileIndex.roots());
+
+    Logger::get().info("FileIndex: engine = v2（硬上限 {} 条）",
                        config.fileIndexHardLimitEntries());
 
     TrayManager   tray;
@@ -159,18 +148,6 @@ int main(int argc, char *argv[])
 
     if (engine.rootObjects().isEmpty())
         return -1;
-
-    // A2 验收①的观测点：这一行证明「窗口已经起来了」时索引处于什么状态。
-    // legacy 会先打印 FileSearcher: indexed … 再打印这一行（同步建索引，UI 被挡住）；
-    // v2 反过来 —— 这一行在前，FileIndex: published snapshot 在后。
-    if (useFileIndexV2) {
-        const FileIndex::IndexStats st = fileIndex.stats();
-        Logger::get().info("UI loaded — fileIndex v2 ready={} scanning={} entries={}",
-                           st.ready, st.scanning, st.entries);
-    } else {
-        Logger::get().info("UI loaded — fileIndex legacy ({} files indexed synchronously)",
-                           FileSearcher::size());
-    }
 
     QObject *rootObject = engine.rootObjects().first();
     QWindow *window = qobject_cast<QWindow *>(rootObject);

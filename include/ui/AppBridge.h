@@ -2,7 +2,12 @@
 
 #include <QObject>
 #include <QVariantList>
+#include <QVector>
 
+#include <memory>
+#include <vector>
+
+#include "core/ISearchProvider.h"
 #include "ui/SearchResult.h"
 
 class HistoryDatabase;
@@ -34,9 +39,7 @@ public:
     void setHistoryDatabase(HistoryDatabase *db);
 
     /// Set the v2 file index (owned by main; AppBridge does not take ownership).
-    ///
-    /// 传 nullptr 表示走旧 `FileSearcher`（`fileIndex.engine = "legacy"`）——
-    /// A2 的 A/B 开关就落在这里：**两条路都能跑**，A7 才删掉旧的。
+    /// A7 起 v2 是**唯一**实现，不再有 legacy 分支。
     void setFileIndex(FileIndex *index);
 
     /// Register an indexed application as a searchable/launchable result.
@@ -53,10 +56,8 @@ private:
     void executeAction(const SearchResult &item);
     void setStatus(const QString &text);
 
-    /// 文件结果的两种取法：`legacy` 走旧 FileSearcher（A1 语义），
-    /// `v2` 走 FileIndex 快照。两条路产出的 SearchResult 字段完全一致。
-    QList<SearchResult> legacyFileResults(const QString &query) const;
-    QList<SearchResult> fileResults(const QString &query);
+    /// k-way merge：各 provider 已按 score 降序，合并后取前 @p limit 条。
+    QList<SearchResult> mergeTopK(const QVector<QList<SearchResult>> &lists, int limit) const;
 
     QList<SearchResult> m_allItems;
     QList<SearchResult> m_searchResults;
@@ -65,4 +66,5 @@ private:
     bool m_visible = false;
     HistoryDatabase *m_historyDb = nullptr;
     FileIndex       *m_fileIndex = nullptr;
+    std::vector<std::unique_ptr<ISearchProvider>> m_providers;
 };
