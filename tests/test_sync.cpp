@@ -19,6 +19,7 @@
 #include "core/sync/DeliveryNaming.h"
 #include "core/sync/FolderTransport.h"
 #include "core/sync/PathGuard.h"
+#include "core/sync/SyncCommands.h"
 #include "core/sync/SyncEngine.h"
 #include "database/SyncDatabase.h"
 
@@ -97,6 +98,14 @@ private slots:
     void deliveryPlaceIncoming();
     void databaseReceived();
     void configWatchInboxRoundTrip();
+
+    // 一键共享 / 连接的命令拼装（纯函数，不碰 Windows API）
+    void shareBat_data();
+    void shareBat();
+    void shareNameValidation();
+    void suggestShareNameRules();
+    void connectArgsBuild();
+    void explainExitCodes();
 };
 
 void TestSync::initTestCase()
@@ -815,6 +824,78 @@ void TestSync::configRootsRoundTrip()
     }
 
     QStandardPaths::setTestModeEnabled(false);
+}
+
+// ------------------------------------------------------------ 一键共享/连接
+
+void TestSync::shareBat_data()
+{
+    QTest::addColumn<QString>("path");
+    QTest::addColumn<QString>("name");
+    QTest::addColumn<QString>("user");
+    QTest::addColumn<QString>("expected");
+
+    QTest::newRow("plain")
+        << QStringLiteral("E:\\SyncHub") << QStringLiteral("SyncHub") << QStringLiteral("alice")
+        << QStringLiteral("@echo off\r\n"
+                          "net share SyncHub=\"E:\\SyncHub\" /grant:alice,change\r\n"
+                          "if errorlevel 1 exit /b 1\r\n"
+                          "icacls \"E:\\SyncHub\" /grant \"alice:(OI)(CI)M\"\r\n"
+                          "exit /b %errorlevel%\r\n");
+
+    QTest::newRow("with space")
+        << QStringLiteral("E:\\My Sync") << QStringLiteral("MySync") << QStringLiteral("alice")
+        << QStringLiteral("@echo off\r\n"
+                          "net share MySync=\"E:\\My Sync\" /grant:alice,change\r\n"
+                          "if errorlevel 1 exit /b 1\r\n"
+                          "icacls \"E:\\My Sync\" /grant \"alice:(OI)(CI)M\"\r\n"
+                          "exit /b %errorlevel%\r\n");
+}
+
+void TestSync::shareBat()
+{
+    QFETCH(QString, path);
+    QFETCH(QString, name);
+    QFETCH(QString, user);
+    QFETCH(QString, expected);
+    QCOMPARE(Sync::shareScript(path, name, user), expected);
+}
+
+void TestSync::shareNameValidation()
+{
+    QVERIFY(Sync::isValidShareName(QStringLiteral("SyncHub")));
+    QVERIFY(Sync::isValidShareName(QStringLiteral("共享")));
+    QVERIFY(!Sync::isValidShareName(QString()));
+    QVERIFY(!Sync::isValidShareName(QStringLiteral("a\\b")));
+    QVERIFY(!Sync::isValidShareName(QStringLiteral("a:b")));
+    QVERIFY(!Sync::isValidShareName(QStringLiteral(" SyncHub")));
+    QVERIFY(!Sync::isValidShareName(QString(81, QLatin1Char('x'))));
+}
+
+void TestSync::suggestShareNameRules()
+{
+    QCOMPARE(Sync::suggestShareName(QStringLiteral("E:\\SyncHub")), QStringLiteral("SyncHub"));
+    QCOMPARE(Sync::suggestShareName(QStringLiteral("E:\\Sync Hub")), QStringLiteral("Sync Hub"));
+    QCOMPARE(Sync::suggestShareName(QStringLiteral("E:\\")), QStringLiteral("SyncHub"));
+}
+
+void TestSync::connectArgsBuild()
+{
+    QCOMPARE(Sync::connectArgs(QStringLiteral("\\\\host\\SyncHub"), QString(), QString()),
+             QStringList({QStringLiteral("use"), QStringLiteral("\\\\host\\SyncHub"),
+                          QStringLiteral("/persistent:yes")}));
+    QCOMPARE(Sync::connectArgs(QStringLiteral("\\\\host\\SyncHub"),
+                               QStringLiteral("host\\alice"), QStringLiteral("p w")),
+             QStringList({QStringLiteral("use"), QStringLiteral("\\\\host\\SyncHub"),
+                          QStringLiteral("/persistent:yes"),
+                          QStringLiteral("/user:host\\alice"), QStringLiteral("p w")}));
+}
+
+void TestSync::explainExitCodes()
+{
+    QVERIFY(Sync::explainExitCode(53, QStringLiteral("\\\\h\\s")).contains(QStringLiteral("445")));
+    QVERIFY(Sync::explainExitCode(1326, QStringLiteral("\\\\h\\s")).contains(QStringLiteral("用户名")));
+    QVERIFY(Sync::explainExitCode(9999, QStringLiteral("x")).contains(QStringLiteral("9999")));
 }
 
 QTEST_MAIN(TestSync)

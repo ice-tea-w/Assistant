@@ -218,6 +218,7 @@ add_executable(assistant_tests
     src/core/sync/FolderTransport.cpp
     src/core/sync/SyncEngine.cpp
     src/core/sync/DeliveryNaming.cpp
+    src/core/sync/SyncCommands.cpp
     src/database/SyncDatabase.cpp
     # 配置层往返也要测（同步根列表靠它持久化）
     src/core/ConfigManager.cpp
