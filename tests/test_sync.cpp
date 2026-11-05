@@ -106,6 +106,9 @@ private slots:
     void suggestShareNameRules();
     void connectArgsBuild();
     void explainExitCodes();
+
+    // probe() 失败必须能说清是哪一关（否则界面只有一句"不可访问或不可写"）
+    void probeErrorDistinguishesFailures();
 };
 
 void TestSync::initTestCase()
@@ -896,6 +899,40 @@ void TestSync::explainExitCodes()
     QVERIFY(Sync::explainExitCode(53, QStringLiteral("\\\\h\\s")).contains(QStringLiteral("445")));
     QVERIFY(Sync::explainExitCode(1326, QStringLiteral("\\\\h\\s")).contains(QStringLiteral("用户名")));
     QVERIFY(Sync::explainExitCode(9999, QStringLiteral("x")).contains(QStringLiteral("9999")));
+}
+
+void TestSync::probeErrorDistinguishesFailures()
+{
+    {
+        FolderTransport t{QString()};
+        QVERIFY(!t.probe());
+        QVERIFY(t.probeError().contains(QStringLiteral("未设置")));
+    }
+    {
+        QTemporaryDir root;
+        QVERIFY(root.isValid());
+        FolderTransport t(root.filePath(QStringLiteral("不存在的目录")));
+        QVERIFY(!t.probe());
+        QVERIFY(t.probeError().contains(QStringLiteral("不存在")));
+    }
+    {
+        QTemporaryDir root;
+        const QString file = root.filePath(QStringLiteral("plain.txt"));
+        QFile f(file);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write("x");
+        f.close();
+
+        FolderTransport t(file);
+        QVERIFY(!t.probe());
+        QVERIFY(t.probeError().contains(QStringLiteral("不是文件夹")));
+    }
+    {
+        QTemporaryDir root;
+        FolderTransport t(root.path());
+        QVERIFY(t.probe());
+        QVERIFY(t.probeError().isEmpty());
+    }
 }
 
 QTEST_MAIN(TestSync)
