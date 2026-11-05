@@ -237,7 +237,8 @@ Phase 3 剩余（收尾中，写在这里便于续接）：
   `四分支整合方案.md` 是三条支线（plugin-market / qianju / file_guard）合并进 main 的顺序与裁剪清单；
   `分支整合流程.md` 是**长期整合规则**（有分支更新时先跑 `tools/branch-status.ps1` 对表，再按
   已合并 / 可合并 / 冲突 / 历史被改写四种状态分派；已推送分支禁止 rebase/force-push））
-- `docs/reference/` — 参考实现与设计归档（`file_guard/`：M3 安全模块的 Python 原型文档，不进构建）
+- `docs/reference/` — 参考实现与设计归档（`file_guard/`：M3 安全模块的 Python 原型文档，不进构建；
+  可跑代码 + 115 个 unittest 在 `tools/file_guard/`，`run-tests.ps1` 一键跑）
 - `docs/devlog/` — 开发日志（按日期）
 - `docs/features/` — 功能设计 idea
 - `docs/learning/` — 学习笔记
