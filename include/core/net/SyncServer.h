@@ -63,9 +63,31 @@ public:
     /// 默认 5 次 / 60 秒。测试把 lockMs 调小，才不用真等一分钟。
     void setAuthLockPolicy(int maxFailures, int lockMs);
 
+    /// 配对成功后要落库的东西（回调在服务端线程里执行）。
+    struct PairedDevice
+    {
+        QString    deviceId;
+        QString    name;
+        QString    fingerprint;   ///< 客户端自报的证书指纹，只作标识（Schannel 客户端不出示证书）
+        QByteArray secret;        ///< 32 字节设备口令，此后用于挑战应答
+        qint64     pairedAt = 0;
+    };
+    using PairSink = std::function<void(const PairedDevice &)>;
+
+    /// 打开配对窗口并返回 6 位码：一次性，配对成功或超时即关闭（设计 §4.2）。
+    QString openPairingWindow(int timeoutSeconds = 300);
+    void closePairingWindow();
+    bool pairingOpen() const;
+
+    /// 配对成功时调用；host 侧把它接到 `SyncDatabase::upsertDevice()`。
+    void setPairSink(PairSink sink);
+    /// 一个窗口内允许输错几次配对码，默认 3。
+    void setPairingAttemptLimit(int attempts);
+
 signals:
     void clientAuthenticated(const QString &deviceId);
     void authFailed(const QString &deviceId);
+    void devicePaired(const QString &deviceId);
 
 private:
     class Connection;
@@ -78,6 +100,8 @@ private:
     void handleFrame(Connection &conn, const struct Frame &frame);
     void handleHello(Connection &conn, const struct Frame &frame);
     void handleAuth(Connection &conn, const struct Frame &frame);
+    void handlePairHello(Connection &conn, const struct Frame &frame);
+    void handlePairProof(Connection &conn, const struct Frame &frame);
     void handleList(Connection &conn, const struct Frame &frame);
     void handleGet(Connection &conn, const struct Frame &frame);
     void handlePut(Connection &conn, const struct Frame &frame);
@@ -129,6 +153,13 @@ private:
     QHash<QString, FailureRecord> m_failures;
     int                           m_maxAuthFailures = 5;
     int                           m_authLockMs      = 60 * 1000;
+
+    /// 配对窗口：6 位码 + 截止时刻 + 已错次数（一次性，成功即清空）。
+    QString m_pairCode;
+    qint64  m_pairExpiresMs    = 0;
+    int     m_pairAttempts     = 0;
+    int     m_pairAttemptLimit = 3;
+    PairSink m_pairSink;
 };
 
 } // namespace Sync::Net

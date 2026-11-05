@@ -16,6 +16,11 @@ enum class FrameType : quint8 {
     Challenge = 0x02,
     Auth = 0x03,
     HelloAck = 0x04,
+    // 配对（设计 §4.2）：只有 host 打开配对窗口时才接受，成功后立刻断开重连认证
+    PairHello = 0x05,
+    PairChallenge = 0x06,
+    PairProof = 0x07,
+    PairResult = 0x08,
     List = 0x10,
     ListResp = 0x11,
     Get = 0x20,

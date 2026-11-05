@@ -1,10 +1,14 @@
+#include "core/net/DeviceAuth.h"
 #include "core/net/Identity.h"
 #include "core/net/NetTransport.h"
+#include "core/net/PairingClient.h"
 #include "core/net/SyncServer.h"
 
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QMutex>
+#include <QMutexLocker>
 #include <QTemporaryDir>
 #include <QThread>
 #include <QtTest>
@@ -38,17 +42,42 @@ public:
     QString             sharedRoot;
     QString             deviceId;
     QByteArray          secret;
+    bool                openPairing = false;
     std::atomic<quint16> port{0};
     QString             failure;
 
+    /// 服务端线程写、主线程读：不加锁读 QString 是数据竞争
+    QMutex     mutex;
+    QString    pairCode;
+    QString    pairedDeviceId;
+    QByteArray pairedSecret;
+
+    QByteArray knownSecret(const QString &id)
+    {
+        QMutexLocker lock(&mutex);
+        if (!deviceId.isEmpty() && id == deviceId)
+            return secret;
+        if (!pairedDeviceId.isEmpty() && id == pairedDeviceId)
+            return pairedSecret;
+        return QByteArray();
+    }
+
     void run() override
     {
-        Sync::Net::SyncServer server(identity, [this](const QString &id) {
-            return id == deviceId ? secret : QByteArray();
+        Sync::Net::SyncServer server(identity,
+                                     [this](const QString &id) { return knownSecret(id); });
+        server.setPairSink([this](const Sync::Net::SyncServer::PairedDevice &device) {
+            QMutexLocker lock(&mutex);
+            pairedDeviceId = device.deviceId;
+            pairedSecret   = device.secret;
         });
         if (!server.listen(0, sharedRoot)) {
             failure = server.lastError();
             return;
+        }
+        if (openPairing) {
+            QMutexLocker lock(&mutex);
+            pairCode = server.openPairingWindow(60);
         }
         port = server.port();
         exec();
@@ -71,6 +100,7 @@ private slots:
     void fetchWritesFile();
     void pushUploadsFile();
     void removeRemoteMovesToTrash();
+    void pairingClientObtainsSecret();
 
 private:
     Sync::Net::NetPeer peer() const;
@@ -199,6 +229,60 @@ void TestNetTransport::removeRemoteMovesToTrash()
     Sync::Net::NetTransport transport(peer());
     QVERIFY2(transport.removeRemote(QStringLiteral("docs/b.txt")), qPrintable(transport.lastError()));
     QVERIFY(!QFile::exists(target));
+}
+
+void TestNetTransport::pairingClientObtainsSecret()
+{
+    ServerRunner runner;
+    runner.identity    = m_serverIdentity;
+    runner.sharedRoot  = m_sharedRoot;
+    runner.openPairing = true;
+    runner.start();
+
+    QTRY_VERIFY_WITH_TIMEOUT(runner.port.load() != 0 || !runner.failure.isEmpty(), 5000);
+    QVERIFY2(runner.failure.isEmpty(), qPrintable(runner.failure));
+
+    QString code;
+    {
+        QMutexLocker lock(&runner.mutex);
+        code = runner.pairCode;
+    }
+    QCOMPARE(code.size(), 6);
+
+    Sync::Net::NetPeer candidate;
+    candidate.host       = QStringLiteral("127.0.0.1");
+    candidate.port       = runner.port.load();
+    candidate.deviceId   = QStringLiteral("client-paired");
+    candidate.timeoutMs  = 5000;
+
+    // 错的码必须被拒——而且窗口不能因此关掉（默认允许错 3 次）
+    const auto wrong = Sync::Net::pairWithHost(candidate, QStringLiteral("000001"),
+                                               QStringLiteral("laptop"),
+                                               QStringLiteral("client-fingerprint"));
+    QVERIFY(!wrong.ok);
+    QVERIFY2(wrong.error.contains(QStringLiteral("配对码")), qPrintable(wrong.error));
+
+    const auto paired = Sync::Net::pairWithHost(candidate, code, QStringLiteral("laptop"),
+                                                QStringLiteral("client-fingerprint"));
+    QVERIFY2(paired.ok, qPrintable(paired.error));
+    QCOMPARE(paired.deviceSecret.size(), Sync::Net::kDeviceSecretSize);
+    QCOMPARE(paired.serverFingerprint, m_serverIdentity.fingerprint);
+
+    // 配对拿到的口令必须是真能用的：走完整的 Hello/Challenge/Auth
+    Sync::Net::NetPeer authed = candidate;
+    authed.deviceSecret        = paired.deviceSecret;
+    authed.expectedFingerprint = paired.serverFingerprint;
+    Sync::Net::NetTransport transport(authed);
+
+    const QList<Sync::RemoteFileInfo> files = transport.listRemote();
+    QVERIFY2(!files.isEmpty(), qPrintable(transport.lastError()));
+    QStringList paths;
+    for (const Sync::RemoteFileInfo &file : files)
+        paths.append(file.relPath);
+    QVERIFY2(paths.contains(QStringLiteral("docs/a.txt")), qPrintable(paths.join(',')));
+
+    runner.quit();
+    QVERIFY(runner.wait(5000));
 }
 
 QTEST_MAIN(TestNetTransport)

@@ -122,6 +122,8 @@ private slots:
     void pingPongRoundTrip();
     void authFailuresLockPeer();
     void indexIsUsedAcrossRestart();
+    void pairingIssuesSecretOnce();
+    void pairingWrongCodeClosesWindow();
 
 private:
     bool startServer(const QString &root);
@@ -540,6 +542,162 @@ void TestNetServer::indexIsUsedAcrossRestart()
     const QJsonObject files = QJsonDocument::fromJson(indexFile.readAll()).object()
                                   .value(QStringLiteral("files")).toObject();
     QVERIFY(!files.contains(QStringLiteral("readme.md")));
+}
+
+void TestNetServer::pairingIssuesSecretOnce()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    QVERIFY(startServer(root.path()));
+
+    // 配对成功后由 host 落库：测试里用一张内存表代替 sync.db
+    QHash<QString, QByteArray> paired;
+    auto secret = [&paired](const QString &deviceId) { return paired.value(deviceId); };
+
+    SyncServer server(m_serverIdentity, secret);
+    server.setPairSink([&paired](const SyncServer::PairedDevice &device) {
+        paired.insert(device.deviceId, device.secret);
+    });
+    QVERIFY2(server.listen(0, root.path()), qPrintable(server.lastError()));
+
+    QSignalSpy pairedSpy(&server, &SyncServer::devicePaired);
+
+    const QString code = server.openPairingWindow(60);
+    QCOMPARE(code.size(), 6);
+    QVERIFY(server.pairingOpen());
+
+    TestClient client;
+    QVERIFY(client.connectTo(server.port(), m_clientIdentity));
+
+    QJsonObject hello;
+    hello.insert(QStringLiteral("deviceId"), QStringLiteral("dev-new"));
+    hello.insert(QStringLiteral("name"), QStringLiteral("laptop"));
+    hello.insert(QStringLiteral("fingerprint"), m_clientIdentity.fingerprint);
+    QVERIFY(client.send(makeJsonFrame(FrameType::PairHello, 1, hello)));
+
+    Frame challenge;
+    QVERIFY(client.read(&challenge));
+    QCOMPARE(challenge.type, FrameType::PairChallenge);
+    QCOMPARE(challenge.payload.size(), kChallengeSize);
+
+    Frame proof;
+    proof.type  = FrameType::PairProof;
+    proof.flags = quint16(FrameFlag::FlagBlob);
+    proof.reqId = 2;
+    proof.payload = pairingProof(code, challenge.payload, m_serverIdentity.fingerprint,
+                                 m_clientIdentity.fingerprint);
+    QVERIFY(client.send(proof));
+
+    Frame result;
+    QVERIFY(client.read(&result));
+    QCOMPARE(result.type, FrameType::PairResult);
+    const QJsonObject resultObj = QJsonDocument::fromJson(result.payload).object();
+    QCOMPARE(resultObj.value(QStringLiteral("deviceId")).toString(), QStringLiteral("dev-new"));
+    QCOMPARE(resultObj.value(QStringLiteral("serverFingerprint")).toString(),
+             m_serverIdentity.fingerprint);
+
+    const QByteArray deviceSecret =
+        QByteArray::fromBase64(resultObj.value(QStringLiteral("secret")).toString().toLatin1());
+    QCOMPARE(deviceSecret.size(), kDeviceSecretSize);
+
+    // 一次性：配对成功立刻关窗
+    QVERIFY(!server.pairingOpen());
+    QCOMPARE(pairedSpy.count(), 1);
+    QVERIFY(paired.contains(QStringLiteral("dev-new")));
+
+    // 拿新口令走正常认证，证明配对产出真的能用
+    TestClient authed;
+    QVERIFY(authed.connectTo(server.port(), m_clientIdentity));
+    QJsonObject authHello;
+    authHello.insert(QStringLiteral("deviceId"), QStringLiteral("dev-new"));
+    QVERIFY(authed.send(makeJsonFrame(FrameType::Hello, 11, authHello)));
+
+    Frame authChallenge;
+    QVERIFY(authed.read(&authChallenge));
+    QCOMPARE(authChallenge.type, FrameType::Challenge);
+
+    Frame auth;
+    auth.type  = FrameType::Auth;
+    auth.flags = quint16(FrameFlag::FlagBlob);
+    auth.reqId = 12;
+    auth.payload = challengeResponse(deviceSecret, authChallenge.payload,
+                                     QStringLiteral("dev-new"), m_serverIdentity.fingerprint);
+    QVERIFY(authed.send(auth));
+
+    Frame ack;
+    QVERIFY(authed.read(&ack));
+    QCOMPARE(ack.type, FrameType::HelloAck);
+
+    // 窗口关掉之后再配必须被拒
+    TestClient late;
+    QVERIFY(late.connectTo(server.port(), m_clientIdentity));
+    QVERIFY(late.send(makeJsonFrame(FrameType::PairHello, 21, hello)));
+    Frame closed;
+    QVERIFY(late.read(&closed));
+    QCOMPARE(closed.type, FrameType::Error);
+    QCOMPARE(QJsonDocument::fromJson(closed.payload).object()
+                 .value(QStringLiteral("code")).toString(),
+             QStringLiteral("PAIRING_CLOSED"));
+}
+
+void TestNetServer::pairingWrongCodeClosesWindow()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    QVERIFY(startServer(root.path()));
+
+    auto secret = [](const QString &) { return QByteArray(); };
+    SyncServer server(m_serverIdentity, secret);
+    server.setPairingAttemptLimit(2);
+    QVERIFY2(server.listen(0, root.path()), qPrintable(server.lastError()));
+
+    const QString code = server.openPairingWindow(60);
+
+    auto tryPair = [&](const QString &usedCode, quint32 baseId) {
+        TestClient client;
+        if (!client.connectTo(server.port(), m_clientIdentity))
+            return QStringLiteral("<connect-failed>");
+
+        QJsonObject hello;
+        hello.insert(QStringLiteral("deviceId"), QStringLiteral("dev-wrong"));
+        hello.insert(QStringLiteral("fingerprint"), m_clientIdentity.fingerprint);
+        if (!client.send(makeJsonFrame(FrameType::PairHello, baseId, hello)))
+            return QStringLiteral("<send-failed>");
+
+        Frame challenge;
+        if (!client.read(&challenge))
+            return QStringLiteral("<no-challenge>");
+        if (challenge.type == FrameType::Error)
+            return QJsonDocument::fromJson(challenge.payload).object()
+                .value(QStringLiteral("code")).toString();
+        if (challenge.type != FrameType::PairChallenge)
+            return QStringLiteral("<type-%1>").arg(int(challenge.type));
+
+        Frame proof;
+        proof.type  = FrameType::PairProof;
+        proof.flags = quint16(FrameFlag::FlagBlob);
+        proof.reqId = baseId + 1;
+        proof.payload = pairingProof(usedCode, challenge.payload, m_serverIdentity.fingerprint,
+                                     m_clientIdentity.fingerprint);
+        if (!client.send(proof))
+            return QStringLiteral("<send-failed>");
+
+        Frame reply;
+        if (!client.read(&reply))
+            return QStringLiteral("<no-reply>");
+        if (reply.type != FrameType::Error)
+            return QStringLiteral("<type-%1>").arg(int(reply.type));
+        return QJsonDocument::fromJson(reply.payload).object()
+            .value(QStringLiteral("code")).toString();
+    };
+
+    QCOMPARE(tryPair(QStringLiteral("000000"), 1), QStringLiteral("PAIR_CODE_MISMATCH"));
+    QVERIFY(server.pairingOpen());   // 才错一次，窗口还在
+    QCOMPARE(tryPair(QStringLiteral("111111"), 10), QStringLiteral("PAIR_CODE_MISMATCH"));
+    QVERIFY(!server.pairingOpen());  // 错够次数就关窗
+
+    // 窗口关掉后，即使配对码正确也进不去
+    QCOMPARE(tryPair(code, 20), QStringLiteral("PAIRING_CLOSED"));
 }
 
 QTEST_MAIN(TestNetServer)

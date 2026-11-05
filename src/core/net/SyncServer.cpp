@@ -74,7 +74,7 @@ public:
 class SyncServer::Connection
 {
 public:
-    enum class State { AwaitHello, AwaitAuth, Ready };
+    enum class State { AwaitHello, AwaitAuth, AwaitPairProof, Ready };
 
     QSslSocket  *socket = nullptr;
     FrameDecoder decoder;
@@ -82,6 +82,8 @@ public:
     QByteArray   nonce;
     QString      deviceId;
     QString      peer;      // 对端 IP，认证失败限速按它计数
+    QString      clientName;
+    QString      clientFingerprint;   // 客户端自报，仅作标识
 
     // Put 的落盘状态：先写 .assistant-part，校验通过才改名成正式文件
     QString      putRelPath;
@@ -189,6 +191,37 @@ void SyncServer::setAuthLockPolicy(int maxFailures, int lockMs)
     m_authLockMs      = lockMs > 0 ? lockMs : 1;
 }
 
+QString SyncServer::openPairingWindow(int timeoutSeconds)
+{
+    m_pairCode      = randomPairingCode();
+    m_pairExpiresMs = QDateTime::currentMSecsSinceEpoch()
+                      + qint64(timeoutSeconds > 0 ? timeoutSeconds : 1) * 1000;
+    m_pairAttempts = 0;
+    return m_pairCode;
+}
+
+void SyncServer::closePairingWindow()
+{
+    m_pairCode.clear();
+    m_pairExpiresMs = 0;
+    m_pairAttempts  = 0;
+}
+
+bool SyncServer::pairingOpen() const
+{
+    return !m_pairCode.isEmpty() && QDateTime::currentMSecsSinceEpoch() < m_pairExpiresMs;
+}
+
+void SyncServer::setPairSink(PairSink sink)
+{
+    m_pairSink = std::move(sink);
+}
+
+void SyncServer::setPairingAttemptLimit(int attempts)
+{
+    m_pairAttemptLimit = attempts > 0 ? attempts : 1;
+}
+
 void SyncServer::adoptSocket(QSslSocket *socket)
 {
     auto conn = std::make_shared<Connection>();
@@ -253,6 +286,10 @@ void SyncServer::handleFrame(Connection &conn, const Frame &frame)
     }
 
     if (conn.state == Connection::State::AwaitHello) {
+        if (frame.type == FrameType::PairHello) {
+            handlePairHello(conn, frame);
+            return;
+        }
         if (frame.type != FrameType::Hello) {
             sendError(conn, frame.reqId, QStringLiteral("EXPECTED_HELLO"),
                       QStringLiteral("首帧必须是 Hello"));
@@ -260,6 +297,17 @@ void SyncServer::handleFrame(Connection &conn, const Frame &frame)
             return;
         }
         handleHello(conn, frame);
+        return;
+    }
+
+    if (conn.state == Connection::State::AwaitPairProof) {
+        if (frame.type != FrameType::PairProof) {
+            sendError(conn, frame.reqId, QStringLiteral("EXPECTED_PAIR_PROOF"),
+                      QStringLiteral("配对挑战之后必须是 PairProof"));
+            conn.socket->disconnectFromHost();
+            return;
+        }
+        handlePairProof(conn, frame);
         return;
     }
 
@@ -350,9 +398,83 @@ void SyncServer::handleAuth(Connection &conn, const Frame &frame)
     emit clientAuthenticated(conn.deviceId);
 }
 
+void SyncServer::handlePairHello(Connection &conn, const Frame &frame)
+{
+    if (!pairingOpen()) {
+        sendError(conn, frame.reqId, QStringLiteral("PAIRING_CLOSED"),
+                  QStringLiteral("主机没有打开配对窗口，或窗口已过期"));
+        conn.socket->disconnectFromHost();
+        return;
+    }
+
+    const QJsonObject obj = QJsonDocument::fromJson(frame.payload).object();
+    const QString deviceId = obj.value(QStringLiteral("deviceId")).toString();
+    const QString fingerprint = obj.value(QStringLiteral("fingerprint")).toString();
+    if (deviceId.isEmpty() || fingerprint.isEmpty()) {
+        sendError(conn, frame.reqId, QStringLiteral("BAD_PAIR_HELLO"),
+                  QStringLiteral("PairHello 缺 deviceId 或 fingerprint"));
+        conn.socket->disconnectFromHost();
+        return;
+    }
+
+    conn.deviceId          = deviceId;
+    conn.clientName        = obj.value(QStringLiteral("name")).toString();
+    conn.clientFingerprint = fingerprint;
+    conn.nonce             = randomBytes(kChallengeSize);
+    conn.state             = Connection::State::AwaitPairProof;
+
+    send(conn, static_cast<quint8>(FrameType::PairChallenge), frame.reqId, conn.nonce);
+}
+
+void SyncServer::handlePairProof(Connection &conn, const Frame &frame)
+{
+    const QByteArray expected =
+        pairingProof(m_pairCode, conn.nonce, m_identity.fingerprint, conn.clientFingerprint);
+
+    if (!verifyChallengeResponse(expected, frame.payload)) {
+        ++m_pairAttempts;
+        const bool exhausted = m_pairAttempts >= m_pairAttemptLimit;
+        if (exhausted)
+            closePairingWindow();   // 错够次数就关窗，逼用户重开一个窗口
+        sendError(conn, frame.reqId, QStringLiteral("PAIR_CODE_MISMATCH"),
+                  exhausted ? QStringLiteral("配对码错误次数过多，请重新开始配对")
+                            : QStringLiteral("配对码不正确"));
+        conn.socket->disconnectFromHost();
+        return;
+    }
+
+    PairedDevice device;
+    device.deviceId    = conn.deviceId;
+    device.name        = conn.clientName;
+    device.fingerprint = conn.clientFingerprint;
+    device.secret      = randomBytes(kDeviceSecretSize);
+    device.pairedAt    = QDateTime::currentSecsSinceEpoch();
+
+    // 一次性：先关窗再落库，任何一步失败都不会让同一个码再用一次
+    closePairingWindow();
+    if (m_pairSink)
+        m_pairSink(device);
+
+    QJsonObject result;
+    result.insert(QStringLiteral("ok"), true);
+    result.insert(QStringLiteral("deviceId"), device.deviceId);
+    result.insert(QStringLiteral("serverFingerprint"), m_identity.fingerprint);
+    result.insert(QStringLiteral("protocol"), kVersion);
+    result.insert(QStringLiteral("secret"),
+                  QString::fromLatin1(device.secret.toBase64()));
+    send(conn, static_cast<quint8>(FrameType::PairResult), frame.reqId, toJson(result));
+
+    conn.nonce.fill('\0');
+    conn.nonce.clear();
+    emit devicePaired(device.deviceId);
+    // 配对与同步分开：客户端拿口令重连后走 Hello/Auth，服务端状态机保持简单
+    conn.socket->disconnectFromHost();
+}
+
 void SyncServer::handleList(Connection &conn, const Frame &frame)
 {
     const QJsonObject request = QJsonDocument::fromJson(frame.payload).object();
+
     int cursor = request.value(QStringLiteral("cursor")).toInt(0);
     int limit  = request.value(QStringLiteral("limit")).toInt(kDefaultPage);
     if (cursor < 0)

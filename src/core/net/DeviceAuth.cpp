@@ -8,6 +8,7 @@ namespace Sync::Net {
 namespace {
 
 const char kDomainTag[] = "ASYN-AUTH-V1";
+const char kPairDomainTag[] = "ASYN-PAIR-V1";
 
 void appendField(QByteArray *message, const QByteArray &value)
 {
@@ -57,6 +58,22 @@ bool verifyChallengeResponse(const QByteArray &expected, const QByteArray &actua
     for (int index = 0; index < expected.size(); ++index)
         difference |= uchar(expected.at(index) ^ actual.at(index));
     return difference == 0;
+}
+
+QByteArray pairingProof(const QString &code, const QByteArray &nonce,
+                        const QString &serverFingerprint, const QString &clientFingerprint)
+{
+    QByteArray message(kPairDomainTag);
+    appendField(&message, nonce);
+    appendField(&message, serverFingerprint.toUtf8());
+    appendField(&message, clientFingerprint.toUtf8());
+    return hmacSha256(code.toUtf8(), message);
+}
+
+QString randomPairingCode()
+{
+    const quint32 value = QRandomGenerator::system()->bounded(1000000u);
+    return QStringLiteral("%1").arg(value, 6, 10, QLatin1Char('0'));
 }
 
 QByteArray randomBytes(int size)

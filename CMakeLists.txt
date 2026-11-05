@@ -396,6 +396,7 @@ add_executable(assistant_net_transport_tests
     include/core/net/SyncServer.h
     src/core/net/SyncServer.cpp
     src/core/net/NetTransport.cpp
+    src/core/net/PairingClient.cpp
     src/core/net/SyncFrame.cpp
     src/core/net/Identity.cpp
     src/core/net/DeviceAuth.cpp

@@ -21,6 +21,14 @@ QByteArray challengeResponse(const QByteArray &deviceSecret, const QByteArray &n
 /// 定长比较，长度不等直接 false；不提前返回，避免按字节泄露。
 bool verifyChallengeResponse(const QByteArray &expected, const QByteArray &actual);
 
+/// 配对证明 = HMAC-SHA256(6 位配对码, "ASYN-PAIR-V1" ‖ nonce ‖ 服务端指纹 ‖ 客户端指纹)。
+/// 配对码由 host 显示、用户口述给客户端，走带外通道；TLS 只负责传输不被窃听。
+QByteArray pairingProof(const QString &code, const QByteArray &nonce,
+                        const QString &serverFingerprint, const QString &clientFingerprint);
+
+/// 6 位配对码（含前导零），共 10^6 种。
+QString randomPairingCode();
+
 QByteArray randomBytes(int size);
 
 } // namespace Sync::Net
