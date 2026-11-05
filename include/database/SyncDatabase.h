@@ -21,6 +21,19 @@ struct ConflictRecord
     bool    resolved   = false;
 };
 
+/// 已配对设备（对应 devices 表一行）。
+///
+/// secret 是配对时通过 SAS 通道交换的 32 字节对称口令：host 用它验客户端的
+/// 挑战应答；泄露即等于可冒充该设备（设计 §4.3 的已知取舍）。
+struct DeviceRecord
+{
+    QString    deviceId;
+    QString    fingerprint;     // 对端证书的 SHA-256，小写 hex
+    QByteArray secret;
+    qint64     pairedAt    = 0;
+    qint64     lastSeenAt  = 0;
+};
+
 /// sync.db 访问层。
 ///
 /// 连接名由构造参数指定而非写死：QSqlDatabase 连接不可跨线程使用，
@@ -52,6 +65,13 @@ public:
     bool isReceived(const QString &relPath) const;
     bool markReceived(const QString &relPath, const QString &hash);
     QSet<QString> receivedPaths() const;
+
+    // ---- devices（直连通道已配对设备）----
+    bool upsertDevice(const DeviceRecord &rec);
+    std::optional<DeviceRecord> device(const QString &deviceId) const;
+    QList<DeviceRecord> allDevices() const;
+    bool removeDevice(const QString &deviceId);
+    bool touchDevice(const QString &deviceId, qint64 seenAt);
 
 private:
     bool createSchema();

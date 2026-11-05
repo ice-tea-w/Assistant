@@ -77,9 +77,11 @@ private slots:
     void pathGuard_data();
     void pathGuard();
     void resolveUnderStaysInsideRoot();
+    void ensureDirUnderCreatesSegments();
 
     void databaseBaseline();
     void databaseConflicts();
+    void databaseDevices();
 
     void folderTransportRoundTrip();
     void folderTransportRejectsTraversal();
@@ -287,6 +289,26 @@ void TestSync::resolveUnderStaysInsideRoot()
     QVERIFY(PathGuard::resolveUnder(root.path(), "nodir/a.txt").isEmpty());
 }
 
+void TestSync::ensureDirUnderCreatesSegments()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+
+    // 逐段创建：目录本来不存在也要能建出来（收文件时的常态）
+    const QString created = PathGuard::ensureDirUnder(root.path(), "work/sub");
+    QVERIFY(!created.isEmpty());
+    QCOMPARE(QFileInfo(created).canonicalFilePath(),
+             QFileInfo(root.path() + "/work/sub").canonicalFilePath());
+
+    // 幂等：再调一次拿回同一个目录
+    QCOMPARE(PathGuard::ensureDirUnder(root.path(), "work/sub"), created);
+
+    // 不安全路径不建任何东西
+    QVERIFY(PathGuard::ensureDirUnder(root.path(), "../escape").isEmpty());
+    QVERIFY(!QFile::exists(root.path() + "/../escape"));
+    QVERIFY(PathGuard::ensureDirUnder(root.path(), "C:/Windows/x").isEmpty());
+}
+
 // ---------------------------------------------------------------- 基线存储
 
 void TestSync::databaseBaseline()
@@ -354,6 +376,50 @@ void TestSync::databaseConflicts()
     QCOMPARE(list.first().resolved, true);
 
     db.close();
+}
+
+void TestSync::databaseDevices()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    SyncDatabase db(QStringLiteral("test_devices"));
+    QVERIFY(db.open(dir.path() + "/sync.db"));
+    QVERIFY(db.allDevices().isEmpty());
+
+    DeviceRecord rec;
+    rec.deviceId    = QStringLiteral("dev-a1b2c3");
+    rec.fingerprint = QStringLiteral("9f2c");
+    rec.secret      = QByteArray(32, '\x2a');
+    rec.pairedAt    = 1760000000;
+    QVERIFY(db.upsertDevice(rec));
+
+    const auto got = db.device(QStringLiteral("dev-a1b2c3"));
+    QVERIFY(got.has_value());
+    QCOMPARE(got->fingerprint, QStringLiteral("9f2c"));
+    QCOMPARE(got->secret, QByteArray(32, '\x2a'));   // BLOB 原样往返，不被截断
+    QCOMPARE(got->pairedAt, qint64(1760000000));
+    QCOMPARE(got->lastSeenAt, qint64(0));
+    QVERIFY(!db.device(QStringLiteral("dev-missing")).has_value());
+
+    // 再配对同一台设备 → 覆盖，不新增
+    rec.secret = QByteArray(32, '\x7f');
+    QVERIFY(db.upsertDevice(rec));
+    QCOMPARE(db.allDevices().size(), 1);
+    QCOMPARE(db.device(QStringLiteral("dev-a1b2c3"))->secret, QByteArray(32, '\x7f'));
+
+    QVERIFY(db.touchDevice(QStringLiteral("dev-a1b2c3"), 1760000999));
+    QCOMPARE(db.device(QStringLiteral("dev-a1b2c3"))->lastSeenAt, qint64(1760000999));
+
+    QVERIFY(db.removeDevice(QStringLiteral("dev-a1b2c3")));
+    QVERIFY(db.allDevices().isEmpty());
+
+    // 重开同一份库：建表是幂等的，旧库升级也不会丢已有表
+    db.close();
+    SyncDatabase again(QStringLiteral("test_devices_reopen"));
+    QVERIFY(again.open(dir.path() + "/sync.db"));
+    QVERIFY(again.allDevices().isEmpty());
+    again.close();
 }
 
 // ---------------------------------------------------------------- 共享目录通道

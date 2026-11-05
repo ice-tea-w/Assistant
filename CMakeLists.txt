@@ -369,3 +369,68 @@ target_link_libraries(assistant_net_auth_tests PRIVATE Qt6::Core Qt6::Test)
 add_test(NAME net_auth COMMAND assistant_net_auth_tests)
 set_tests_properties(net_auth PROPERTIES
     ENVIRONMENT "PATH=${VCPKG_BIN_DIR};${VCPKG_DBG_BIN_DIR};$ENV{PATH}")
+
+# ---- N2：SyncServer（认证 + List 分页，回环客户端驱动）----
+add_executable(assistant_net_server_tests
+    tests/test_net_server.cpp
+    # Q_OBJECT 头必须列进目标源，否则 AUTOMOC 不会为它生成 moc
+    include/core/net/SyncServer.h
+    src/core/net/SyncServer.cpp
+    src/core/net/SyncFrame.cpp
+    src/core/net/Identity.cpp
+    src/core/net/DeviceAuth.cpp
+    src/core/sync/PathGuard.cpp
+)
+target_include_directories(assistant_net_server_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(assistant_net_server_tests PRIVATE
+    Qt6::Core Qt6::Network Qt6::Test
+    bcrypt crypt32)
+
+add_test(NAME net_server COMMAND assistant_net_server_tests)
+set_tests_properties(net_server PROPERTIES
+    ENVIRONMENT "PATH=${VCPKG_BIN_DIR};${VCPKG_DBG_BIN_DIR};$ENV{PATH}")
+
+# ---- N2：NetTransport（阻塞式客户端 + 独立线程里的 SyncServer）----
+add_executable(assistant_net_transport_tests
+    tests/test_net_transport.cpp
+    include/core/net/SyncServer.h
+    src/core/net/SyncServer.cpp
+    src/core/net/NetTransport.cpp
+    src/core/net/SyncFrame.cpp
+    src/core/net/Identity.cpp
+    src/core/net/DeviceAuth.cpp
+    src/core/sync/PathGuard.cpp
+)
+target_include_directories(assistant_net_transport_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(assistant_net_transport_tests PRIVATE
+    Qt6::Core Qt6::Network Qt6::Test
+    bcrypt crypt32)
+
+add_test(NAME net_transport COMMAND assistant_net_transport_tests)
+set_tests_properties(net_transport PROPERTIES
+    ENVIRONMENT "PATH=${VCPKG_BIN_DIR};${VCPKG_DBG_BIN_DIR};$ENV{PATH}")
+# ---- N2：SyncEngine + NetTransport 回环真同步（引擎一行不改）----
+add_executable(assistant_net_engine_tests
+    tests/test_net_engine.cpp
+    src/core/Logger.cpp
+    include/core/sync/SyncEngine.h
+    src/core/sync/SyncEngine.cpp
+    src/core/sync/ConflictResolver.cpp
+    src/core/sync/PathGuard.cpp
+    src/database/SyncDatabase.cpp
+    include/core/net/SyncServer.h
+    src/core/net/SyncServer.cpp
+    src/core/net/NetTransport.cpp
+    src/core/net/SyncFrame.cpp
+    src/core/net/Identity.cpp
+    src/core/net/DeviceAuth.cpp
+)
+target_include_directories(assistant_net_engine_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(assistant_net_engine_tests PRIVATE
+    Qt6::Core Qt6::Network Qt6::Sql Qt6::Test
+    bcrypt crypt32
+    spdlog::spdlog nlohmann_json::nlohmann_json)
+
+add_test(NAME net_engine COMMAND assistant_net_engine_tests)
+set_tests_properties(net_engine PROPERTIES
+    ENVIRONMENT "PATH=${VCPKG_BIN_DIR};${VCPKG_DBG_BIN_DIR};$ENV{PATH}")

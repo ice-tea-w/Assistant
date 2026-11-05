@@ -34,6 +34,14 @@ const char *kSchema[] = {
         rel_path    TEXT PRIMARY KEY,
         hash        TEXT NOT NULL,
         received_at INTEGER NOT NULL
+    ))",
+
+    R"(CREATE TABLE IF NOT EXISTS devices (
+        device_id    TEXT PRIMARY KEY,
+        fingerprint  TEXT NOT NULL,
+        secret       BLOB NOT NULL,
+        paired_at    INTEGER NOT NULL,
+        last_seen_at INTEGER NOT NULL DEFAULT 0
     ))"
 };
 
@@ -240,4 +248,84 @@ QSet<QString> SyncDatabase::receivedPaths() const
     while (q.next())
         out.insert(q.value(0).toString());
     return out;
+}
+
+// ---- devices ----
+
+bool SyncDatabase::upsertDevice(const DeviceRecord &rec)
+{
+    QSqlQuery q(m_db);
+    q.prepare(QStringLiteral(
+        "INSERT INTO devices (device_id, fingerprint, secret, paired_at, last_seen_at) "
+        "VALUES (?, ?, ?, ?, ?) "
+        "ON CONFLICT(device_id) DO UPDATE SET fingerprint=excluded.fingerprint, "
+        "secret=excluded.secret, paired_at=excluded.paired_at, last_seen_at=excluded.last_seen_at"));
+    q.addBindValue(rec.deviceId);
+    q.addBindValue(rec.fingerprint);
+    q.addBindValue(rec.secret);
+    q.addBindValue(rec.pairedAt);
+    q.addBindValue(rec.lastSeenAt);
+    if (!q.exec()) {
+        Logger::get().warn("SyncDatabase: upsertDevice {} failed — {}",
+                           rec.deviceId.toStdString(), q.lastError().text().toStdString());
+        return false;
+    }
+    return true;
+}
+
+std::optional<DeviceRecord> SyncDatabase::device(const QString &deviceId) const
+{
+    QSqlQuery q(m_db);
+    q.prepare(QStringLiteral(
+        "SELECT device_id, fingerprint, secret, paired_at, last_seen_at "
+        "FROM devices WHERE device_id = ?"));
+    q.addBindValue(deviceId);
+    if (!q.exec() || !q.next())
+        return std::nullopt;
+
+    DeviceRecord rec;
+    rec.deviceId    = q.value(0).toString();
+    rec.fingerprint = q.value(1).toString();
+    rec.secret      = q.value(2).toByteArray();
+    rec.pairedAt    = q.value(3).toLongLong();
+    rec.lastSeenAt  = q.value(4).toLongLong();
+    return rec;
+}
+
+QList<DeviceRecord> SyncDatabase::allDevices() const
+{
+    QList<DeviceRecord> out;
+    QSqlQuery q(m_db);
+    if (!q.exec(QStringLiteral(
+            "SELECT device_id, fingerprint, secret, paired_at, last_seen_at "
+            "FROM devices ORDER BY paired_at DESC")))
+        return out;
+
+    while (q.next()) {
+        DeviceRecord rec;
+        rec.deviceId    = q.value(0).toString();
+        rec.fingerprint = q.value(1).toString();
+        rec.secret      = q.value(2).toByteArray();
+        rec.pairedAt    = q.value(3).toLongLong();
+        rec.lastSeenAt  = q.value(4).toLongLong();
+        out.append(rec);
+    }
+    return out;
+}
+
+bool SyncDatabase::removeDevice(const QString &deviceId)
+{
+    QSqlQuery q(m_db);
+    q.prepare(QStringLiteral("DELETE FROM devices WHERE device_id = ?"));
+    q.addBindValue(deviceId);
+    return q.exec();
+}
+
+bool SyncDatabase::touchDevice(const QString &deviceId, qint64 seenAt)
+{
+    QSqlQuery q(m_db);
+    q.prepare(QStringLiteral("UPDATE devices SET last_seen_at = ? WHERE device_id = ?"));
+    q.addBindValue(seenAt);
+    q.addBindValue(deviceId);
+    return q.exec();
 }
