@@ -20,6 +20,7 @@ import argparse
 import getpass
 import json
 import os
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -54,7 +55,7 @@ from .crypto import (
 from .errors import FileGuardError, PasswordError
 from .integrity import build_manifest, load_manifest, save_manifest, verify_manifest
 from .scan import SEVERITY_LABEL, SensitiveScanner
-from .watch import DirectoryWatcher, auto_encrypt_idle
+from .watch import DirectoryWatcher, auto_backup_changes, auto_encrypt_idle
 
 PROG = "file_guard"
 PASS_HINT = "密码"
@@ -534,6 +535,8 @@ def cmd_watch(args: argparse.Namespace) -> int:
     audit.record(EVENT_SETTINGS, detail="启动目录监听", roots=[str(p) for p in args.paths])
     if not args.json and not args.quiet:
         print(f"开始监听 {len(args.paths)} 个目录（Ctrl+C 退出）...")
+        if args.auto_backup:
+            print("已开启「监听到改动自动增量备份」：内容没变的文件会按增量规则跳过")
     if args.auto_encrypt is not None:
         idle_seconds = args.auto_encrypt * 60
         results = auto_encrypt_idle(
@@ -548,7 +551,22 @@ def cmd_watch(args: argparse.Namespace) -> int:
         if not args.json and not args.quiet:
             for item in results:
                 print(json.dumps(item, ensure_ascii=False))
-    total = watcher.run(audit, max_cycles=args.cycles)
+    on_changes = None
+    if args.auto_backup:
+        store = _make_backups(cfg, password)
+
+        def on_changes(changes):  # noqa: ANN001 - 回调签名由 DirectoryWatcher.run 约定
+            for item in auto_backup_changes(watcher, store, changes=changes, audit=audit):
+                if args.json or args.quiet:
+                    continue
+                if item.get("error"):
+                    print(f"[备份失败] {item['path']}：{item['error']}")
+                elif item.get("skipped"):
+                    print(f"[备份跳过] {item['path']}（内容未变）")
+                else:
+                    print(f"[备份] {item['path']} -> v{item.get('version')}")
+
+    total = watcher.run(audit, max_cycles=args.cycles, on_changes=on_changes)
     _emit(args, {"changes": total}, f"监听结束，共记录 {total} 个变更")
     return 0
 
@@ -603,6 +621,131 @@ def cmd_integrity(args: argparse.Namespace) -> int:
         )
         return 0 if result["ok"] else 5
     raise FileGuardError("未知的 integrity 子命令")
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
+    """一键自检：数据目录 / 审计链 / 备份索引 / 模块完整性 / 磁盘 / token。
+
+    适合装好环境后、以及"感觉哪里不对"时先跑一遍；输出 JSON 便于主程序展示。
+    """
+    cfg = _load_config(args)
+    checks: list[dict[str, Any]] = []
+
+    def add(name: str, ok: bool, detail: str, level: str = "error") -> None:
+        checks.append({"name": name, "ok": bool(ok), "detail": detail, "level": level})
+
+    # 1) 数据目录可写
+    try:
+        cfg.ensure_dirs()
+        probe = cfg.home / ".write-probe"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        add("数据目录可读写", True, str(cfg.home))
+    except OSError as exc:
+        add("数据目录可读写", False, f"{cfg.home}：{exc}")
+
+    # 2) 配置
+    if cfg.config_file.exists():
+        add("配置文件", True, str(cfg.config_file))
+    else:
+        add("配置文件", True, "未创建（使用默认参数，init 时会生成）", level="info")
+
+    # 3) 磁盘空间
+    try:
+        free = shutil.disk_usage(cfg.home).free
+        add("磁盘剩余空间", free > (64 << 20), f"{free / (1 << 30):.1f} GiB 可用", level="warning")
+    except OSError:
+        add("磁盘剩余空间", True, "无法获取（忽略）", level="info")
+
+    # 4) DPAPI 密码保险箱
+    vault = _vault(cfg)
+    if vault.available():
+        has_vault = vault.path.exists()
+        add(
+            "密码保险箱",
+            True,
+            "已保存密码（免密模式）" if has_vault else "未启用（每次输入密码）",
+            level="info",
+        )
+    else:
+        add("密码保险箱", True, "当前平台无 DPAPI（仅 Windows 可用）", level="info")
+
+    # 5) 需要密码的深度校验
+    password: Union[str, bytes, None] = None
+    try:
+        password = resolve_password(args, cfg)
+    except FileGuardError as exc:
+        add("密码", False, f"无法获取密码，跳过加密数据校验：{exc}")
+
+    if password is not None:
+        try:
+            audit = _make_audit(cfg, password)
+            result = audit.verify()
+            if result["records"] == 0:
+                add("审计日志哈希链", True, "暂无记录（新数据目录）", level="info")
+            elif result["ok"]:
+                add("审计日志哈希链", True, f"{result['records']} 条，链头 {result['head'][:16]}…")
+            else:
+                add("审计日志哈希链", False, "；".join(result["problems"][:2]))
+        except FileGuardError as exc:
+            add("审计日志哈希链", False, f"无法校验：{exc}")
+
+        if cfg.backup_dir.exists():
+            try:
+                store = _make_backups(cfg, password)
+                result = store.verify()
+                if result["ok"]:
+                    add("备份索引哈希链", True, f"索引 {result['index_records']} 条")
+                else:
+                    add("备份索引哈希链", False, "；".join(result["problems"][:2]))
+            except FileGuardError as exc:
+                add("备份索引哈希链", False, f"无法校验：{exc}")
+        else:
+            add("备份库", True, "暂无备份（尚未执行 backup）", level="info")
+
+        # 6) 模块完整性清单（可选）
+        if cfg.integrity_file.exists():
+            try:
+                manifest = load_manifest(cfg.integrity_file)
+                result = verify_manifest(Path(__file__).resolve().parent, manifest, password)
+                if result["ok"]:
+                    add("模块完整性", True, f"{result['checked']} 个文件校验通过")
+                else:
+                    add("模块完整性", False, "；".join(result["problems"][:2]))
+            except FileGuardError as exc:
+                add("模块完整性", False, str(exc))
+        else:
+            add("模块完整性", True, "未建清单（可选：integrity init）", level="info")
+
+    # 7) 本地服务 token
+    add(
+        "本地服务 token",
+        True,
+        "已生成（仅当前用户可读）" if cfg.token_file.exists() else "未生成（首次 serve 时创建）",
+        level="info",
+    )
+
+    errors = [item for item in checks if not item["ok"] and item["level"] == "error"]
+    warnings = [item for item in checks if not item["ok"] and item["level"] == "warning"]
+    payload = {
+        "ok": not errors,
+        "checks": checks,
+        "errors": len(errors),
+        "warnings": len(warnings),
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    elif not args.quiet:
+        icons = {"error": "X", "warning": "!", "info": "-"}
+        for item in checks:
+            mark = "OK" if item["ok"] else icons.get(item["level"], "X")
+            print(f"[{mark:>2}] {item['name']:<12} {item['detail']}")
+        print("-" * 60)
+        if errors:
+            print(f"未通过：{len(errors)} 项错误，{len(warnings)} 项警告")
+        else:
+            print(f"自检通过（{len(checks)} 项，{len(warnings)} 项警告）")
+    return 0 if not errors else 5
 
 
 # ---------------------------------------------------------------------------
@@ -725,8 +868,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--auto-encrypt", type=float, metavar="MIN",
                    help="空闲超过 N 分钟后自动加密（需配合密码/保险箱）")
     p.add_argument("--keep-source", action="store_true", help="自动加密后保留明文（默认删除）")
+    p.add_argument("--auto-backup", action="store_true",
+                   help="监听到新增/修改时自动做增量备份（内容没变会跳过）")
     p.add_argument("--cycles", type=int, help="只轮询 N 轮（调试用）")
     p.set_defaults(func=cmd_watch)
+
+    p = sub.add_parser("doctor", parents=[common],
+                       help="一键自检：数据目录/审计链/备份索引/完整性/磁盘/token")
+    p.set_defaults(func=cmd_doctor)
 
     p = sub.add_parser("serve", parents=[common], help="启动本地 HTTP 服务供桌面助手调用")
     p.add_argument("--host", default="127.0.0.1", help="监听地址（默认只允许回环地址）")

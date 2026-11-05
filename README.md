@@ -1,4 +1,4 @@
-# file_guard · 桌面助手「文件安全模块」Python 参考实现
+﻿# file_guard · 桌面助手「文件安全模块」Python 参考实现
 
 > 对应《桌面助手 — 文件安全模块设计方案》四大子模块（加密解密 / 敏感检测 / 操作审计 / 安全备份），
 > 是一套**能直接跑起来、能接进桌面助手**的最小实现，不是伪代码。
@@ -39,6 +39,12 @@ python -m file_guard backup restore "合同.docx" --version 1
 
 # 7) 作为本地服务跑起来，给桌面助手主程序调用
 python -m file_guard serve --port 8765
+
+# 8) 一键自检（数据目录 / 审计链 / 备份索引 / 完整性 / 磁盘 / token）
+python -m file_guard doctor
+
+# 9) 监听目录：改动自动增量备份（可选再加 --auto-encrypt 30 做空闲自动加密）
+python -m file_guard watch "合同.docx" --auto-backup
 ```
 
 密码来源优先级：`--password` > `--keyfile` > 环境变量 `FG_PASSWORD` > Windows DPAPI 密码保险箱 > 交互输入。
@@ -64,13 +70,16 @@ file_guard/
 │  ├─ service.py     # 本地 HTTP JSON-RPC 服务（独立进程，松耦合，回环 + token + Host/Origin 校验）
 │  ├─ cli.py         # 命令行 / 右键菜单 / 主程序子进程调用入口
 │  └─ config.py      # 目录布局与参数（带类型/范围校验）
-├─ tests/            # 115 个 unittest（含 tests/test_security.py 的安全评审回归用例）
+├─ tests/            # 126 个 unittest（含安全评审回归 test_security.py + 新能力 test_extras.py）
 ├─ examples/demo.py  # 无依赖也能看的完整演示（需要本目录做 sys.path）
 ├─ scripts/install-context-menu.ps1   # Windows 右键菜单注册脚本（需手动执行）
 ├─ scripts/run_acceptance.py          # 临时验收脚本：不接主程序，整链路跑一遍并出报告
+├─ scripts/_capture_run_output.py     # 抓真实终端输出（供截图用）
+├─ scripts/_render_run_screenshot.py  # 把真实输出渲染成终端风格 PNG（需 Pillow）
 ├─ docs/从设计方案到代码.md            # 逐页对照 + 集成方式 + 关键代码讲解
 ├─ docs/安全评审与加固.md              # 安全评审报告：问题清单 / 影响 / 修复 / 残余风险
 ├─ docs/框架临时验证报告.md            # 上次临时验收的结果（52 项，含耗时与人工确认项）
+├─ docs/运行截图/                      # 真实运行效果截图（PNG）+ 原始输出（TXT）+ 重出图说明
 └─ requirements.txt
 ```
 
@@ -81,10 +90,13 @@ file_guard/
 | 文件加密解密（第 6 页） | `crypto.py` | PBKDF2-HMAC-SHA256（600k 次）+ AES-256-GCM；1 MiB 分块流式；每块 AAD 绑定"头 + 块号 + 是否末块" |
 | 密码加密 / 密钥文件两种模式 | `crypto.load_keyfile_material`、`cli keygen` | 32 字节随机密钥文件，取 SHA-256 当口令材料 |
 | 临时解密 / 超时自动重新加密 | `watch.auto_encrypt_idle` | 目录轮询 + 空闲时间阈值 + 成功后删除明文（可选） |
-| 敏感文件检测（第 6 页） | `scan.py` | 正则 + 校验位（身份证 mod 11、银行卡 Luhn）；docx/xlsx/pptx 用 zip+XML 抽文本；风险分高/中/低 |
+| 敏感文件检测（第 6 页） | `scan.py` | 正则 + 校验位（身份证 mod 11、银行卡 Luhn、**统一社会信用代码 mod 31**）；docx/xlsx/pptx 用 zip+XML 抽文本；风险分高/中/低 |
 | 扫描暂停/限速/低优先级 | `scan.ScanControl`、`--throttle`、`--low-priority` | 协作式暂停/停止 + 令牌桶限速 + Windows 进程优先级 |
 | 操作审计日志（第 7 页） | `audit.py` | 每条 JSON 用 AES-256-GCM 单独加密、**每条独立随机 nonce**；`h_i = HMAC-SHA256(h_{i-1} ‖ nonce_i ‖ ct_i)` 防篡改/删除/重排；seq 检测删行；meta 带 HMAC 签名与"下一条序号"高水位，检测回滚 |
 | 安全备份恢复（第 7 页） | `backup.py` | 内容 SHA-256 去重（增量）；对象名用密钥化 HMAC（不泄露明文哈希）；备份对象就是 FGC1 容器；索引本身也加密；支持版本回滚、误删恢复、`verify --full`、`gc` |
+| 监听变化自动备份 | `watch.auto_backup_changes`、`watch --auto-backup` | 监听到新增/修改即增量备份（内容未变自动跳过），可选同时记审计事件 |
+| 长任务不阻塞 UI/主程序 | `service.JobManager`（`job.submit/status/cancel/list`） | 扫描/备份可丢后台线程，轮询进度；扫描可中途取消；同时最多 4 个任务 |
+| 装好先自检 | `cli doctor` | 一次检查数据目录、审计链、备份索引、模块完整性、磁盘、token，输出 JSON 便于主程序展示 |
 | 五层架构（第 8 页） | 包结构 | UI=CLI/右键菜单，业务层=scan/audit/backup，底层安全层=crypto，文件系统层=全部走用户授权路径 + 系统目录自动跳过 |
 | 插件化、崩溃不影响主程序 | `service.py` + CLI 子进程 | 独立进程 + 本地 HTTP + token；主程序只处理 `{"ok":false}`，模块崩溃不影响主程序；`Session.close()` 可随时关模块 |
 | 数据存储表（第 9 页） | 全模块 | 明文文件不落服务端、密码只存 PBKDF2 派生密钥、日志和备份都加密、程序不联网 |
@@ -122,6 +134,18 @@ curl -X POST http://127.0.0.1:8765/rpc ^
   -d "{\"method\":\"scan\",\"params\":{\"paths\":[\"C:\\\\code\\\\file_guard\\\\合同.docx\"]}}"
 ```
 
+长任务（扫描/大目录备份）建议走**异步任务**，别让 RPC 卡住 UI：
+
+```bash
+# 1) 提交：立刻拿到 job_id
+-d "{\"method\":\"job.submit\",\"params\":{\"method\":\"scan\",\"params\":{\"paths\":[\"E:\\\\docs\"]}}}"
+#    → {"ok":true,"result":{"job_id":"a1b2...","state":"queued"}}
+# 2) 轮询进度/结果（done 后带 result；progress 里有 done/total/percent/current）
+-d "{\"method\":\"job.status\",\"params\":{\"job_id\":\"a1b2...\"}}"
+# 3) 扫描可中途取消；job.list 查看所有任务
+-d "{\"method\":\"job.cancel\",\"params\":{\"job_id\":\"a1b2...\"}}"
+```
+
 服务的安全约束（已内置）：
 
 - 默认只允许监听回环地址，误写 `--host 0.0.0.0` 会直接拒绝启动；确实要局域网访问需显式
@@ -137,11 +161,12 @@ curl -X POST http://127.0.0.1:8765/rpc ^
 
 ```bash
 python -m unittest discover -s tests -v
-# Ran 115 tests ... OK (skipped=1)
+# Ran 126 tests ... OK (skipped=1)
 ```
 
 覆盖：AES-GCM 往返/篡改/截断/错误密码/原子写、日志链篡改与并发追加、扫描规则与误报、备份去重与版本回滚、DPAPI、HTTP 鉴权与 RPC、CLI 端到端，
-以及 `tests/test_security.py` 里的 33 条安全回归（nonce 复用、目录联结越界、zip 炸弹、恶意索引路径、回滚/篡改检测、Host/Origin 校验等）。
+`tests/test_security.py` 里的 33 条安全回归（nonce 复用、目录联结越界、zip 炸弹、恶意索引路径、回滚/篡改检测、Host/Origin 校验等），
+以及 `tests/test_extras.py` 的新能力用例（统一社会信用代码校验、监听自动备份、服务异步任务、doctor 自检）。
 最后 1 条跳过的是符号链接用例（当前账户未开开发者模式；目录联结用例可正常运行）。
 
 ### 6.1 临时验收（不接主程序，确认框架）

@@ -22,6 +22,7 @@ import base64
 import http.client
 import json
 import os
+import platform
 import shutil
 import socket
 import subprocess
@@ -933,6 +934,25 @@ MANUAL_ITEMS = [
 ]
 
 
+def category_summary(checks: list[Check]) -> list[tuple[str, int, int, int, float]]:
+    """按分组汇总：(分组, 项数, 通过, 跳过, 耗时秒)。"""
+    rows: list[tuple[str, int, int, int, float]] = []
+    for category in CATEGORY_ORDER:
+        items = [c for c in checks if c.category == category]
+        if not items:
+            continue
+        rows.append(
+            (
+                category,
+                len(items),
+                sum(1 for c in items if c.status == "PASS"),
+                sum(1 for c in items if c.status == "SKIP"),
+                sum(c.ms for c in items) / 1000,
+            )
+        )
+    return rows
+
+
 def render_report(ctx: Context, args: argparse.Namespace) -> str:
     total = len(ctx.checks)
     passed = sum(1 for c in ctx.checks if c.status == "PASS")
@@ -963,7 +983,16 @@ def render_report(ctx: Context, args: argparse.Namespace) -> str:
     lines.append(f"| 跳过 | {skipped} |")
     lines.append(f"| 检查耗时 | {elapsed:.1f} 秒 |")
     lines.append(f"| Python | {sys.version.split()[0]} |")
-    lines.append(f"| 操作系统 | {sys.platform} |")
+    lines.append(f"| 操作系统 | {platform.platform()} |")
+    lines.append(f"| CPU / 进程 | {os.cpu_count()} 核 / PID {os.getpid()} |")
+    lines.append(f"| 工程目录 | `{ROOT}` |")
+    lines.append("")
+    lines.append("### 1.1 分组结果")
+    lines.append("")
+    lines.append("| 分组 | 项数 | 通过 | 跳过 | 耗时(s) |")
+    lines.append("| --- | --- | --- | --- | --- |")
+    for category, count, ok, skip, seconds in category_summary(ctx.checks):
+        lines.append(f"| {category} | {count} | {ok} | {skip} | {seconds:.2f} |")
     lines.append("")
     if failed:
         lines.append("### 失败项")
@@ -1106,6 +1135,11 @@ def main(argv: Optional[list[str]] = None) -> int:
           f"总耗时 {total_elapsed:.1f}s")
     print(f"报告：{out_path}")
     print(f"JSON：{json_path}")
+    print()
+    print("分组汇总：")
+    for category, count, ok, skip, seconds in category_summary(ctx.checks):
+        suffix = f"，跳过 {skip}" if skip else ""
+        print(f"  {category:<22} {ok:>2}/{count:<2} 通过{suffix:<8} {seconds:>5.2f}s")
     if failed:
         print("失败项：")
         for check in ctx.checks:

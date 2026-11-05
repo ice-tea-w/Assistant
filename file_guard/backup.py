@@ -432,10 +432,11 @@ class BackupStore:
 
     def stats(self) -> dict[str, Any]:
         objects = [o for o in self.objects_dir.rglob(f"*{SUFFIX}") if o.is_file()]
+        current = self._current_entries()  # 只重放一次（旧实现调了两次）
         return {
             "root": str(self.root),
-            "files": len(self._current_entries()),
-            "versions": sum(len(v) for v in self._current_entries().values()),
+            "files": len(current),
+            "versions": sum(len(v) for v in current.values()),
             "objects": len(objects),
             "object_bytes": sum(o.stat().st_size for o in objects),
         }

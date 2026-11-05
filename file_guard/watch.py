@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Callable, Iterable, Optional, Union
 
 from .audit import (
+    EVENT_BACKUP,
     EVENT_CREATE,
     EVENT_DELETE,
     EVENT_MODIFY,
@@ -48,6 +49,10 @@ class DirectoryWatcher:
         self.exclude_names = exclude_names or {"desktop.ini", "thumbs.db", ".ds_store"}
         self.on_change = on_change
         self._snapshot: dict[str, tuple[float, int]] = {}
+        #: 用独立标志表示"基线已建立"。不能拿 `not self._snapshot` 判断：
+        #: 目录初始为空时快照就是 {}（假值），会永远被当成首次轮询 → 空目录里
+        #: 新建的文件永远检测不到。
+        self._baseline_ready = False
 
     def _iter_files(self) -> Iterable[Path]:
         for root in self.roots:
@@ -89,8 +94,9 @@ class DirectoryWatcher:
     def poll_once(self) -> list[Change]:
         current = self.take_snapshot()
         changes: list[Change] = []
-        if not self._snapshot:
+        if not self._baseline_ready:
             self._snapshot = current
+            self._baseline_ready = True
             return changes
         for path, meta in current.items():
             old = self._snapshot.get(path)
@@ -113,11 +119,17 @@ class DirectoryWatcher:
         *,
         stop_event: Optional[object] = None,
         max_cycles: Optional[int] = None,
+        on_changes: Optional[Callable[[list[Change]], None]] = None,
     ) -> int:
-        """轮询并把变化写入审计日志，返回处理的变更数。"""
+        """轮询并把变化写入审计日志，返回处理的变更数。
+
+        ``on_changes`` 在每轮记录完审计后被调用，可用于"监听到改动就自动备份"等联动
+        （见 :func:`auto_backup_changes`）。
+        """
         cycles = 0
         total = 0
         self._snapshot = self.take_snapshot()  # 基线，避免把已有文件全部当成新增
+        self._baseline_ready = True
         try:
             while True:
                 if stop_event is not None and getattr(stop_event, "is_set", lambda: False)():
@@ -126,6 +138,8 @@ class DirectoryWatcher:
                 for change in changes:
                     audit.record(change.kind, path=change.path, detail="目录监听到的变化")
                     total += 1
+                if changes and on_changes is not None:
+                    on_changes(changes)
                 cycles += 1
                 if max_cycles is not None and cycles >= max_cycles:
                     break
@@ -192,4 +206,50 @@ def auto_encrypt_idle(
         if audit:
             audit.record("encrypt", path=path, detail="空闲超时自动加密", container=info["dst"])
         results.append({"path": str(path), "action": "encrypted", "dst": info["dst"]})
+    return results
+
+
+def auto_backup_changes(
+    watcher: DirectoryWatcher,
+    store: "object",
+    *,
+    changes: Optional[list[Change]] = None,
+    note: str = "监听自动备份",
+    audit: Optional[AuditLog] = None,
+) -> list[dict]:
+    """监听到"新增/修改"就自动做一次增量备份（新增功能，对应设计稿"操作留痕 + 可恢复"）。
+
+    * 直接用 ``BackupStore.backup_file``：内容没变会自动跳过（增量去重），不会把库撑大；
+    * ``changes`` 可以不传，函数自己 ``poll_once()``；``run(on_changes=...)`` 里则把本轮
+      变更列表传进来，避免重复轮询/丢事件；
+    * 单个文件失败（占用、权限）只记进结果，不影响其它文件；
+    * ``audit`` 传入时，真正产生新版本的文件会额外记一条 ``backup`` 审计事件。
+
+    返回每个变更的处理结果，可直接打印或交给 UI。
+    """
+    pending = changes if changes is not None else watcher.poll_once()
+    results: list[dict] = []
+    for change in pending:
+        if change.kind not in (EVENT_CREATE, EVENT_MODIFY):
+            continue  # 删除事件交给审计/恢复流程，这里不做"删备份"
+        path = change.path
+        if not path.is_file() or path.name.endswith(SUFFIX):
+            continue
+        try:
+            item = store.backup_file(path, note=note)
+        except (FileGuardError, OSError) as exc:
+            results.append({"path": str(path), "event": change.kind, "error": str(exc)})
+            continue
+        skipped = bool(item.get("skipped"))
+        results.append(
+            {
+                "path": str(path),
+                "event": change.kind,
+                "skipped": skipped,
+                "version": item.get("version"),
+                "created": item.get("created", False),
+            }
+        )
+        if audit is not None and not skipped:
+            audit.record(EVENT_BACKUP, path=path, detail=f"监听自动备份 v{item.get('version')}")
     return results

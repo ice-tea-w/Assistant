@@ -22,6 +22,8 @@ import json
 import os
 import secrets
 import threading
+import time
+from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Optional, Union
@@ -36,9 +38,9 @@ from .crypto import (
     encrypt_file,
     inspect_container,
 )
-from .errors import FileGuardError, ServiceError
+from .errors import FileGuardError, ScanCancelledError, ServiceError
 from .fsutil import restrict_acl
-from .scan import SensitiveScanner
+from .scan import ScanControl, SensitiveScanner
 
 MAX_BODY = 8 << 20
 #: 单个连接读写的超时：防止本机客户端只发一半请求就把线程永久占住
@@ -48,6 +50,11 @@ MAX_CONCURRENT_REQUESTS = 16
 LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
 #: 浏览器会带 Origin；桌面助手（原生进程）不会。带 Origin 的请求一律拒绝。
 SERVICE_TOKEN_MIN_LEN = 20
+#: 可以丢进后台跑的长任务（扫描/备份）；短操作仍然走同步 RPC
+ASYNC_METHODS = {"scan", "backup"}
+#: 同时运行的后台任务上限 + 保留的历史任务数（防止内存无限增长）
+MAX_ACTIVE_JOBS = 4
+MAX_JOB_HISTORY = 50
 
 
 def is_loopback_host(host: str) -> bool:
@@ -60,12 +67,159 @@ def is_loopback_host(host: str) -> bool:
         return False
 
 
+@dataclass
+class Job:
+    job_id: str
+    method: str
+    params: dict[str, Any]
+    state: str = "queued"  # queued / running / done / error / cancelled
+    created: float = field(default_factory=time.time)
+    started: Optional[float] = None
+    finished: Optional[float] = None
+    progress: dict[str, Any] = field(default_factory=dict)
+    result: Any = None
+    error: Optional[dict[str, Any]] = None
+    control: Optional[ScanControl] = None
+    thread: Optional[threading.Thread] = None
+
+
+class JobManager:
+    """本地服务的后台任务（异步 job + 轮询），对应"长任务不要卡住 RPC"。
+
+    * ``job.submit`` 只接受长任务（scan/backup），立刻返回 job_id；
+    * ``job.status`` 返回状态/进度/结果；``job.cancel`` 对扫描可中途停止；
+    * 任务跑在守护线程里，服务进程退出不会等它们。
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._jobs: dict[str, Job] = {}
+
+    def submit(self, session: "Session", method: str, params: dict[str, Any]) -> dict[str, Any]:
+        if method not in ASYNC_METHODS:
+            raise ServiceError(
+                f"该方法不支持异步执行：{method}（支持：{'/'.join(sorted(ASYNC_METHODS))}）"
+            )
+        with self._lock:
+            active = sum(1 for job in self._jobs.values() if job.state in ("queued", "running"))
+            if active >= MAX_ACTIVE_JOBS:
+                raise ServiceError(f"后台任务过多（上限 {MAX_ACTIVE_JOBS}），请等现有任务结束")
+            job = Job(job_id=secrets.token_hex(8), method=method, params=params)
+            self._jobs[job.job_id] = job
+            self._prune()
+            job.thread = threading.Thread(
+                target=self._run, args=(session, job), name=f"fg-job-{job.job_id}", daemon=True
+            )
+            job.thread.start()
+        return {"job_id": job.job_id, "method": method, "state": job.state}
+
+    def _run(self, session: "Session", job: Job) -> None:
+        job.state = "running"
+        job.started = time.time()
+        try:
+            if job.method == "scan":
+                job.control = ScanControl()
+            result = dispatch(
+                session,
+                job.method,
+                job.params,
+                progress=lambda done, total, current=None: self._set_progress(job, done, total, current),
+                control=job.control,
+            )
+            job.result = result
+            job.state = "cancelled" if isinstance(result, dict) and result.get("cancelled") else "done"
+        except ScanCancelledError:
+            job.state = "cancelled"
+            job.error = {"type": "Cancelled", "message": "任务已取消"}
+        except FileGuardError as exc:
+            job.state = "error"
+            job.error = {"type": type(exc).__name__, "message": str(exc)}
+        except Exception as exc:  # noqa: BLE001 - 后台任务异常不能拖垮服务
+            job.state = "error"
+            job.error = {"type": "InternalError", "message": str(exc)}
+        finally:
+            job.finished = time.time()
+
+    @staticmethod
+    def _set_progress(job: Job, done: int, total: int, current: Optional[str]) -> None:
+        job.progress = {
+            "done": done,
+            "total": total,
+            "percent": round(done * 100 / total, 1) if total else 0.0,
+            "current": current,
+        }
+
+    def _prune(self) -> None:
+        if len(self._jobs) <= MAX_JOB_HISTORY:
+            return
+        finished = [
+            job for job in self._jobs.values() if job.state in ("done", "error", "cancelled")
+        ]
+        finished.sort(key=lambda job: job.finished or 0)
+        for job in finished[: len(self._jobs) - MAX_JOB_HISTORY]:
+            self._jobs.pop(job.job_id, None)
+
+    def _find(self, job_id: str) -> Job:
+        job = self._jobs.get(job_id)
+        if job is None:
+            raise ServiceError(f"未知任务：{job_id}")
+        return job
+
+    def status(self, job_id: str) -> dict[str, Any]:
+        with self._lock:
+            job = self._find(job_id)
+            elapsed = (job.finished or time.time()) - (job.started or job.created)
+            payload: dict[str, Any] = {
+                "job_id": job.job_id,
+                "method": job.method,
+                "state": job.state,
+                "progress": job.progress,
+                "elapsed_seconds": round(elapsed, 2),
+            }
+            if job.state in ("done", "cancelled") and job.result is not None:
+                payload["result"] = job.result
+            if job.error:
+                payload["error"] = job.error
+            return payload
+
+    def cancel(self, job_id: str) -> dict[str, Any]:
+        with self._lock:
+            job = self._find(job_id)
+            if job.state in ("done", "error", "cancelled"):
+                raise ServiceError(f"任务已结束（{job.state}），无法取消")
+            if job.method != "scan" or job.control is None:
+                raise ServiceError("该任务不支持中途取消")
+            job.control.stop()
+            return {"job_id": job_id, "state": "cancelling", "message": "已请求停止，稍后查询状态"}
+
+    def list(self) -> list[dict[str, Any]]:
+        with self._lock:
+            jobs = sorted(self._jobs.values(), key=lambda job: job.created, reverse=True)
+            return [
+                {
+                    "job_id": job.job_id,
+                    "method": job.method,
+                    "state": job.state,
+                    "progress": job.progress,
+                    "elapsed_seconds": round(
+                        (job.finished or time.time()) - (job.started or job.created), 2
+                    ),
+                }
+                for job in jobs
+            ]
+
+    def active_count(self) -> int:
+        with self._lock:
+            return sum(1 for job in self._jobs.values() if job.state in ("queued", "running"))
+
+
 class Session:
     """一次服务进程内的共享状态（密码只存在内存中）。"""
 
     def __init__(self, config: Config, password: Password) -> None:
         self.config = config
         self.password = password
+        self.jobs = JobManager()
         self._audit: Optional[AuditLog] = None
         self._backups: Optional[BackupStore] = None
         self._lock = threading.Lock()
@@ -196,7 +350,15 @@ def _as_flag(params: dict[str, Any], key: str, default: bool = False) -> bool:
     raise ServiceError(f"参数 {key} 必须是布尔值")
 
 
-def dispatch(session: Session, method: str, params: dict[str, Any]) -> Any:
+def dispatch(
+    session: Session,
+    method: str,
+    params: dict[str, Any],
+    *,
+    progress: Optional[Any] = None,
+    control: Optional[ScanControl] = None,
+) -> Any:
+    """执行一个 RPC 方法。``progress``/``control`` 只在后台任务（异步 scan）里由 JobManager 注入。"""
     cfg = session.config
     if method == "ping":
         return {"name": "file_guard", "version": __version__, "home": str(cfg.home)}
@@ -207,7 +369,21 @@ def dispatch(session: Session, method: str, params: dict[str, Any]) -> Any:
             "chunk_size": cfg.chunk_size,
             "scan_workers": cfg.scan_workers,
             "backups": session.backups.stats(),
+            "active_jobs": session.jobs.active_count(),
         }
+    # ---- 异步任务（长扫描/大备份不阻塞 RPC）--------------------------
+    if method == "job.submit":
+        sub_method = _require_str(params, "method")
+        sub_params = params.get("params") or {}
+        if not isinstance(sub_params, dict):
+            raise ServiceError("参数 params 必须是对象")
+        return session.jobs.submit(session, sub_method, sub_params)
+    if method == "job.status":
+        return session.jobs.status(_require_str(params, "job_id"))
+    if method == "job.cancel":
+        return session.jobs.cancel(_require_str(params, "job_id"))
+    if method == "job.list":
+        return session.jobs.list()
     if method == "encrypt":
         results = []
         out = _optional_str(params, "out")
@@ -247,10 +423,12 @@ def dispatch(session: Session, method: str, params: dict[str, Any]) -> Any:
             workers=_as_int(params, "workers", cfg.scan_workers, minimum=1, maximum=32),
             throttle_bps=_as_int(params, "throttle_bps", 0, minimum=0),
             skip_paths=[cfg.home],
+            progress=progress,
         )
         report = scanner.scan(
             _require_list(params, "paths"),
             min_risk=str(min_risk),
+            control=control,
         )
         session.audit.record(
             "scan",

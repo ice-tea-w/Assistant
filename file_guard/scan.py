@@ -62,6 +62,10 @@ MAX_OFFICE_TOTAL = 8 << 20
 ID_WEIGHTS = (7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2)
 ID_CHECK_CODES = "10X98765432"
 
+#: 统一社会信用代码：字符集与权重（GB 32100-2015）
+USCC_CHARSET = "0123456789ABCDEFGHJKLMNPQRTUWXY"
+USCC_WEIGHTS = (1, 3, 9, 27, 19, 26, 16, 17, 20, 29, 25, 13, 8, 24, 10, 30, 28)
+
 
 def is_valid_id_card(value: str) -> bool:
     if len(value) != 18:
@@ -70,6 +74,23 @@ def is_valid_id_card(value: str) -> bool:
         return False
     total = sum(int(c) * w for c, w in zip(value[:17], ID_WEIGHTS))
     return ID_CHECK_CODES[total % 11] == value[17].upper()
+
+
+def uscc_check_char(body17: str) -> str:
+    """给定前 17 位，算出统一社会信用代码的校验位（生成假数据/测试用）。"""
+    total = sum(USCC_CHARSET.index(c) * w for c, w in zip(body17, USCC_WEIGHTS))
+    return USCC_CHARSET[(31 - total % 31) % 31]
+
+
+def is_valid_uscc(value: str) -> bool:
+    """统一社会信用代码校验：18 位 + GB 32100-2015 的 mod 31 校验位。
+
+    加校验位是为了压误报：营业执照号、合同编号、发票号都是 18 位左右的字母数字，
+    只靠正则会把它们全标成敏感；校验位能把随机串的误报率降到约 1/31。
+    """
+    if len(value) != 18 or any(c not in USCC_CHARSET for c in value):
+        return False
+    return uscc_check_char(value[:17]) == value[17]
 
 
 def is_valid_luhn(value: str) -> bool:
@@ -107,6 +128,13 @@ RULES: tuple[Rule, ...] = (
         is_valid_id_card,
     ),
     Rule("bank_card", "银行卡号", "high", re.compile(r"(?<!\d)(\d{16,19})(?!\d)"), is_valid_luhn),
+    Rule(
+        "uscc",
+        "统一社会信用代码",
+        "medium",
+        re.compile(r"(?<![0-9A-Z])([0-9A-HJ-NPQRTUWXY]{2}\d{6}[0-9A-HJ-NPQRTUWXY]{10})(?![0-9A-Z])"),
+        is_valid_uscc,
+    ),
     Rule("phone", "手机号", "medium", re.compile(r"(?<!\d)(1[3-9]\d{9})(?!\d)")),
     Rule("email", "邮箱地址", "low", re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")),
     Rule(
