@@ -1,14 +1,18 @@
 #include "ui/SyncBridge.h"
 #include "core/ConfigManager.h"
 #include "core/sync/DeliveryNaming.h"
+#include "core/sync/ElevatedRun.h"
 #include "core/sync/FolderTransport.h"
+#include "core/sync/SyncCommands.h"
 #include "core/Logger.h"
 
 #include <QClipboard>
+#include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDateTime>
 #include <QDesktopServices>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QFileSystemWatcher>
 #include <QGuiApplication>
@@ -148,6 +152,9 @@ bool    SyncBridge::watchFiles() const    { return m_watchFiles; }
 QString SyncBridge::inboxDir() const      { return inboxPath(); }
 bool    SyncBridge::sending() const       { return m_sending; }
 QString SyncBridge::sendStatus() const    { return m_sendStatus; }
+QString SyncBridge::shareStatus() const   { return m_shareStatus; }
+bool    SyncBridge::shareBusy() const     { return m_shareBusy; }
+QString SyncBridge::shareAddress() const  { return m_shareAddress; }
 
 // ---- private setters ----
 
@@ -583,6 +590,14 @@ void SyncBridge::setSendStatus(const QString &text)
     emit sendStatusChanged();
 }
 
+void SyncBridge::setShareStatus(const QString &text)
+{
+    if (m_shareStatus == text)
+        return;
+    m_shareStatus = text;
+    emit shareStatusChanged();
+}
+
 QString SyncBridge::inboxPath() const
 {
     const QString custom = m_inboxDir.trimmed();
@@ -672,6 +687,146 @@ void SyncBridge::sendFiles(const QStringList &paths)
     worker->start();
 }
 
+// ---- 一键共享 / 一键连接 ----
+
+QString SyncBridge::shareNameSuggestion(const QString &localPath) const
+{
+    const QString path = toLocalPath(localPath.trimmed());
+    return Sync::suggestShareName(path.isEmpty() ? m_sharedDir : path);
+}
+
+void SyncBridge::shareFolder(const QString &localPath, const QString &shareName,
+                             const QString &user)
+{
+    if (m_shareBusy)
+        return;
+
+    const QString path = QDir::cleanPath(toLocalPath(localPath.trimmed()));
+    if (path.isEmpty() || !QDir(path).exists()) {
+        const QString msg = QStringLiteral("目录不存在：%1").arg(path);
+        setShareStatus(msg);
+        emit shareOpFinished(false, msg);
+        return;
+    }
+
+    const QString name = shareName.trimmed().isEmpty() ? Sync::suggestShareName(path)
+                                                      : shareName.trimmed();
+    if (!Sync::isValidShareName(name)) {
+        const QString msg = QStringLiteral(
+            "共享名不合法：不能用 \\ / : * ? \" < > |，1–80 个字符，首尾不能是空格");
+        setShareStatus(msg);
+        emit shareOpFinished(false, msg);
+        return;
+    }
+
+    // 默认只授权当前登录账号；要给对方用就在界面里填对方的账号名
+    const QString account =
+        user.trimmed().isEmpty() ? qEnvironmentVariable("USERNAME") : user.trimmed();
+
+    const QString batPath = QDir::tempPath()
+                            + QStringLiteral("/assistant-share-%1.bat")
+                                  .arg(QCoreApplication::applicationPid());
+    QFile bat(batPath);
+    if (!bat.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        const QString msg = QStringLiteral("写不了临时脚本 %1：%2").arg(batPath, bat.errorString());
+        setShareStatus(msg);
+        emit shareOpFinished(false, msg);
+        return;
+    }
+    bat.write(Sync::shareScript(path, name, account).toUtf8());
+    bat.close();
+
+    m_shareBusy = true;
+    emit shareBusyChanged();
+    setShareStatus(QStringLiteral("正在申请管理员权限共享「%1」…")
+                       .arg(QDir::toNativeSeparators(path)));
+
+    auto worker = QThread::create([this, batPath, path, name] {
+        const int code = Sync::Os::runElevated(QStringLiteral("cmd.exe"),
+                                              {QStringLiteral("/c"), batPath});
+        QFile::remove(batPath);
+
+        const QString unc = QStringLiteral("\\\\%1\\%2").arg(QSysInfo::machineHostName(), name);
+        QString msg;
+        if (code == 0)
+            msg = QStringLiteral("已共享为 %1（共享权限与 NTFS 都给到「修改」）").arg(unc);
+        else if (code == Sync::Os::kElevationCancelled)
+            msg = QStringLiteral("已取消：创建共享需要管理员权限");
+        else
+            msg = Sync::explainExitCode(code, QDir::toNativeSeparators(path));
+
+        QMetaObject::invokeMethod(this, [this, code, msg, unc, path] {
+            m_shareBusy = false;
+            emit shareBusyChanged();
+            if (code == 0) {
+                m_shareAddress = unc;
+                emit shareAddressChanged();
+                // 主机通常就是这个目录做共享根；已经有共享目录时不覆盖用户的选择
+                if (m_sharedDir.isEmpty())
+                    setSharedDir(path);
+                Logger::get().info("SyncBridge: 已共享 {} → {}", path.toStdString(),
+                                   unc.toStdString());
+            }
+            setShareStatus(msg);
+            emit shareOpFinished(code == 0, msg);
+        }, Qt::QueuedConnection);
+    });
+    connect(worker, &QThread::finished, this, [worker] { worker->deleteLater(); });
+    worker->start();
+}
+
+void SyncBridge::connectShared(const QString &uncPath, const QString &user,
+                               const QString &password)
+{
+    if (m_shareBusy)
+        return;
+
+    QString path = QDir::fromNativeSeparators(uncPath.trimmed());
+    while (path.endsWith(QLatin1Char('/')))
+        path.chop(1);
+    if (!path.startsWith(QStringLiteral("//"))) {
+        const QString msg =
+            QStringLiteral("请填对方给你的网络路径，形如 \\\\主机名\\共享名");
+        setShareStatus(msg);
+        emit shareOpFinished(false, msg);
+        return;
+    }
+
+    const QString native = QDir::toNativeSeparators(path);
+    const QStringList args = Sync::connectArgs(native, user.trimmed(), password);
+
+    m_shareBusy = true;
+    emit shareBusyChanged();
+    setShareStatus(QStringLiteral("正在连接 %1…").arg(native));
+
+    auto worker = QThread::create([this, args, native] {
+        QString err;
+        const int code = Sync::Os::runProgram(QStringLiteral("net"), args, &err);
+
+        QString msg;
+        if (code == 0) {
+            msg = QStringLiteral("已连接 %1").arg(native);
+        } else {
+            msg = Sync::explainExitCode(code, native);
+            if (!err.isEmpty())
+                msg += QStringLiteral("（%1）").arg(err);
+        }
+
+        QMetaObject::invokeMethod(this, [this, code, msg, native] {
+            m_shareBusy = false;
+            emit shareBusyChanged();
+            if (code == 0) {
+                setSharedDir(native);
+                Logger::get().info("SyncBridge: 已连接共享 {}", native.toStdString());
+            }
+            setShareStatus(msg);
+            emit shareOpFinished(code == 0, msg);
+        }, Qt::QueuedConnection);
+    });
+    connect(worker, &QThread::finished, this, [worker] { worker->deleteLater(); });
+    worker->start();
+}
+
 QVariantMap SyncBridge::checkShared()
 {
     QVariantMap out;
@@ -686,8 +841,9 @@ QVariantMap SyncBridge::checkShared()
     t.setDeviceName(m_deviceName);
     if (!t.probe()) {
         out.insert(QStringLiteral("ok"), false);
+        const QString why = t.probeError();
         out.insert(QStringLiteral("message"),
-                   QStringLiteral("共享目录不可访问或不可写：%1").arg(dir));
+                   why.isEmpty() ? QStringLiteral("共享目录不可访问或不可写：%1").arg(dir) : why);
         return out;
     }
 

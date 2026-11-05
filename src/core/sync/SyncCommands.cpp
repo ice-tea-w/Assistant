@@ -63,6 +63,8 @@ QString shareScript(const QString &localPath, const QString &shareName, const QS
 
     QString bat;
     bat += QStringLiteral("@echo off\r\n");
+    // 脚本按 UTF-8 写盘：让 cmd 按 UTF-8 读，共享名/账号含中文也不会变乱码
+    bat += QStringLiteral("chcp 65001 >nul\r\n");
     bat += QStringLiteral("net share %1=%2 /grant:%3,change\r\n").arg(shareName, quoted(path), user);
     bat += QStringLiteral("if errorlevel 1 exit /b 1\r\n");
     bat += QStringLiteral("icacls %1 /grant %2\r\n")

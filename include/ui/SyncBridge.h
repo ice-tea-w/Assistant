@@ -35,6 +35,9 @@ class SyncBridge : public QObject
     Q_PROPERTY(QString      inboxDir      READ inboxDir      NOTIFY inboxDirChanged)
     Q_PROPERTY(bool         sending       READ sending       NOTIFY sendingChanged)
     Q_PROPERTY(QString      sendStatus    READ sendStatus    NOTIFY sendStatusChanged)
+    Q_PROPERTY(QString      shareStatus   READ shareStatus   NOTIFY shareStatusChanged)
+    Q_PROPERTY(bool         shareBusy     READ shareBusy     NOTIFY shareBusyChanged)
+    Q_PROPERTY(QString      shareAddress  READ shareAddress  NOTIFY shareAddressChanged)
 
 public:
     explicit SyncBridge(QObject *parent = nullptr);
@@ -59,6 +62,9 @@ public:
     QString      inboxDir() const;
     bool         sending() const;
     QString      sendStatus() const;
+    QString      shareStatus() const;
+    bool         shareBusy() const;
+    QString      shareAddress() const;
 
     Q_INVOKABLE void addSharedDir(const QString &path);
     Q_INVOKABLE void removeSharedDir(const QString &path);
@@ -93,6 +99,16 @@ public:
     /// 设置本机设备名（写进清单，也是投递文件名前缀）
     Q_INVOKABLE void setDeviceName(const QString &name);
 
+    /// 把本机目录开成共享：UAC 提权跑 net share + icacls，
+    /// 成功后 shareAddress 给出 \\主机名\共享名（复制给对方用）
+    Q_INVOKABLE void shareFolder(const QString &localPath, const QString &shareName,
+                                 const QString &user);
+    /// 连到对方的共享：net use，成功后把它设成本机共享目录
+    Q_INVOKABLE void connectShared(const QString &uncPath, const QString &user,
+                                   const QString &password);
+    /// 按目录名推断共享名（前端预填）
+    Q_INVOKABLE QString shareNameSuggestion(const QString &localPath) const;
+
 signals:
     void statusTextChanged();
     void busyChanged();
@@ -107,10 +123,15 @@ signals:
     void inboxDirChanged();
     void sendingChanged();
     void sendStatusChanged();
+    void shareStatusChanged();
+    void shareBusyChanged();
+    void shareAddressChanged();
     void fileHandled(const QString &relPath, const QString &action);
     void syncFinished(int uploaded, int downloaded, int conflicts);
     /// 从投递区领取了文件（count 个，落在 inboxDir）
     void filesReceived(int count, const QString &inboxDir);
+    /// 一键共享/一键连接的结果（QML 用来弹提示）
+    void shareOpFinished(bool ok, const QString &message);
 
 private:
     void onEngineProgress(int percent, const QString &file);
@@ -127,6 +148,7 @@ private:
     QString inboxPath() const;
     QString deliveryDir() const;
     void setSendStatus(const QString &text);
+    void setShareStatus(const QString &text);
     /// "<别名>/相对路径" → 本地绝对路径；别名不认识时返回空串
     QString absForRel(const QString &relPath) const;
     void setStatus(const QString &text);
@@ -157,6 +179,9 @@ private:
     QString      m_inboxDir;
     bool         m_sending = false;
     QString      m_sendStatus;
+    QString      m_shareStatus;
+    bool         m_shareBusy = false;
+    QString      m_shareAddress;
 
     QFileSystemWatcher *m_watcher = nullptr;
     QTimer *m_inboxTimer = nullptr;

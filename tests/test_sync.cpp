@@ -841,6 +841,7 @@ void TestSync::shareBat_data()
     QTest::newRow("plain")
         << QStringLiteral("E:\\SyncHub") << QStringLiteral("SyncHub") << QStringLiteral("alice")
         << QStringLiteral("@echo off\r\n"
+                          "chcp 65001 >nul\r\n"
                           "net share SyncHub=\"E:\\SyncHub\" /grant:alice,change\r\n"
                           "if errorlevel 1 exit /b 1\r\n"
                           "icacls \"E:\\SyncHub\" /grant \"alice:(OI)(CI)M\"\r\n"
@@ -849,6 +850,7 @@ void TestSync::shareBat_data()
     QTest::newRow("with space")
         << QStringLiteral("E:\\My Sync") << QStringLiteral("MySync") << QStringLiteral("alice")
         << QStringLiteral("@echo off\r\n"
+                          "chcp 65001 >nul\r\n"
                           "net share MySync=\"E:\\My Sync\" /grant:alice,change\r\n"
                           "if errorlevel 1 exit /b 1\r\n"
                           "icacls \"E:\\My Sync\" /grant \"alice:(OI)(CI)M\"\r\n"
