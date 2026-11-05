@@ -16,7 +16,9 @@
 #include <QSslConfiguration>
 #include <QSslServer>
 #include <QSslSocket>
+#include <QSet>
 #include <QTcpServer>
+#include <QTimer>
 
 #include <algorithm>
 
@@ -79,6 +81,7 @@ public:
     State        state = State::AwaitHello;
     QByteArray   nonce;
     QString      deviceId;
+    QString      peer;      // 对端 IP，认证失败限速按它计数
 
     // Put 的落盘状态：先写 .assistant-part，校验通过才改名成正式文件
     QString      putRelPath;
@@ -94,6 +97,14 @@ SyncServer::SyncServer(const Identity &identity, SecretLookup secretLookup, QObj
     , m_identity(identity)
     , m_secretLookup(std::move(secretLookup))
 {
+    // 索引写盘做 2 秒合并：一次同步里 Put 几十个文件，不必每个都刷一次 JSON
+    m_indexTimer = new QTimer(this);
+    m_indexTimer->setSingleShot(true);
+    m_indexTimer->setInterval(2000);
+    connect(m_indexTimer, &QTimer::timeout, this, [this] {
+        if (m_indexDirty)
+            saveIndex();
+    });
 }
 
 SyncServer::~SyncServer()
@@ -111,6 +122,7 @@ bool SyncServer::listen(quint16 port, const QString &sharedRoot)
         return false;
     }
     m_sharedRoot = root.absolutePath();
+    loadIndex();
 
     QSslConfiguration cfg = QSslConfiguration::defaultConfiguration();
     cfg.setLocalCertificate(m_identity.certificate);
@@ -141,6 +153,8 @@ void SyncServer::close()
         m_server->close();
         m_server.reset();
     }
+    if (m_indexDirty && !m_sharedRoot.isEmpty())
+        saveIndex();
     m_sharedRoot.clear();
 }
 
@@ -169,10 +183,17 @@ int SyncServer::readyConnections() const
     return n;
 }
 
+void SyncServer::setAuthLockPolicy(int maxFailures, int lockMs)
+{
+    m_maxAuthFailures = maxFailures > 0 ? maxFailures : 1;
+    m_authLockMs      = lockMs > 0 ? lockMs : 1;
+}
+
 void SyncServer::adoptSocket(QSslSocket *socket)
 {
     auto conn = std::make_shared<Connection>();
     conn->socket = socket;
+    conn->peer   = socket->peerAddress().toString();
     m_connections.insert(socket, conn);
 
     connect(socket, &QSslSocket::readyRead, this, [this, socket] { onReadyRead(socket); });
@@ -223,6 +244,14 @@ void SyncServer::onReadyRead(QSslSocket *socket)
 
 void SyncServer::handleFrame(Connection &conn, const Frame &frame)
 {
+    // 锁定期内连 Hello 都不回 Challenge，免得给暴力破解者一个可测的 oracle
+    if (isPeerLocked(conn.peer)) {
+        sendError(conn, frame.reqId, QStringLiteral("AUTH_LOCKED"),
+                  QStringLiteral("认证失败次数过多，请稍后再试"));
+        conn.socket->disconnectFromHost();
+        return;
+    }
+
     if (conn.state == Connection::State::AwaitHello) {
         if (frame.type != FrameType::Hello) {
             sendError(conn, frame.reqId, QStringLiteral("EXPECTED_HELLO"),
@@ -300,6 +329,7 @@ void SyncServer::handleAuth(Connection &conn, const Frame &frame)
         : challengeResponse(secret, conn.nonce, conn.deviceId, m_identity.fingerprint);
 
     if (expected.isEmpty() || !verifyChallengeResponse(expected, frame.payload)) {
+        recordAuthFailure(conn.peer);
         emit authFailed(conn.deviceId);
         sendError(conn, frame.reqId, QStringLiteral("AUTH_FAILED"),
                   QStringLiteral("设备未配对或口令不匹配"));
@@ -310,6 +340,7 @@ void SyncServer::handleAuth(Connection &conn, const Frame &frame)
     conn.nonce.fill('\0');
     conn.nonce.clear();
     conn.state = Connection::State::Ready;
+    clearAuthFailures(conn.peer);
 
     QJsonObject ack;
     ack.insert(QStringLiteral("serverFingerprint"), m_identity.fingerprint);
@@ -515,7 +546,12 @@ void SyncServer::handlePutEnd(Connection &conn, const Frame &frame)
                   QStringLiteral("无法落盘：%1").arg(relPath));
         return;
     }
-    m_hashCache.remove(absPath);
+    CachedHash entry;
+    entry.size  = received;
+    entry.mtime = QFileInfo(absPath).lastModified().toSecsSinceEpoch();
+    entry.hash  = actual;
+    m_index.insert(relPath, entry);
+    markIndexDirty();
 
     QJsonObject ack;
     ack.insert(QStringLiteral("ok"), true);
@@ -557,7 +593,8 @@ void SyncServer::handleDelete(Connection &conn, const Frame &frame)
                   QStringLiteral("无法移入回收目录：%1").arg(relPath));
         return;
     }
-    m_hashCache.remove(absPath);
+    m_index.remove(relPath);
+    markIndexDirty();
 
     QJsonObject ack;
     ack.insert(QStringLiteral("ok"), true);
@@ -565,10 +602,14 @@ void SyncServer::handleDelete(Connection &conn, const Frame &frame)
     send(conn, static_cast<quint8>(FrameType::DeleteAck), frame.reqId, toJson(ack));
 }
 
-QList<ServedFile> SyncServer::collectFiles() const{
+QList<ServedFile> SyncServer::collectFiles()
+{
     QList<ServedFile> out;
     if (m_sharedRoot.isEmpty())
         return out;
+
+    const QDir rootDir(m_sharedRoot);
+    QSet<QString> seen;
 
     QDirIterator it(m_sharedRoot, QDir::Files | QDir::NoDotAndDotDot,
                     QDirIterator::Subdirectories);
@@ -576,7 +617,7 @@ QList<ServedFile> SyncServer::collectFiles() const{
         const QString absPath = it.next();
         const QFileInfo info = it.fileInfo();
 
-        const QString relPath = QDir(m_sharedRoot).relativeFilePath(info.absoluteFilePath());
+        const QString relPath = rootDir.relativeFilePath(info.absoluteFilePath());
         if (relPath.startsWith(QStringLiteral(".sync") + QLatin1Char('/'))
             || relPath.startsWith(QStringLiteral(".assistant-sync") + QLatin1Char('/'))
             || relPath.contains(QStringLiteral("/.assistant-part"))) {
@@ -587,8 +628,34 @@ QList<ServedFile> SyncServer::collectFiles() const{
         f.relPath = relPath;
         f.size    = info.size();
         f.mtime   = info.lastModified().toSecsSinceEpoch();
-        f.hash    = const_cast<SyncServer *>(this)->hashOf(info.absoluteFilePath(), f.size, f.mtime);
+
+        const CachedHash cached = m_index.value(relPath);
+        if (!cached.hash.isEmpty() && cached.size == f.size && cached.mtime == f.mtime) {
+            f.hash = cached.hash;
+        } else {
+            f.hash = hashOf(info.absoluteFilePath());
+            if (!f.hash.isEmpty()) {
+                CachedHash entry;
+                entry.size  = f.size;
+                entry.mtime = f.mtime;
+                entry.hash  = f.hash;
+                m_index.insert(relPath, entry);
+                markIndexDirty();
+            }
+        }
+
+        seen.insert(relPath);
         out.append(f);
+    }
+
+    // 在共享根之外被删掉的文件不会通知我们，遍历时顺手把陈旧条目摘掉
+    for (auto entry = m_index.begin(); entry != m_index.end();) {
+        if (seen.contains(entry.key())) {
+            ++entry;
+        } else {
+            entry = m_index.erase(entry);
+            markIndexDirty();
+        }
     }
 
     std::sort(out.begin(), out.end(), [](const ServedFile &a, const ServedFile &b) {
@@ -597,12 +664,8 @@ QList<ServedFile> SyncServer::collectFiles() const{
     return out;
 }
 
-QString SyncServer::hashOf(const QString &absPath, qint64 size, qint64 mtime)
+QString SyncServer::hashOf(const QString &absPath)
 {
-    auto cached = m_hashCache.constFind(absPath);
-    if (cached != m_hashCache.constEnd() && cached->size == size && cached->mtime == mtime)
-        return cached->hash;
-
     QFile file(absPath);
     if (!file.open(QIODevice::ReadOnly))
         return QString();
@@ -611,12 +674,7 @@ QString SyncServer::hashOf(const QString &absPath, qint64 size, qint64 mtime)
     if (!hasher.addData(&file))
         return QString();
 
-    CachedHash entry;
-    entry.size  = size;
-    entry.mtime = mtime;
-    entry.hash  = QString::fromLatin1(hasher.result().toHex());
-    m_hashCache.insert(absPath, entry);
-    return entry.hash;
+    return QString::fromLatin1(hasher.result().toHex());
 }
 
 void SyncServer::send(Connection &conn, quint8 type, quint32 reqId, const QByteArray &payload)
@@ -638,6 +696,108 @@ void SyncServer::sendError(Connection &conn, quint32 reqId, const QString &code,
     error.insert(QStringLiteral("code"), code);
     error.insert(QStringLiteral("message"), message);
     send(conn, static_cast<quint8>(FrameType::Error), reqId, toJson(error));
+}
+
+QString SyncServer::indexPath() const
+{
+    return QDir(m_sharedRoot).filePath(QStringLiteral(".assistant-sync/index.json"));
+}
+
+void SyncServer::loadIndex()
+{
+    m_index.clear();
+    m_indexDirty = false;
+
+    QFile file(indexPath());
+    if (!file.open(QIODevice::ReadOnly))
+        return;
+
+    const QJsonObject files =
+        QJsonDocument::fromJson(file.readAll()).object().value(QStringLiteral("files")).toObject();
+    for (auto it = files.constBegin(); it != files.constEnd(); ++it) {
+        const QJsonObject entry = it.value().toObject();
+        CachedHash cached;
+        cached.size  = qint64(entry.value(QStringLiteral("size")).toDouble(-1));
+        cached.mtime = qint64(entry.value(QStringLiteral("mtime")).toDouble(0));
+        cached.hash  = entry.value(QStringLiteral("hash")).toString();
+        if (cached.size < 0 || cached.hash.isEmpty())
+            continue;
+        m_index.insert(it.key(), cached);
+    }
+}
+
+bool SyncServer::saveIndex()
+{
+    if (m_sharedRoot.isEmpty())
+        return false;
+
+    QJsonObject files;
+    for (auto it = m_index.constBegin(); it != m_index.constEnd(); ++it) {
+        QJsonObject entry;
+        entry.insert(QStringLiteral("size"), double(it->size));
+        entry.insert(QStringLiteral("mtime"), double(it->mtime));
+        entry.insert(QStringLiteral("hash"), it->hash);
+        files.insert(it.key(), entry);
+    }
+
+    QJsonObject root;
+    root.insert(QStringLiteral("version"), 1);
+    root.insert(QStringLiteral("files"), files);
+
+    const QString path = indexPath();
+    if (!QDir().mkpath(QFileInfo(path).absolutePath()))
+        return false;
+
+    // 先写同目录临时文件再改名：崩在半路最多丢缓存，不会留下半个 JSON
+    const QString tmpPath = path + QStringLiteral(".tmp");
+    QFile tmp(tmpPath);
+    if (!tmp.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return false;
+    tmp.write(QJsonDocument(root).toJson(QJsonDocument::Compact));
+    tmp.close();
+
+    QFile::remove(path);   // Windows 上 rename 不覆盖已存在文件
+    if (!QFile::rename(tmpPath, path)) {
+        QFile::remove(tmpPath);
+        return false;
+    }
+
+    m_indexDirty = false;
+    return true;
+}
+
+void SyncServer::markIndexDirty()
+{
+    m_indexDirty = true;
+    if (m_indexTimer && !m_indexTimer->isActive())
+        m_indexTimer->start();
+}
+
+bool SyncServer::isPeerLocked(const QString &peer) const
+{
+    const auto it = m_failures.constFind(peer);
+    if (it == m_failures.constEnd())
+        return false;
+    return it->lockedUntilMs > QDateTime::currentMSecsSinceEpoch();
+}
+
+void SyncServer::recordAuthFailure(const QString &peer)
+{
+    FailureRecord &record = m_failures[peer];
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (record.lockedUntilMs != 0 && now >= record.lockedUntilMs) {
+        // 锁过期后重新开始计数，否则下一次失败会立刻再锁一轮
+        record.count         = 0;
+        record.lockedUntilMs = 0;
+    }
+    ++record.count;
+    if (record.count >= m_maxAuthFailures)
+        record.lockedUntilMs = now + m_authLockMs;
+}
+
+void SyncServer::clearAuthFailures(const QString &peer)
+{
+    m_failures.remove(peer);
 }
 
 } // namespace Sync::Net

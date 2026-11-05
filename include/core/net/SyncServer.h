@@ -13,6 +13,7 @@
 
 class QSslServer;
 class QSslSocket;
+class QTimer;
 
 namespace Sync::Net {
 
@@ -58,6 +59,10 @@ public:
     /// 已认证成功的连接数（测试与界面用）。
     int readyConnections() const;
 
+    /// 认证失败限速（设计 §4.3）：同一 IP 连续失败 maxFailures 次后锁 lockMs 毫秒。
+    /// 默认 5 次 / 60 秒。测试把 lockMs 调小，才不用真等一分钟。
+    void setAuthLockPolicy(int maxFailures, int lockMs);
+
 signals:
     void clientAuthenticated(const QString &deviceId);
     void authFailed(const QString &deviceId);
@@ -81,8 +86,17 @@ private:
     void handleDelete(Connection &conn, const struct Frame &frame);
     void dropPartFile(Connection &conn);
 
-    QList<ServedFile> collectFiles() const;
-    QString hashOf(const QString &absPath, qint64 size, qint64 mtime);
+    QList<ServedFile> collectFiles();
+    QString hashOf(const QString &absPath);
+
+    bool isPeerLocked(const QString &peer) const;
+    void recordAuthFailure(const QString &peer);
+    void clearAuthFailures(const QString &peer);
+
+    QString indexPath() const;
+    void loadIndex();
+    bool saveIndex();
+    void markIndexDirty();
 
     void send(Connection &conn, quint8 type, quint32 reqId, const QByteArray &payload);
     void sendError(Connection &conn, quint32 reqId, const QString &code, const QString &message);
@@ -100,7 +114,21 @@ private:
     QString                      m_sharedRoot;
     QString                      m_lastError;
     QHash<QSslSocket *, std::shared_ptr<Connection>> m_connections;
-    QHash<QString, CachedHash>   m_hashCache;
+
+    /// `.assistant-sync/index.json` 的内存镜像：relPath → size/mtime/hash。
+    /// 命中条件是 size + mtime 都没变（与 FolderTransport 的 manifest 同一套失效规则）。
+    QHash<QString, CachedHash>   m_index;
+    bool                         m_indexDirty = false;
+    QTimer                      *m_indexTimer = nullptr;
+
+    struct FailureRecord
+    {
+        int    count         = 0;
+        qint64 lockedUntilMs = 0;
+    };
+    QHash<QString, FailureRecord> m_failures;
+    int                           m_maxAuthFailures = 5;
+    int                           m_authLockMs      = 60 * 1000;
 };
 
 } // namespace Sync::Net

@@ -3,10 +3,12 @@
 #include "core/net/SyncFrame.h"
 #include "core/net/SyncServer.h"
 
+#include <QDateTime>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
+#include <QHash>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -118,10 +120,14 @@ private slots:
     void authThenListPages();
     void unknownDeviceIsRejected();
     void pingPongRoundTrip();
+    void authFailuresLockPeer();
+    void indexIsUsedAcrossRestart();
 
 private:
     bool startServer(const QString &root);
     Identity makeIdentity(const QString &name);
+    bool authenticate(TestClient &client, quint32 baseId);
+    QHash<QString, QString> listAll(SyncServer &server, bool *ok);
 
     QTemporaryDir m_dir;
     Identity      m_serverIdentity;
@@ -359,6 +365,181 @@ void TestNetServer::pingPongRoundTrip()
     QVERIFY(client.read(&pong));
     QCOMPARE(pong.type, FrameType::Pong);
     QCOMPARE(pong.reqId, quint32(9));
+}
+
+bool TestNetServer::authenticate(TestClient &client, quint32 baseId)
+{
+    QJsonObject hello;
+    hello.insert(QStringLiteral("deviceId"), QStringLiteral("dev-test"));
+    if (!client.send(makeJsonFrame(FrameType::Hello, baseId, hello)))
+        return false;
+
+    Frame challenge;
+    if (!client.read(&challenge) || challenge.type != FrameType::Challenge)
+        return false;
+
+    Frame auth;
+    auth.type    = FrameType::Auth;
+    auth.flags   = quint16(FrameFlag::FlagBlob);
+    auth.reqId   = baseId + 1;
+    auth.payload = challengeResponse(m_deviceSecret, challenge.payload,
+                                     QStringLiteral("dev-test"), m_serverIdentity.fingerprint);
+    if (!client.send(auth))
+        return false;
+
+    Frame ack;
+    return client.read(&ack) && ack.type == FrameType::HelloAck;
+}
+
+QHash<QString, QString> TestNetServer::listAll(SyncServer &server, bool *ok)
+{
+    QHash<QString, QString> result;
+    *ok = false;
+
+    TestClient client;
+    if (!client.connectTo(server.port(), m_clientIdentity))
+        return result;
+    if (!authenticate(client, 100))
+        return result;
+
+    int cursor = 0;
+    quint32 reqId = 200;
+    while (true) {
+        QJsonObject req;
+        req.insert(QStringLiteral("cursor"), cursor);
+        req.insert(QStringLiteral("limit"), 2);
+        if (!client.send(makeJsonFrame(FrameType::List, reqId++, req)))
+            return result;
+
+        Frame reply;
+        if (!client.read(&reply) || reply.type != FrameType::ListResp)
+            return result;
+
+        const QJsonObject obj = QJsonDocument::fromJson(reply.payload).object();
+        for (const QJsonValue &v : obj.value(QStringLiteral("files")).toArray()) {
+            const QJsonObject item = v.toObject();
+            result.insert(item.value(QStringLiteral("path")).toString(),
+                          item.value(QStringLiteral("hash")).toString());
+        }
+        if (!obj.value(QStringLiteral("hasMore")).toBool())
+            break;
+        cursor = obj.value(QStringLiteral("nextCursor")).toInt();
+    }
+
+    *ok = true;
+    return result;
+}
+
+void TestNetServer::authFailuresLockPeer()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    QVERIFY(startServer(root.path()));
+
+    auto secret = [this](const QString &deviceId) {
+        return deviceId == QStringLiteral("dev-test") ? m_deviceSecret : QByteArray();
+    };
+    SyncServer server(m_serverIdentity, secret);
+    server.setAuthLockPolicy(2, 60 * 1000);   // 两次就锁，免得等一分钟
+    QVERIFY2(server.listen(0, root.path()), qPrintable(server.lastError()));
+
+    auto badAuth = [&](quint32 reqId) {
+        TestClient client;
+        if (!client.connectTo(server.port(), m_clientIdentity))
+            return QStringLiteral("<connect-failed>");
+
+        QJsonObject hello;
+        hello.insert(QStringLiteral("deviceId"), QStringLiteral("dev-test"));
+        if (!client.send(makeJsonFrame(FrameType::Hello, reqId, hello)))
+            return QStringLiteral("<send-failed>");
+
+        // 锁定期内服务端连 Challenge 都不给，第一帧就回 AUTH_LOCKED
+        Frame reply;
+        if (!client.read(&reply))
+            return QStringLiteral("<no-reply>");
+        if (reply.type == FrameType::Error)
+            return QJsonDocument::fromJson(reply.payload).object()
+                .value(QStringLiteral("code")).toString();
+        if (reply.type != FrameType::Challenge)
+            return QStringLiteral("<type-%1>").arg(int(reply.type));
+
+        Frame auth;
+        auth.type    = FrameType::Auth;
+        auth.flags   = quint16(FrameFlag::FlagBlob);
+        auth.reqId   = reqId + 1;
+        auth.payload = QByteArray(kChallengeSize, '\x00');
+        if (!client.send(auth))
+            return QStringLiteral("<send-failed>");
+
+        Frame final;
+        if (!client.read(&final))
+            return QStringLiteral("<no-reply>");
+        if (final.type != FrameType::Error)
+            return QStringLiteral("<type-%1>").arg(int(final.type));
+        return QJsonDocument::fromJson(final.payload).object()
+            .value(QStringLiteral("code")).toString();
+    };
+
+    QCOMPARE(badAuth(1), QStringLiteral("AUTH_FAILED"));
+    QCOMPARE(badAuth(10), QStringLiteral("AUTH_FAILED"));
+    // 第三次连 Challenge 都不给了：锁定期内首帧就回 AUTH_LOCKED
+    QCOMPARE(badAuth(20), QStringLiteral("AUTH_LOCKED"));
+}
+
+void TestNetServer::indexIsUsedAcrossRestart()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    QVERIFY(startServer(root.path()));
+
+    auto secret = [this](const QString &deviceId) {
+        return deviceId == QStringLiteral("dev-test") ? m_deviceSecret : QByteArray();
+    };
+    const QString indexPath = root.path() + QStringLiteral("/.assistant-sync/index.json");
+
+    bool ok = false;
+    QHash<QString, QString> first;
+    {
+        SyncServer server(m_serverIdentity, secret);
+        QVERIFY2(server.listen(0, root.path()), qPrintable(server.lastError()));
+        first = listAll(server, &ok);
+    }
+    QVERIFY(ok);
+    QVERIFY(QFile::exists(indexPath));
+    QCOMPARE(first.value(QStringLiteral("docs/a.txt")),
+             QString::fromLatin1(QCryptographicHash::hash(QByteArray("aaa"),
+                                                          QCryptographicHash::Sha256).toHex()));
+
+    // 索引的失效条件是 size + mtime（与 FolderTransport 的 manifest 同一套）：
+    // 这里故意改内容但保持长度并把 mtime 掰回去，第二次 List 必须给出**索引里的旧哈希**——
+    // 这正是"命中"的证明，也是这套规则已知的盲区。
+    const QString filePath = root.path() + QStringLiteral("/docs/a.txt");
+    const QDateTime originalMtime = QFileInfo(filePath).lastModified();
+    writeFile(filePath, "bbb");
+    {
+        QFile touched(filePath);
+        QVERIFY(touched.open(QIODevice::ReadWrite));
+        QVERIFY(touched.setFileTime(originalMtime, QFileDevice::FileModificationTime));
+    }
+
+    // 外部删掉的文件，下一次遍历要把它的索引条目摘掉
+    QVERIFY(QFile::remove(root.path() + QStringLiteral("/readme.md")));
+
+    QHash<QString, QString> second;
+    {
+        SyncServer server(m_serverIdentity, secret);
+        QVERIFY2(server.listen(0, root.path()), qPrintable(server.lastError()));
+        second = listAll(server, &ok);
+    }
+    QVERIFY(ok);
+    QCOMPARE(second.value(QStringLiteral("docs/a.txt")), first.value(QStringLiteral("docs/a.txt")));
+    QVERIFY(!second.contains(QStringLiteral("readme.md")));
+
+    QFile indexFile(indexPath);
+    QVERIFY(indexFile.open(QIODevice::ReadOnly));
+    const QJsonObject files = QJsonDocument::fromJson(indexFile.readAll()).object()
+                                  .value(QStringLiteral("files")).toObject();
+    QVERIFY(!files.contains(QStringLiteral("readme.md")));
 }
 
 QTEST_MAIN(TestNetServer)
