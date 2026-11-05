@@ -239,3 +239,27 @@ add_test(NAME sync_unit COMMAND assistant_tests)
 # 同步单测会加载 QML 插件（qmlplugin.dll），需要 Qt 的 bin 在 PATH 里
 set_tests_properties(sync_unit PROPERTIES
     ENVIRONMENT "PATH=${VCPKG_BIN_DIR};${VCPKG_DBG_BIN_DIR};$ENV{PATH}")
+
+# ---- A5：FileWatcher / FileEventDispatcher 单测 ----
+# 不编 FileIndex：这里验证的是"事件源"本身（真实目录 + ReadDirectoryChangesW）。
+add_executable(assistant_watch_tests
+    tests/test_file_watcher.cpp
+    include/core/FileWatcher.h
+    src/core/FileWatcher.cpp
+    src/core/FileEventDispatcher.cpp
+    src/core/Logger.cpp
+)
+
+target_include_directories(assistant_watch_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+)
+
+target_link_libraries(assistant_watch_tests PRIVATE
+    Qt6::Core
+    Qt6::Test
+    spdlog::spdlog
+)
+
+add_test(NAME watch_unit COMMAND assistant_watch_tests)
+set_tests_properties(watch_unit PROPERTIES
+    ENVIRONMENT "PATH=${VCPKG_BIN_DIR};${VCPKG_DBG_BIN_DIR};$ENV{PATH}")

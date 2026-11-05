@@ -107,7 +107,11 @@ Phase 3 剩余（收尾中，写在这里便于续接）：
 - [x] **A4 查询 + baseline**（2026-10-22）：`QueryParser`（自由词 AND + `-否定`）+ `ScoreEngine`（tier 判定 +
   **贪心 O(m) 子序列** + 有界编辑距离，全程零分配）+ `QueryEngine`（top-K min-heap）；`FileIndex::query()` 瘦成转发。
   三条验收全过（语义 golden 全绿、baseline 落盘、与旧版对比 107 项无回归）。详见 `docs/devlog/2026-10-22.md`
-- [ ] A5 增量（`FileWatcher` + 事件分发）… A8 拼音首字母
+- [x] **A5a 事件源**（2026-11-05）：`contract/FileSystemEvent.h`（C2）+ `FileWatcher`（OVERLAPPED，
+      `start()` 返回即生效、按路径合并去重、溢出上报）+ `FileEventDispatcher`（订阅表，不是 EventBus）；
+      8 个 QTest 用例。详见 `docs/devlog/2026-11-05.md`
+- [ ] A5b 接入：`FileIndex` 消费事件 → 快照补丁 + `file_index.db` 差量；`Overflow` → 该根全量重扫
+- [ ] A6 冷启动 / A7 收尾 / A8 拼音首字母
 
 > ✅ **P0-3 已修掉**：不再套 2 万条任意截断，真机索引 20000 → **31845** 条，
 > `Documents`/`Downloads` 终于进得来。A3 的 Win32 扫描器扫 31845 条只要 **459–502 ms**。
@@ -184,10 +188,14 @@ Phase 3 剩余（收尾中，写在这里便于续接）：
 | ConflictResolver | `include/core/sync/ConflictResolver.h` | `decide(L,S,R)` 纯函数判定表 + 冲突副本命名 |
 | PathGuard | `include/core/sync/PathGuard.h` | 相对路径安全校验 + junction 解引用后复核前缀 |
 | SyncDatabase | `include/database/SyncDatabase.h` | `sync.db`（独立连接 `sync`）：devices / sync_state / conflicts / received |
+| FileSystemEvent | `include/contract/FileSystemEvent.h` | C2 契约：Added/Removed/Renamed/Modified/Overflow |
+| FileWatcher | `include/core/FileWatcher.h`, `src/core/FileWatcher.cpp` | 每根一个 OVERLAPPED 句柄；`start()` 即生效；按路径合并去重；溢出显式上报 |
+| FileEventDispatcher | `include/core/FileEventDispatcher.h` | 极轻量订阅表（不是全局 EventBus）；`publish` 在调用线程执行回调 |
 
 > **DB 约定**：每个功能一个独立 DB 文件 + 独立 `QSqlDatabase` 连接名（见 `ClipboardDatabase`），不要共用一个连接。
 > **QML 约定**：搜索浮窗走 `AppBridge`，主面板走 `PanelBridge`，同步页走 `SyncBridge`（第三个桥，注入面板引擎）。
 > **测试约定**：QTest（`Qt6::Test`），不是 GTest；`tests/*.cpp` 里要 `#include "<名字>.moc"` 让 AUTOMOC 处理 `Q_OBJECT`。
+> **测试目标**：`assistant_tests`（同步）、`assistant_watch_tests`（A5 事件），外加 `assistant_golden` / `assistant_a3` / `assistant_bench`；`ctest` 一次跑全。
 
 ## Git 规范
 
@@ -214,6 +222,7 @@ Phase 3 剩余（收尾中，写在这里便于续接）：
   `四模块完整架构.md` 是**架构基线 v1.0**：分工、契约 C1–C4、线程与存储、启动顺序、四条端到端时序、
   依赖矩阵与不变量清单（决策仍以提案为准，本文只答"是什么/谁负责/怎么接/现状到哪"）；
   `四分支整合方案.md` 是三条支线（plugin-market / qianju / file_guard）合并进 main 的顺序与裁剪清单）
+- `docs/reference/` — 参考实现与设计归档（`file_guard/`：M3 安全模块的 Python 原型文档，不进构建）
 - `docs/devlog/` — 开发日志（按日期）
 - `docs/features/` — 功能设计 idea
 - `docs/learning/` — 学习笔记
