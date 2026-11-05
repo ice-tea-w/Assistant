@@ -87,8 +87,9 @@ cmake --build build --config Debug
 - [x] 直连通道（`设备同步-公网直连设计.md`，N0–N2）：`SyncFrame`（ASYN v2 编解码）+ `PeerAddress`、
       `Identity`（CAPI RSA-2048 自签）+ `DeviceAuth`（挑战应答 HMAC）、`SyncServer`（List 分页 / Get / Put / Delete）
       + `NetTransport`（实现 `ITransport`，阻塞式；`SyncEngine` 一行未改）；回环 mTLS 与引擎真同步均有用例
-- [ ] 直连 N2 尾巴：按 IP 5 次失败限速、`.assistant-sync/index.json` 持久化、6 位码配对窗口、
-      `LocalDirTransport`（host 本地根与共享根对称）
+- [x] 直连 N2 尾巴前两项：按 IP 5 次失败锁 60 s（`SyncServer::setAuthLockPolicy` 可调，测试钩子）、
+      `.assistant-sync/index.json`（size+mtime 失效、2 秒合并写盘、`close()` 兜底刷）
+- [ ] 直连 N2 尾巴剩余：6 位码配对窗口、`LocalDirTransport`（host 本地根与共享根对称）
 
 Phase 3 剩余（收尾中，写在这里便于续接）：
 - [x] 热键自定义（设置页捕获组合键 → `PanelBridge::applyHotkey` → `HotkeyManager::reRegister`，失败自动回滚原热键）
