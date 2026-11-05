@@ -11,7 +11,9 @@
 #include "core/ConfigManager.h"
 #include "core/AppIndexer.h"
 #include "core/FileSearcher.h"
+#include "core/FileEventDispatcher.h"
 #include "core/FileIndex.h"
+#include "core/FileWatcher.h"
 #include "database/HistoryDatabase.h"
 #include "database/TodoDatabase.h"
 #include "database/NotesDatabase.h"
@@ -111,7 +113,19 @@ int main(int argc, char *argv[])
                                   + QStringLiteral("/file_index.db"));
         fileIndex.setEntryLimit(config.fileIndexHardLimitEntries());
         backend.setFileIndex(&fileIndex);
+
+        // A5b：扫描完之后接上增量事件源。watcher 只在 v2 引擎下有意义
+        //（legacy 是同步建索引的退路，A7 会删除）。
+        FileEventDispatcher fileEvents;
+        FileWatcher         fileWatcher;
+        fileIndex.setEventSource(&fileEvents);
+        QObject::connect(&fileWatcher, &FileWatcher::batchReady,
+                         [&fileEvents](const QVector<FileSystemEvent> &batch) {
+                             fileEvents.publish(batch);
+                         });
+
         fileIndex.startAsync();          // 放在 engine.load() 之前，但不再阻塞
+        fileWatcher.start(fileIndex.roots());
     } else {
         FileSearcher::buildIndex();
     }

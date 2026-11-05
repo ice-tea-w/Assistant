@@ -1,5 +1,6 @@
 #include "core/FileIndex.h"
 
+#include "core/FileEventDispatcher.h"
 #include "core/FileSnapshot.h"
 #include "core/SnapshotManager.h"
 #include "core/FileScanner.h"
@@ -9,7 +10,11 @@
 
 #include <QDateTime>
 #include <QElapsedTimer>
+#include <QFileInfo>
+#include <QHash>
+#include <QSet>
 #include <QThread>
+#include <QTimer>
 
 #include <algorithm>
 #include <atomic>
@@ -36,10 +41,12 @@ constexpr int kHardLimitEntries  = 1000000;
 class ScanWorker : public QThread
 {
 public:
-    ScanWorker(int entryLimit, QString databasePath, QObject *parent = nullptr)
+    ScanWorker(int entryLimit, QString databasePath, QStringList roots,
+               QObject *parent = nullptr)
         : QThread(parent)
         , m_entryLimit(entryLimit > 0 ? entryLimit : kHardLimitEntries)
         , m_databasePath(std::move(databasePath))
+        , m_roots(std::move(roots))
     {
     }
 
@@ -66,8 +73,9 @@ protected:
         options.maxEntries       = m_entryLimit;
         options.excludedDirNames = FileScanner::defaultExcludedDirNames();
 
+        const QStringList roots = m_roots.isEmpty() ? FileScanner::defaultRoots() : m_roots;
         QVector<FileScanner::Entry> entries;
-        scan = FileScanner::scan(FileScanner::defaultRoots(), options, &entries,
+        scan = FileScanner::scan(roots, options, &entries,
                                  [this]() {
                                      return m_cancel.load(std::memory_order_relaxed);
                                  });
@@ -101,7 +109,7 @@ protected:
                     dbError = db.lastError();
 
                 const qint64 now = QDateTime::currentSecsSinceEpoch();
-                for (const QString &root : FileScanner::defaultRoots()) {
+                for (const QString &root : roots) {
                     if (!root.isEmpty())
                         db.touchRoot(root, now);
                 }
@@ -140,6 +148,7 @@ private:
     std::atomic<bool> m_cancel{false};
     const int         m_entryLimit;
     const QString     m_databasePath;
+    const QStringList m_roots;   ///< 空 = FileScanner::defaultRoots()
 };
 
 // ---------------------------------------------------------------------------
@@ -192,7 +201,7 @@ void FileIndex::startScan()
         m_worker.reset();
     }
 
-    m_worker = std::make_unique<ScanWorker>(m_entryLimit, m_databasePath);
+    m_worker = std::make_unique<ScanWorker>(m_entryLimit, m_databasePath, m_roots);
     connect(m_worker.get(), &QThread::finished, this, &FileIndex::onScanFinished);
 
     m_scanning = true;
@@ -282,4 +291,198 @@ FileIndex::IndexStats FileIndex::stats() const
 bool FileIndex::isReady() const
 {
     return static_cast<bool>(m_snapshots->current());
+}
+
+// ---------------------------------------------------------------------------
+// A5b：增量补丁
+// ---------------------------------------------------------------------------
+
+void FileIndex::setRoots(const QStringList &roots)
+{
+    m_roots = roots;
+}
+
+QStringList FileIndex::roots() const
+{
+    return m_roots.isEmpty() ? FileScanner::defaultRoots() : m_roots;
+}
+
+void FileIndex::setEventSource(FileEventDispatcher *dispatcher)
+{
+    if (m_dispatcher && m_subscription > 0)
+        m_dispatcher->unsubscribe(m_subscription);
+
+    m_dispatcher = dispatcher;
+    m_subscription = 0;
+    if (!m_dispatcher)
+        return;
+
+    if (!m_eventTimer) {
+        m_eventTimer = new QTimer(this);
+        m_eventTimer->setSingleShot(true);
+        m_eventTimer->setInterval(60);          // 与 watcher 的合并窗口叠加后仍 <= ~150 ms
+        connect(m_eventTimer, &QTimer::timeout, this, [this] {
+            QVector<FileSystemEvent> batch;
+            batch.swap(m_pendingEvents);
+            applyEventBatch(batch);
+        });
+    }
+
+    m_subscription = m_dispatcher->subscribe([this](const FileSystemEvent &ev) {
+        // 约定：dispatcher 在 watcher 所在线程（GUI）发布事件
+        m_pendingEvents.push_back(ev);
+        if (m_eventTimer && !m_eventTimer->isActive())
+            m_eventTimer->start();
+    });
+
+    Logger::get().info("FileIndex: 已接入增量事件源（subscription {}）", m_subscription);
+}
+
+void FileIndex::applyEventBatch(const QVector<FileSystemEvent> &batch)
+{
+    if (batch.isEmpty())
+        return;
+
+    for (const FileSystemEvent &ev : batch) {
+        if (ev.type == FileSystemEvent::Overflow) {
+            Logger::get().warn("FileIndex: 收到 Overflow（{}），转为全量重扫",
+                               ev.path.toStdString());
+            startAsync();
+            return;
+        }
+    }
+
+    // 扫描期间的事件不单独处理：这轮扫描结束时会发布磁盘现状
+    if (m_scanning) {
+        m_pendingRefresh = true;
+        return;
+    }
+
+    // 大批量（构建产物、解压）不值得逐条打补丁，直接重扫更稳
+    if (batch.size() > 2000) {
+        Logger::get().info("FileIndex: 事件批过大（{}），转为全量重扫", batch.size());
+        startAsync();
+        return;
+    }
+
+    if (m_patchBusy.exchange(true)) {
+        m_pendingRefresh = true;      // 上一批还没算完，交给扫描兜底
+        return;
+    }
+
+    QThread *thread = QThread::create([this, batch] { patchSnapshotInWorker(batch); });
+    connect(thread, &QThread::finished, thread, &QObject::deleteLater);
+    thread->start();
+}
+
+void FileIndex::patchSnapshotInWorker(QVector<FileSystemEvent> batch)
+{
+    const std::shared_ptr<const FileSnapshot> current = m_snapshots->current();
+    if (!current) {
+        m_patchBusy.store(false);
+        return;
+    }
+
+    // 同一路径在一批里可能多次出现：后来的覆盖先前的；Renamed 拆成 删旧 + 加新
+    QHash<QString, FileSystemEvent> changes;
+    for (const FileSystemEvent &ev : batch) {
+        if (ev.type == FileSystemEvent::Renamed) {
+            FileSystemEvent removed;
+            removed.type = FileSystemEvent::Removed;
+            removed.path = ev.oldPath;
+            changes.insert(ev.oldPath.toLower(), removed);
+
+            FileSystemEvent added;
+            added.type = FileSystemEvent::Added;
+            added.path = ev.path;
+            changes.insert(ev.path.toLower(), added);
+        } else {
+            changes.insert(ev.path.toLower(), ev);
+        }
+    }
+
+    FileSnapshot::Builder builder;
+    builder.reserve(current->size() + changes.size());
+
+    QSet<QString> handled;
+    handled.reserve(changes.size());
+
+    auto rowFor = [](const QString &path) {
+        FileIndexDatabase::FileRow row;
+        const QFileInfo info(path);
+        row.path  = path;
+        row.name  = info.fileName();
+        row.size  = info.size();
+        row.mtime = info.lastModified().toSecsSinceEpoch();
+        return row;
+    };
+
+    FileIndexDatabase::Diff diff;
+
+    for (int i = 0; i < current->size(); ++i) {
+        const QString path = current->pathAt(i);
+        const QString key  = path.toLower();
+        auto it = changes.constFind(key);
+        if (it == changes.constEnd()) {
+            builder.add(current->nameAt(i), path, current->sizeAt(i), current->mtimeAt(i));
+            continue;
+        }
+
+        handled.insert(key);
+        if (it->type == FileSystemEvent::Removed)
+            continue;                                  // 从快照里消失
+
+        const QFileInfo info(path);
+        if (!info.isFile())
+            continue;                                  // 目录/已消失：不进索引
+        builder.add(info.fileName(), path, info.size(), info.lastModified().toSecsSinceEpoch());
+        if (it->type == FileSystemEvent::Modified)
+            diff.changed.append(rowFor(path));
+    }
+
+    for (auto it = changes.constBegin(); it != changes.constEnd(); ++it) {
+        if (handled.contains(it.key()))
+            continue;
+        if (it->type == FileSystemEvent::Removed) {
+            diff.removed.append(it->path);
+            continue;
+        }
+        const QFileInfo info(it->path);
+        if (!info.isFile())
+            continue;
+        builder.add(info.fileName(), it->path, info.size(),
+                    info.lastModified().toSecsSinceEpoch());
+        diff.added.append(rowFor(it->path));
+    }
+
+    std::shared_ptr<const FileSnapshot> patched = builder.finish();
+
+    if (!m_databasePath.isEmpty() && !diff.empty()) {
+        FileIndexDatabase db(QStringLiteral("file_index_patch"));
+        if (db.open(m_databasePath)) {
+            if (!db.applyDiff(diff))
+                Logger::get().warn("FileIndex: 增量写库失败 — {}",
+                                   db.lastError().toStdString());
+            db.close();
+        }
+    }
+
+    QMetaObject::invokeMethod(this, [this, patched, batch] {
+        publishPatchedSnapshot(patched, batch.size());
+    }, Qt::QueuedConnection);
+}
+
+void FileIndex::publishPatchedSnapshot(std::shared_ptr<const FileSnapshot> snapshot, int changedEvents)
+{
+    m_patchBusy.store(false);
+
+    if (!snapshot)
+        return;
+
+    m_snapshots->publish(std::move(snapshot));
+    m_msLastScan = 0;
+
+    Logger::get().info("FileIndex: 增量补丁 — {} 个事件，快照 #{} 现有 {} 条",
+                       changedEvents, m_snapshots->generation(), m_snapshots->current()->size());
+    emit indexStateChanged();
 }

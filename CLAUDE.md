@@ -110,7 +110,10 @@ Phase 3 剩余（收尾中，写在这里便于续接）：
 - [x] **A5a 事件源**（2026-11-05）：`contract/FileSystemEvent.h`（C2）+ `FileWatcher`（OVERLAPPED，
       `start()` 返回即生效、按路径合并去重、溢出上报）+ `FileEventDispatcher`（订阅表，不是 EventBus）；
       8 个 QTest 用例。详见 `docs/devlog/2026-11-05.md`
-- [ ] A5b 接入：`FileIndex` 消费事件 → 快照补丁 + `file_index.db` 差量；`Overflow` → 该根全量重扫
+- [x] **A5b 接入**（2026-11-05）：`FileIndex::setEventSource()` 订阅事件 → 60 ms 合并 → 一次性线程做
+      "旧快照 + 事件 → 新快照 + 库差量" → 回到 GUI 线程发布；`Overflow` / 批 >2000 条 / 扫描中 → 全量重扫。
+      `setRoots()` 让扫描根可注入（测试与将来的配置项）。端到端用例 `assistant_index_tests`：新建 3 s 内可搜到、
+      删除后从结果消失。§A5 两条验收（新建/改名/删除可见、溢出后收敛）**已满足**
 - [ ] A6 冷启动 / A7 收尾 / A8 拼音首字母
 
 > ✅ **P0-3 已修掉**：不再套 2 万条任意截断，真机索引 20000 → **31845** 条，
@@ -163,7 +166,7 @@ Phase 3 剩余（收尾中，写在这里便于续接）：
 | FileSearcher | `include/core/FileSearcher.h`, `src/core/FileSearcher.cpp` | 自控前序 DFS（`walkDir`，不跟随 junction、目录级剪枝）+ FuzzyMatcher 打分 top-N, 索引上限 2 万。**A2 起是 `engine=legacy` 的退路**，A7 删除 |
 | FileSnapshot | `include/core/FileSnapshot.h` | 不可变只读快照（`Builder` 写入 → `nameAt/lowerAt/pathAt/sizeAt/mtimeAt` 读出）；物理表示藏在这层之后，查询层不摸容器 |
 | SnapshotManager | `include/core/SnapshotManager.h`, `src/core/SnapshotManager.cpp` | 快照的 COW 发布（`std::atomic<std::shared_ptr<const T>>`）；读侧取一份即用，无需加锁 |
-| FileIndex | `include/core/FileIndex.h`, `src/core/FileIndex.cpp` | 文件索引**门面**（薄）：`startAsync` 后台扫描 + `query` + `stats`；`engine=v2` 时经 AppBridge 提供文件结果。扫描/写库都在 worker 线程（`QSqlDatabase` 线程亲和） |
+| FileIndex | `include/core/FileIndex.h`, `src/core/FileIndex.cpp` | 文件索引**门面**（薄）：`startAsync` 后台扫描 + `query` + `stats` + A5b 的 `setEventSource` / `setRoots`；`engine=v2` 时经 AppBridge 提供文件结果。扫描/写库都在 worker 线程（`QSqlDatabase` 线程亲和） |
 | FileScanner | `include/core/FileScanner.h`, `src/core/FileScanner.cpp` | 采集层：Win32 **句柄栈 DFS**（`FindFirstFileExW` + `FindExInfoBasic` + `LARGE_FETCH`）；目录级剪枝、不跟随 reparse point、长路径 `\\?\`、权限拒绝计数、可取消。剪枝名单只有这一份 |
 | FileIndexDatabase | `include/database/FileIndexDatabase.h`, `src/database/FileIndexDatabase.cpp` | `file_index.db`（独立连接 `file_index`）：dirs/files/roots 三表、三方差集、UPSERT 批量事务。**派生数据**，可删库重扫 |
 | DatabaseMigrator | `include/database/DatabaseMigrator.h`, `src/database/DatabaseMigrator.cpp` | `PRAGMA user_version` **前向**迁移，每步一事务；高版本库拒绝；禁止 DROP+重建 |
@@ -195,7 +198,7 @@ Phase 3 剩余（收尾中，写在这里便于续接）：
 > **DB 约定**：每个功能一个独立 DB 文件 + 独立 `QSqlDatabase` 连接名（见 `ClipboardDatabase`），不要共用一个连接。
 > **QML 约定**：搜索浮窗走 `AppBridge`，主面板走 `PanelBridge`，同步页走 `SyncBridge`（第三个桥，注入面板引擎）。
 > **测试约定**：QTest（`Qt6::Test`），不是 GTest；`tests/*.cpp` 里要 `#include "<名字>.moc"` 让 AUTOMOC 处理 `Q_OBJECT`。
-> **测试目标**：`assistant_tests`（同步）、`assistant_watch_tests`（A5 事件），外加 `assistant_golden` / `assistant_a3` / `assistant_bench`；`ctest` 一次跑全。
+> **测试目标**：`assistant_tests`（同步）、`assistant_watch_tests`（A5 事件源）、`assistant_index_tests`（事件→索引→查询），外加 `assistant_golden` / `assistant_a3` / `assistant_bench`；`ctest` 一次跑全 6 项。
 
 ## Git 规范
 

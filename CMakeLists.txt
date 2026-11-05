@@ -140,6 +140,7 @@ set(ASSISTANT_INDEX_TEST_SOURCES
     src/core/FileScanner.cpp
     src/core/FileSearcher.cpp
     src/core/FileIndex.cpp
+    src/core/FileEventDispatcher.cpp
     src/core/SnapshotManager.cpp
     src/database/DatabaseMigrator.cpp
     src/database/FileIndexDatabase.cpp
@@ -262,4 +263,32 @@ target_link_libraries(assistant_watch_tests PRIVATE
 
 add_test(NAME watch_unit COMMAND assistant_watch_tests)
 set_tests_properties(watch_unit PROPERTIES
+    ENVIRONMENT "PATH=${VCPKG_BIN_DIR};${VCPKG_DBG_BIN_DIR};$ENV{PATH}")
+
+# ---- A5b：事件 → 索引 → 查询 的端到端 ----
+add_executable(assistant_index_tests
+    tests/test_file_index_incremental.cpp
+    ${ASSISTANT_INDEX_TEST_SOURCES}
+    include/core/FileIndex.h
+    include/core/FileWatcher.h
+    src/core/FileWatcher.cpp
+    src/core/FileEventDispatcher.cpp
+)
+
+target_include_directories(assistant_index_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+)
+target_compile_definitions(assistant_index_tests PRIVATE
+    APP_VERSION="${PROJECT_VERSION}"
+)
+
+target_link_libraries(assistant_index_tests PRIVATE
+    Qt6::Core
+    Qt6::Sql
+    Qt6::Test
+    spdlog::spdlog
+)
+
+add_test(NAME index_incremental COMMAND assistant_index_tests)
+set_tests_properties(index_incremental PROPERTIES
     ENVIRONMENT "PATH=${VCPKG_BIN_DIR};${VCPKG_DBG_BIN_DIR};$ENV{PATH}")

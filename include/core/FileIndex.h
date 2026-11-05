@@ -3,14 +3,20 @@
 #include <QList>
 #include <QObject>
 #include <QString>
+#include <QStringList>
+#include <QVector>
 
+#include <atomic>
 #include <memory>
 
+#include "contract/FileSystemEvent.h"
 #include "ui/SearchResult.h"
 
 class FileSnapshot;
 class SnapshotManager;
 class QueryEngine;
+class FileEventDispatcher;
+class QTimer;
 class ScanWorker;    // 定义在 FileIndex.cpp（内部协作者：扫描 + 差量写库）
 
 /// 文件索引**门面**（架构文档 §2.2：薄，本方案最重要的架构约束）。
@@ -73,6 +79,15 @@ public:
     /// 增量补丁会用它；golden 测试也用它注入合成语料（不必碰磁盘）。
     void setSnapshot(std::shared_ptr<const FileSnapshot> snapshot);
 
+    /// 扫描根目录；传空表示沿用 `FileScanner::defaultRoots()`。
+    /// 必须在 `startAsync()` 之前设置（A5b 起测试与将来的配置项都走它）。
+    void setRoots(const QStringList &roots);
+    QStringList roots() const;
+
+    /// A5b：接上增量事件源。传 nullptr 断开。重复设置会先断开旧的订阅。
+    /// 事件在 GUI 线程回调进来，补丁计算在一次性工作线程里做（不阻塞界面）。
+    void setEventSource(FileEventDispatcher *dispatcher);
+
 signals:
     /// 第一份快照（或重扫后的新快照）发布完成，在 **GUI 线程**发出。
     void indexReady(int entries, qint64 msLastScan);
@@ -81,6 +96,12 @@ signals:
 private:
     void onScanFinished();
     void startScan();
+
+    /// 在 GUI 线程收批；必要时抛给一次性线程做补丁。
+    void applyEventBatch(const QVector<FileSystemEvent> &batch);
+    /// 工作线程里执行：旧快照 + 事件 → 新快照 + 库差量。
+    void patchSnapshotInWorker(QVector<FileSystemEvent> batch);
+    void publishPatchedSnapshot(std::shared_ptr<const FileSnapshot> snapshot, int changedEvents);
 
     std::unique_ptr<SnapshotManager> m_snapshots;
     std::unique_ptr<QueryEngine>     m_query;
@@ -91,4 +112,12 @@ private:
     qint64 m_msLastScan     = 0;
     int    m_entryLimit     = 0;   ///< 0 = 用 §3.3 的默认硬上限
     int    m_dbRows         = 0;
+
+    // ---- A5b 增量 ----
+    QStringList                m_roots;
+    FileEventDispatcher       *m_dispatcher = nullptr;
+    int                        m_subscription = 0;
+    std::atomic<bool>          m_patchBusy{false};
+    QVector<FileSystemEvent>   m_pendingEvents;   ///< GUI 线程
+    QTimer                    *m_eventTimer = nullptr;
 };
