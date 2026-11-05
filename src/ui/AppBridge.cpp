@@ -287,12 +287,25 @@ void AppBridge::setFileIndex(FileIndex *index)
     // 后台索引扫完 → 重跑最近一次查询。用户在"正在建立索引…"期间敲的字
     // 不该白敲 —— 这正是前后台分离要换来的东西。没敲过字就刷新一次默认状态，
     // 否则状态栏会一直停在"正在建立索引…"。
-    connect(m_fileIndex, &FileIndex::indexReady, this, [this](int entries, qint64 ms) {
-        Logger::get().info("AppBridge: file index ready — {} entries in {} ms", entries, ms);
+    auto refreshFromIndex = [this](int entries, qint64 ms) {
         if (!m_lastQuery.isEmpty())
             search(m_lastQuery);
         else
             activate();
+        Logger::get().info("AppBridge: file index refreshed — {} entries ({} ms)", entries, ms);
+    };
+
+    connect(m_fileIndex, &FileIndex::indexReady, this, [this, refreshFromIndex](int entries, qint64 ms) {
+        Logger::get().info("AppBridge: file index ready — {} entries in {} ms", entries, ms);
+        refreshFromIndex(entries, ms);
+    });
+
+    // A6：冷启动的"先可用"阶段也要刷新一次 —— 否则从点击热键到扫描结束之间，
+    // 用户看到的是空列表，而其实 DB 里已经有上一轮的世界了。
+    connect(m_fileIndex, &FileIndex::cacheLoaded, this,
+            [this, refreshFromIndex](int entries, qint64 ms) {
+        Logger::get().info("AppBridge: file index from cache — {} entries in {} ms", entries, ms);
+        refreshFromIndex(entries, ms);
     });
 }
 

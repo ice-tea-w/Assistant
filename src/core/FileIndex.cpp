@@ -184,7 +184,58 @@ void FileIndex::startAsync()
         m_pendingRefresh = true;
         return;
     }
+
+    // A6：冷启动先走 DB —— 有库且当前没有快照时，先把"上次看到的世界"发布出去，
+    // 界面立刻可查；随后再扫描并校正。
+    if (!m_snapshots->current() && !m_databasePath.isEmpty()
+        && QFileInfo::exists(m_databasePath)) {
+        startColdLoad();
+        return;
+    }
+
     startScan();
+}
+
+void FileIndex::startColdLoad()
+{
+    // 同步载入：32k 行约 20–40 ms，换来的是"没有第二个线程生命周期要管"。
+    // 200k 行的量级需要改成异步（A6b），届时用与 ScanWorker 同样的
+    // "线程对象由 FileIndex 持有、析构里 wait" 的方式，而不是 QThread::create。
+    QElapsedTimer timer;
+    timer.start();
+
+    m_scanning = true;
+    emit indexStateChanged();
+
+    FileSnapshot::Builder builder;
+    int rows = 0;
+    {
+        FileIndexDatabase db(QStringLiteral("file_index_cold"));
+        if (db.open(m_databasePath)) {
+            const auto all = db.loadAll();
+            rows = static_cast<int>(all.size());
+            builder.reserve(rows);
+            for (const auto &row : all)
+                builder.add(row.name, row.path, row.size, row.mtime);
+            db.close();
+        }
+    }
+
+    auto snapshot = builder.finish();
+    m_dbRows    = rows;
+    m_coldMs    = timer.elapsed();
+    m_fromCache = true;
+    m_scanning  = false;
+
+    m_snapshots->publish(snapshot);
+    const int entries = snapshot->size();
+
+    Logger::get().info("FileIndex: 冷启动从 DB 载入 {} 条（{} ms），立即可查；随后后台校正",
+                       entries, m_coldMs);
+    emit cacheLoaded(entries, m_coldMs);
+    emit indexStateChanged();
+
+    startScan();                   // 校正
 }
 
 void FileIndex::refresh()
@@ -221,6 +272,7 @@ void FileIndex::onScanFinished()
         m_dbRows     = m_worker->dbRows;
 
         const int entries = snap ? snap->size() : 0;
+        m_fromCache = false;
         m_snapshots->publish(std::move(snap));
 
         Logger::get().info("FileIndex: published snapshot #{} — {} files in {} ms (db {} rows)",
@@ -285,6 +337,7 @@ FileIndex::IndexStats FileIndex::stats() const
     s.scanning   = m_scanning;
     s.msLastScan = m_msLastScan;
     s.generation = m_snapshots->generation();
+    s.fromCache  = m_fromCache;
     return s;
 }
 

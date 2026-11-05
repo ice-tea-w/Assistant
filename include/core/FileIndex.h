@@ -42,6 +42,7 @@ public:
         bool   scanning   = false;  ///< 后台是否正在扫
         qint64 msLastScan = 0;      ///< 上次扫描耗时
         int    generation = 0;      ///< 发布过几代快照
+        bool   fromCache  = false;  ///< 当前快照来自 DB 冷启动（还没被扫描校正）
     };
 
     explicit FileIndex(QObject *parent = nullptr);
@@ -91,6 +92,11 @@ public:
 signals:
     /// 第一份快照（或重扫后的新快照）发布完成，在 **GUI 线程**发出。
     void indexReady(int entries, qint64 msLastScan);
+
+    /// A6：冷启动的"先可用"阶段 —— 快照已从 DB 载入并发布（此时扫描还没结束）。
+    /// 消费者可以立刻查询；扫描完成后会再发一次 `indexReady`。
+    void cacheLoaded(int entries, qint64 ms);
+
     void indexStateChanged();
 
 private:
@@ -98,6 +104,7 @@ private:
     void startScan();
 
     /// 在 GUI 线程收批；必要时抛给一次性线程做补丁。
+    void startColdLoad();
     void applyEventBatch(const QVector<FileSystemEvent> &batch);
     /// 工作线程里执行：旧快照 + 事件 → 新快照 + 库差量。
     void patchSnapshotInWorker(QVector<FileSystemEvent> batch);
@@ -118,6 +125,8 @@ private:
     FileEventDispatcher       *m_dispatcher = nullptr;
     int                        m_subscription = 0;
     std::atomic<bool>          m_patchBusy{false};
+    bool                       m_fromCache = false;
+    qint64                     m_coldMs    = 0;
     QVector<FileSystemEvent>   m_pendingEvents;   ///< GUI 线程
     QTimer                    *m_eventTimer = nullptr;
 };

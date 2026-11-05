@@ -8,6 +8,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QtTest>
 
@@ -26,6 +27,7 @@ class TestFileIndexIncremental : public QObject
 private slots:
     void addedIsSearchable();
     void removedDisappearsFromResults();
+    void coldStartPublishesFromDatabase();
 
 private:
     static bool writeFile(const QString &path, const QByteArray &content = "needle content")
@@ -111,6 +113,42 @@ void TestFileIndexIncremental::removedDisappearsFromResults()
 
     watcher.stop();
     index.setEventSource(nullptr);
+}
+
+void TestFileIndexIncremental::coldStartPublishesFromDatabase()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    QVERIFY(writeFile(dir.path() + "/needle-cold.txt"));
+
+    const QString dbPath = dir.path() + "/file_index.db";
+
+    // 第一轮：真扫描，把结果写进 DB
+    {
+        FileIndex first;
+        first.setRoots({dir.path()});
+        first.setDatabasePath(dbPath);
+        first.startAsync();
+        QTRY_VERIFY_WITH_TIMEOUT(first.isReady(), 15000);
+        QTRY_VERIFY_WITH_TIMEOUT(!first.stats().scanning, 15000);
+    }
+    QVERIFY(QFileInfo::exists(dbPath));
+
+    // 第二轮：冷启动应先从 DB 发布快照（cacheLoaded），此时已可查询
+    FileIndex second;
+    second.setRoots({dir.path()});
+    second.setDatabasePath(dbPath);
+    QSignalSpy cacheSpy(&second, &FileIndex::cacheLoaded);
+
+    second.startAsync();
+
+    QTRY_VERIFY_WITH_TIMEOUT(cacheSpy.count() > 0, 15000);
+    QVERIFY2(resultsContain(second.query(QStringLiteral("cold"), 10), "needle-cold.txt"),
+             "冷启动发布后应立即可查");
+
+    // 校正扫描最终也要收敛
+    QTRY_VERIFY_WITH_TIMEOUT(!second.stats().scanning, 15000);
+    QVERIFY(resultsContain(second.query(QStringLiteral("cold"), 10), "needle-cold.txt"));
 }
 
 QTEST_GUILESS_MAIN(TestFileIndexIncremental)
