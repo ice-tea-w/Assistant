@@ -89,7 +89,9 @@ cmake --build build --config Debug
       + `NetTransport`（实现 `ITransport`，阻塞式；`SyncEngine` 一行未改）；回环 mTLS 与引擎真同步均有用例
 - [x] 直连 N2 尾巴前两项：按 IP 5 次失败锁 60 s（`SyncServer::setAuthLockPolicy` 可调，测试钩子）、
       `.assistant-sync/index.json`（size+mtime 失效、2 秒合并写盘、`close()` 兜底刷）
-- [ ] 直连 N2 尾巴剩余：6 位码配对窗口、`LocalDirTransport`（host 本地根与共享根对称）
+- [x] 6 位码配对接进应用：`SyncBridge` 起 `SyncServer`（独立线程 + 事件循环）、口令落 `devices` 表、
+      同步页「直连（实验）」卡片（监听 / 生成配对码 / 设备列表 / 对端配对）；有凭据时 `syncNow()` 额外挂 `NetTransport`
+- [ ] 直连 N2 尾巴剩余：`LocalDirTransport`（host 本地根与共享根对称）、直连卡片真机肉眼走查、两台机器真跑
 
 Phase 3 剩余（收尾中，写在这里便于续接）：
 - [x] 热键自定义（设置页捕获组合键 → `PanelBridge::applyHotkey` → `HotkeyManager::reRegister`，失败自动回滚原热键）
