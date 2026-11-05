@@ -1,5 +1,6 @@
 #include "core/FileSearcher.h"
 #include "core/FuzzyMatcher.h"
+#include "core/FileScanner.h"   // 剪枝名单只留一份（A3）
 #include "core/Logger.h"
 
 #include <QDir>
@@ -22,14 +23,9 @@ namespace {
     /// already excluded because QDir::Hidden is not part of the listing filter
     /// (dot-files and hidden-attribute entries are skipped), but these names are
     /// not marked hidden and would otherwise be crawled.
-    const QStringList kSkippedDirs = {
-        QStringLiteral("node_modules"),
-        QStringLiteral("__pycache__"),
-        QStringLiteral(".cache"),
-        QStringLiteral(".git"),
-        QStringLiteral(".svn"),
-    };
-
+    ///
+    /// **A3 起名单只有一份**：`FileScanner::defaultExcludedDirNames()`。
+    /// 本文件原先那份 `kSkippedDirs` 已删除（两处同义规则最容易各自漂移）。
     QList<Entry> s_index;
     int s_prunedDirs = 0;
 
@@ -40,7 +36,7 @@ namespace {
     /// 旧的实现压在遍历最内层循环上，2 万条文件要白白分配 2 万个字符串。
     bool isSkippedDirName(const QString &name)
     {
-        return kSkippedDirs.contains(name, Qt::CaseInsensitive);
+        return FileScanner::defaultExcludedDirNames().contains(name, Qt::CaseInsensitive);
     }
 
     /// 深度优先遍历一个目录（前序，与旧 QDirIterator 的顺序一致）。

@@ -1,0 +1,19 @@
+{
+  "manifestVersion": 1,
+  "id": "com.assistant.canary",
+  "name": "API 金丝雀",
+  "version": "1.0.0",
+  "description": "用到 host 每一个属性与方法的测试插件。改 PluginHost 前先看它。",
+  "author": "AssistantTeam",
+  "license": "MIT",
+  "icon": "🐤",
+  "runtime": "qml",
+  "engines": { "assistant": ">=0.1.0", "api": ">=1.0.0" },
+  "main": "main.qml",
+  "permissions": ["clipboard.read", "network"],
+  "contributes": {
+    "pages": [
+      { "id": "canary", "title": "金丝雀", "icon": "🐤", "source": "Page.qml" }
+    ]
+  }
+}

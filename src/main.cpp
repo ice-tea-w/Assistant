@@ -10,7 +10,9 @@
 #include "core/Logger.h"
 #include "core/ConfigManager.h"
 #include "core/AppIndexer.h"
-#include "core/FileSearcher.h"
+#include "core/FileEventDispatcher.h"
+#include "core/FileIndex.h"
+#include "core/FileWatcher.h"
 #include "database/HistoryDatabase.h"
 #include "database/TodoDatabase.h"
 #include "database/NotesDatabase.h"
@@ -19,6 +21,12 @@
 #include "core/HotkeyManager.h"
 #include "ui/AppBridge.h"
 #include "ui/PanelBridge.h"
+#include "ui/PluginBridge.h"
+#include "core/plugin/PluginCatalog.h"
+#include "core/plugin/PluginInstaller.h"
+#include "core/plugin/PluginLoader.h"
+#include "core/plugin/PluginManager.h"
+#include "core/plugin/PluginRegistry.h"
 #include "ui/SyncBridge.h"
 
 // CMake 通过 target_compile_definitions 注入（project VERSION）
@@ -90,8 +98,29 @@ int main(int argc, char *argv[])
     for (const AppIndexer::Entry &app : AppIndexer::scan())
         backend.addApp(app.name, app.path);
 
-    // ---- file indexer (Step 6): build filename index for on-the-fly search ----
-    FileSearcher::buildIndex();
+    // ---- file indexer（A7 起只有 v2 一条实现） ----
+    // v2 = FileIndex 门面 + 后台扫描（FileScanner + FileIndexDatabase 差量）+ A6 冷启动。
+    // 旧 FileSearcher 已从产品路径删除，只剩测试里的对照实现。
+    FileIndex fileIndex;
+    fileIndex.setDatabasePath(QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation)
+                              + QStringLiteral("/file_index.db"));
+    fileIndex.setEntryLimit(config.fileIndexHardLimitEntries());
+    backend.setFileIndex(&fileIndex);
+
+    // A5b：扫描完之后接上增量事件源。
+    FileEventDispatcher fileEvents;
+    FileWatcher         fileWatcher;
+    fileIndex.setEventSource(&fileEvents);
+    QObject::connect(&fileWatcher, &FileWatcher::batchReady,
+                     [&fileEvents](const QVector<FileSystemEvent> &batch) {
+                         fileEvents.publish(batch);
+                     });
+
+    fileIndex.startAsync();          // 放在 engine.load() 之前，但不再阻塞
+    fileWatcher.start(fileIndex.roots());
+
+    Logger::get().info("FileIndex: engine = v2（硬上限 {} 条）",
+                       config.fileIndexHardLimitEntries());
 
     TrayManager   tray;
 
@@ -162,6 +191,33 @@ int main(int argc, char *argv[])
         window->setPosition(config.windowX(), config.windowY());
     }
 
+    // ---- plugin subsystem (插件市场 M0：本地插件管理) ----
+    // 装配点是唯一的：四个能力模块彼此不认识，只有 PluginManager 持有它们。
+    PluginRegistry pluginRegistry;
+    {
+        QString warning;
+        if (!pluginRegistry.load(&warning)) {
+            // Not fatal: the app runs without plugins, the market page just stays empty.
+            Logger::get().error("Plugins: cannot prepare {}",
+                                pluginRegistry.rootDir().toStdString());
+        } else if (!warning.isEmpty()) {
+            Logger::get().warn("Plugins: {}", warning.toStdString());
+        }
+    }
+
+    PluginLoader    pluginLoader;
+    PluginCatalog   pluginCatalog(&pluginRegistry);
+    PluginInstaller pluginInstaller(&pluginRegistry);
+    PluginManager   pluginManager(&pluginRegistry, &pluginLoader);
+    PluginBridge    pluginBridge(&pluginManager);
+
+    pluginManager.setInstaller(&pluginInstaller);
+    pluginManager.setCatalog(&pluginCatalog);
+
+    // 市场索引地址。默认留空 = 只用内置 seed：离线也能看到内容，答辩现场不怕断网。
+    // 想接真服务器：设环境变量 ASSISTANT_MARKET_URL 指向一个 index.json。
+    pluginCatalog.setMarketUrl(qEnvironmentVariable("ASSISTANT_MARKET_URL"));
+
     // ---- main panel window (Phase 3 Step 1) ----
     // 常驻主面板：独立 engine，初始隐藏，由 🏠 按钮 / 托盘菜单触发显示。
     QQmlApplicationEngine panelEngine;
@@ -169,7 +225,19 @@ int main(int argc, char *argv[])
     panelEngine.rootContext()->setContextProperty("panel", &panel);
     panelEngine.rootContext()->setContextProperty("sync", &syncBridge);
     panelEngine.rootContext()->setContextProperty("appVersion", QCoreApplication::applicationVersion());
+
+    // Must be registered BEFORE the QML loads: MainPanel binds `pluginApi` to
+    // `plugins` at creation time and falls back to mock data when it is absent.
+    panelEngine.rootContext()->setContextProperty("plugins", &pluginBridge);
+    pluginManager.setEngine(&panelEngine);
+
     panelEngine.load(QUrl(QStringLiteral("qrc:/qml/MainPanel.qml")));
+
+    // Plugins load after the engine exists but before the window is shown, so the
+    // navigation list is complete on first paint instead of popping in later.
+    // A failing plugin is recorded as its own problem and never blocks the rest.
+    pluginManager.setDark(config.theme() == QLatin1String("dark"));
+    pluginManager.loadEnabledAtStartup();
 
     QWindow *panelWindow = nullptr;
     if (!panelEngine.rootObjects().isEmpty())
@@ -206,5 +274,10 @@ int main(int argc, char *argv[])
 
     tray.init();
 
-    return app.exec();
+    const int exitCode = app.exec();
+
+    // Plugin objects must be destroyed while the engine is still alive.
+    pluginManager.unloadAll();
+
+    return exitCode;
 }

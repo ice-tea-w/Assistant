@@ -63,6 +63,8 @@ void ConfigManager::applyDefaults()
     m_windowX          = -1;   // -1 means "not saved — let the caller decide"
     m_windowY          = -1;
     m_logLevel         = "info";
+    // A7 起 v2 是唯一实现（旧 FileSearcher 已从产品路径删除）。
+    m_fileIndexHardLimit = 1000000;   // §3.3 硬保护上限（软预算 30 万只记日志）
 
     // 设备同步：路径留空由用户在设置页填；设备名默认取主机名
     m_syncLocalRoot.clear();
@@ -125,6 +127,17 @@ void ConfigManager::load()
             if (log.contains("level")) m_logLevel = QString::fromStdString(log["level"]);
         }
 
+        // file index engine (A2 的 A/B 开关) + 硬保护上限 (A3, §3.3)
+        if (j.contains("fileIndex")) {
+            auto &fi = j["fileIndex"];
+            // A7：fileIndex.engine 已删除（v2 是唯一实现）；旧配置里的这个键会被忽略，
+            // 下次 save() 时自然消失。
+            if (fi.contains("hardLimitEntries")) {
+                const int v = fi["hardLimitEntries"].get<int>();
+                if (v > 0)
+                    m_fileIndexHardLimit = v;
+            }
+        }
         // sync（设备同步）
         if (j.contains("sync")) {
             auto &s = j["sync"];
@@ -182,6 +195,9 @@ void ConfigManager::save()
     j["logging"] = {
         {"level", m_logLevel.toStdString()}
     };
+    j["fileIndex"] = {
+        {"hardLimitEntries",  m_fileIndexHardLimit}
+    };
     j["sync"] = {
         {"localRoot",  m_syncLocalRoot.toStdString()},
         {"sharedDir",  m_syncSharedDir.toStdString()},
@@ -221,6 +237,7 @@ QString ConfigManager::hotkeyModifiers() const { return m_hotkeyModifiers; }
 QString ConfigManager::hotkeyKey() const       { return m_hotkeyKey; }
 QString ConfigManager::logLevel() const       { return m_logLevel; }
 bool    ConfigManager::autoStart() const      { return m_autoStart; }
+int     ConfigManager::fileIndexHardLimitEntries() const { return m_fileIndexHardLimit; }
 
 QString ConfigManager::syncLocalRoot() const  { return m_syncLocalRoot; }
 QVariantList ConfigManager::syncRoots() const { return m_syncRoots; }
@@ -283,6 +300,16 @@ void ConfigManager::setAutoStart(bool enabled)
 
     m_autoStart = enabled;
     emit autoStartChanged();
+}
+
+void ConfigManager::setFileIndexHardLimitEntries(int entries)
+{
+    if (entries <= 0 || m_fileIndexHardLimit == entries)
+        return;
+
+    m_fileIndexHardLimit = entries;
+    save();
+    emit fileIndexHardLimitChanged();
 }
 
 // ---- 设备同步 setters ----

@@ -14,6 +14,7 @@ class ConfigManager : public QObject
     Q_PROPERTY(QString hotkeyKey READ hotkeyKey NOTIFY hotkeyChanged)
     Q_PROPERTY(QString logLevel READ logLevel NOTIFY logLevelChanged)
     Q_PROPERTY(bool autoStart READ autoStart NOTIFY autoStartChanged)
+    Q_PROPERTY(int fileIndexHardLimitEntries READ fileIndexHardLimitEntries NOTIFY fileIndexHardLimitChanged)
     Q_PROPERTY(QString syncLocalRoot READ syncLocalRoot NOTIFY syncChanged)
     Q_PROPERTY(QVariantList syncRoots READ syncRoots NOTIFY syncChanged)
     Q_PROPERTY(QString syncSharedDir READ syncSharedDir NOTIFY syncChanged)
@@ -43,6 +44,13 @@ public:
     /// 每次 `load()` 同步一次，不写进 config.json（避免两处真相不一致）。
     bool autoStart() const;
 
+    /// 文件索引引擎：`"legacy"`（旧 FileSearcher，同步建索引）或
+    /// `"v2"`（FileIndex 门面 + 后台扫描），**默认 v2**。
+    ///
+
+    /// 索引硬保护上限（架构 §3.3）：到了就**停止索引**，不驱逐已有条目。
+    /// 默认 100 万；软预算（30 万）只记日志，不动作。
+    int fileIndexHardLimitEntries() const;
     // ---- 设备同步（Phase: 联网功能）----
     QString syncLocalRoot() const;             // 本地共享根（单根时代的旧字段，保留兼容）
     /// 要同步的本地文件夹列表，每项 {localPath, alias}。为空时回退到 syncLocalRoot。
@@ -61,6 +69,7 @@ public:
     Q_INVOKABLE void setHotkey(const QString &modifiers, const QString &key);
     Q_INVOKABLE void setLogLevel(const QString &level);
     Q_INVOKABLE void setAutoStart(bool enabled);
+    Q_INVOKABLE void setFileIndexHardLimitEntries(int entries);
 
     Q_INVOKABLE void setSyncLocalRoot(const QString &path);
     Q_INVOKABLE void setSyncRoots(const QVariantList &roots);
@@ -81,12 +90,15 @@ signals:
     void hotkeyChanged();
     void logLevelChanged();
     void autoStartChanged();
+    void fileIndexHardLimitChanged();
     void syncChanged();
     void configLoaded();
 
 private:
     QString configFilePath() const;
     void applyDefaults();
+
+    /// 把任意输入收敛成 "legacy" / "v2"（写错或旧版 config 缺这一节都算 legacy）。
 
     QString m_theme;
     int m_windowX = -1;
@@ -95,6 +107,7 @@ private:
     QString m_hotkeyKey;
     QString m_logLevel;
     bool    m_autoStart = false;   // 注册表镜像，不持久化到 JSON
+    int     m_fileIndexHardLimit = 1000000;   // 架构 §3.3 的硬保护上限
     QString m_filePath;
 
     QString m_syncLocalRoot;
