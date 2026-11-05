@@ -22,6 +22,12 @@ Rectangle {
     property string localShareName: "SyncHub"
     property string localIp: ""
 
+    // 一键共享：授权账号（留空 = 当前登录账号，由 C++ 补）
+    property string shareAccount: ""
+    // 一键连接：net use 的账号密码（都留空 = 用当前登录凭据）
+    property string connectUser: ""
+    property string connectPassword: ""
+
     // 角色（显式选择）：0 = 我开共享让别人连（主机），1 = 我连别人的共享（连接方）
     // 初始值按已保存的共享目录形态推断，用户点过单选后以选择为准
     property int roleMode: 0
@@ -49,9 +55,20 @@ Rectangle {
     }
 
     function shareAddress() {
+        // 一键共享成功后 C++ 给出 \\主机名\共享名（比 IP 更稳：IP 变了也不受影响）
+        if (String(sync.shareAddress).length > 0)
+            return String(sync.shareAddress)
         return localIp.length > 0
                 ? "\\\\" + localIp + "\\" + localShareName
                 : ""
+    }
+
+    // 展示用的等价手动命令：目录/共享名/账号都取界面当前值，不再是写死的 E:\SyncHub
+    function shareCmdText() {
+        var dir = sharedDirInput.length > 0 ? sharedDirInput : "E:\\SyncHub"
+        var name = localShareName.length > 0 ? localShareName : "SyncHub"
+        var user = shareAccount.length > 0 ? shareAccount : "%USERNAME%"
+        return "net share " + name + "=\"" + dir + "\" /grant:" + user + ",change"
     }
 
     // 空别名自动填成对端用的那个（检查时调用）
@@ -96,6 +113,14 @@ Rectangle {
         target: sync
         function onSyncFinished(uploaded, downloaded, conflicts) {
             sharedCheckResult = sync.checkShared()
+        }
+        function onShareOpFinished(ok, message) {
+            if (!ok)
+                return
+            // C++ 侧可能改过共享目录（连接成功、或主机首次共享），把输入框跟上
+            sharedDirField.text = sync.sharedDir
+            sharedCheckResult = sync.checkShared()
+            syncPage.fillEmptyAliases()
         }
     }
 
@@ -281,6 +306,121 @@ Rectangle {
                         }
                     }
 
+                    // ---- 主机：一键开共享（net share + icacls，会弹 UAC） ----
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+                        visible: !syncPage.isUnc
+
+                        Rectangle {
+                            Layout.preferredWidth: 240
+                            Layout.preferredHeight: 34
+                            radius: Style.radiusSmall
+                            color: "transparent"
+                            border.color: accountField.activeFocus ? syncPage.accentColor
+                                                                   : syncPage.borderColor
+
+                            TextField {
+                                id: accountField
+                                anchors.fill: parent
+                                anchors.leftMargin: 8
+                                anchors.rightMargin: 8
+                                placeholderText: "授权给谁（留空 = 当前登录账号）"
+                                color: syncPage.textColor
+                                placeholderTextColor: syncPage.mutedColor
+                                font.pixelSize: Style.captionSize
+                                background: null
+                                onTextChanged: syncPage.shareAccount = text.trim()
+                            }
+                        }
+
+                        Button {
+                            text: sync.shareBusy ? "正在申请管理员权限…" : "一键开共享"
+                            enabled: !sync.shareBusy && sharedDirField.text.length > 0
+                            onClicked: sync.shareFolder(sharedDirField.text,
+                                                        syncPage.localShareName,
+                                                        syncPage.shareAccount)
+                        }
+                    }
+
+                    // ---- 连接方：一键连接（net use，不需要管理员权限） ----
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+                        visible: syncPage.isUnc
+
+                        Rectangle {
+                            Layout.preferredWidth: 160
+                            Layout.preferredHeight: 34
+                            radius: Style.radiusSmall
+                            color: "transparent"
+                            border.color: connectUserField.activeFocus ? syncPage.accentColor
+                                                                       : syncPage.borderColor
+
+                            TextField {
+                                id: connectUserField
+                                anchors.fill: parent
+                                anchors.leftMargin: 8
+                                anchors.rightMargin: 8
+                                placeholderText: "账号（可留空）"
+                                color: syncPage.textColor
+                                placeholderTextColor: syncPage.mutedColor
+                                font.pixelSize: Style.captionSize
+                                background: null
+                                onTextChanged: syncPage.connectUser = text.trim()
+                            }
+                        }
+
+                        Rectangle {
+                            Layout.preferredWidth: 160
+                            Layout.preferredHeight: 34
+                            radius: Style.radiusSmall
+                            color: "transparent"
+                            border.color: connectPasswordField.activeFocus ? syncPage.accentColor
+                                                                           : syncPage.borderColor
+
+                            TextField {
+                                id: connectPasswordField
+                                anchors.fill: parent
+                                anchors.leftMargin: 8
+                                anchors.rightMargin: 8
+                                echoMode: TextInput.Password
+                                placeholderText: "密码（留空 = 当前凭据）"
+                                color: syncPage.textColor
+                                placeholderTextColor: syncPage.mutedColor
+                                font.pixelSize: Style.captionSize
+                                background: null
+                                onTextChanged: syncPage.connectPassword = text
+                            }
+                        }
+
+                        Button {
+                            text: sync.shareBusy ? "连接中…" : "一键连接"
+                            enabled: !sync.shareBusy && sharedDirField.text.length > 0
+                            onClicked: sync.connectShared(sharedDirField.text,
+                                                          syncPage.connectUser,
+                                                          syncPage.connectPassword)
+                        }
+                    }
+
+                    Text {
+                        visible: String(sync.shareStatus).length > 0
+                        text: String(sync.shareStatus)
+                        color: syncPage.mutedColor
+                        font.pixelSize: Style.captionSize
+                        wrapMode: Text.WordWrap
+                        Layout.fillWidth: true
+                    }
+
+                    Text {
+                        visible: syncPage.isUnc
+                        text: "密码会出现在 net use 的进程参数里（本机管理员可见）；留空则用当前登录凭据。"
+                        color: syncPage.mutedColor
+                        font.pixelSize: Style.captionSize
+                        wrapMode: Text.WordWrap
+                        Layout.fillWidth: true
+                    }
+
                     RowLayout {
                         Layout.fillWidth: true
                         spacing: 8
@@ -409,7 +549,8 @@ Rectangle {
                         spacing: 6
 
                         Text {
-                            text: "在要共享的那台机器上，用管理员权限运行（路径和共享名按需改）："
+                            text: "点上面的「一键开共享」即可（会弹 UAC，共享权限和 NTFS 权限一起设）。"
+                                  + "想手动执行就用这段等价命令（路径、共享名、账号都取上面的当前值）："
                             color: syncPage.mutedColor
                             font.pixelSize: Style.captionSize
                             wrapMode: Text.WordWrap
@@ -432,8 +573,7 @@ Rectangle {
                                 color: syncPage.textColor
                                 font.family: "Consolas"
                                 font.pixelSize: Style.captionSize
-                                text: "net share " + syncPage.localShareName
-                                      + "=E:\\SyncHub /grant:everyone,full"
+                                text: syncPage.shareCmdText()
                             }
                         }
 
