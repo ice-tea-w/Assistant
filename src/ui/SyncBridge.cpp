@@ -473,6 +473,7 @@ void SyncBridge::openConflictFolder(int index)
 // ---- 直连（ASYN v2）----
 
 bool SyncBridge::netRunning() const { return m_netRunning; }
+QString SyncBridge::netAddress() const { return m_netAddress; }
 QString SyncBridge::netStatus() const { return m_netStatus; }
 QString SyncBridge::pairCode() const { return m_pairCode; }
 bool SyncBridge::pairActive() const { return m_pairActive; }
@@ -613,9 +614,12 @@ void SyncBridge::startNetServer()
         const quint16 actualPort = server->port();
         const QString fingerprint = identity.fingerprint;
         QMetaObject::invokeMethod(this, [this, actualPort, fingerprint] {
-            setNetStatus(QStringLiteral("正在监听 %1 端口 · 本机指纹 %2")
-                             .arg(actualPort)
+            const QString host = localIpv4().isEmpty() ? m_deviceName : localIpv4();
+            m_netAddress = QStringLiteral("%1:%2").arg(host).arg(actualPort);
+            setNetStatus(QStringLiteral("正在监听 %1 · 本机指纹 %2")
+                             .arg(m_netAddress)
                              .arg(fingerprint.left(16)));
+            emit netChanged();
         }, Qt::QueuedConnection);
 
         loop.exec();
@@ -633,6 +637,7 @@ void SyncBridge::startNetServer()
         if (m_netThread == thread) {
             m_netThread = nullptr;
             m_netRunning = false;
+            m_netAddress.clear();
             emit netChanged();
         }
         thread->deleteLater();

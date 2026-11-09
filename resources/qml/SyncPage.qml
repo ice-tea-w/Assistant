@@ -1058,6 +1058,32 @@ Rectangle {
                         Layout.fillWidth: true
                         spacing: 8
 
+                        Text {
+                            text: "本机地址"
+                            color: syncPage.mutedColor
+                            font.pixelSize: Style.captionSize
+                            Layout.preferredWidth: 90
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            elide: Text.ElideRight
+                            color: sync.netRunning ? syncPage.textColor : syncPage.mutedColor
+                            font.pixelSize: Style.bodySize
+                            text: sync.netRunning
+                                  ? String(sync.netAddress)
+                                  : "未监听（点「开始监听」后显示，对方把它填到下面的地址框）"
+                        }
+                        Button {
+                            text: "复制"
+                            enabled: sync.netRunning && String(sync.netAddress).length > 0
+                            onClicked: sync.copyToClipboard(String(sync.netAddress))
+                        }
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+
                         Button {
                             text: sync.netRunning ? "停止监听" : "开始监听"
                             onClicked: {

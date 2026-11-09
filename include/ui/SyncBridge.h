@@ -43,6 +43,7 @@ class SyncBridge : public QObject
     Q_PROPERTY(QString      shareAddress  READ shareAddress  NOTIFY shareAddressChanged)
     // ---- 直连（ASYN v2）----
     Q_PROPERTY(bool         netRunning    READ netRunning    NOTIFY netChanged)
+    Q_PROPERTY(QString      netAddress    READ netAddress    NOTIFY netChanged)
     Q_PROPERTY(QString      netStatus     READ netStatus     NOTIFY netChanged)
     Q_PROPERTY(QString      pairCode      READ pairCode      NOTIFY pairChanged)
     Q_PROPERTY(bool         pairActive    READ pairActive    NOTIFY pairChanged)
@@ -77,6 +78,7 @@ public:
     QString      shareAddress() const;
 
     bool         netRunning() const;
+    QString      netAddress() const;
     QString      netStatus() const;
     QString      pairCode() const;
     bool         pairActive() const;
@@ -232,6 +234,7 @@ private:
     QMutex       m_netMutex;              // 保护 m_netSecrets / m_netLoop
     QHash<QString, QByteArray> m_netSecrets;
     bool         m_netRunning = false;
+    QString      m_netAddress;
     QString      m_netStatus;
     QString      m_pairCode;
     bool         m_pairActive = false;
