@@ -116,14 +116,48 @@ SyncServer::~SyncServer()
 
 bool SyncServer::listen(quint16 port, const QString &sharedRoot)
 {
+    ServedRoot root;
+    root.localPath = sharedRoot;
+    return listen(port, {root});
+}
+
+bool SyncServer::listen(quint16 port, const QList<ServedRoot> &roots)
+{
     close();
 
-    QDir root(sharedRoot);
-    if (sharedRoot.isEmpty() || !root.exists()) {
-        m_lastError = QStringLiteral("共享根目录不存在：%1").arg(sharedRoot);
+    if (roots.isEmpty()) {
+        m_lastError = QStringLiteral("没有可服务的同步根");
         return false;
     }
-    m_sharedRoot = root.absolutePath();
+
+    QList<ServedRoot> normalized;
+    QSet<QString> seenAliases;
+    for (const ServedRoot &r : roots) {
+        QDir dir(r.localPath);
+        if (r.localPath.isEmpty() || !dir.exists()) {
+            m_lastError = QStringLiteral("同步根目录不存在：%1").arg(r.localPath);
+            return false;
+        }
+        ServedRoot n;
+        n.localPath = dir.absolutePath();
+        n.alias     = r.alias;
+        if (!n.alias.isEmpty()) {
+            const QString key = n.alias.toCaseFolded();
+            if (seenAliases.contains(key)) {
+                m_lastError = QStringLiteral("同步根别名重复：%1").arg(n.alias);
+                return false;
+            }
+            seenAliases.insert(key);
+        }
+        normalized.append(n);
+    }
+    if (normalized.size() > 1 && normalized.first().alias.isEmpty()) {
+        m_lastError = QStringLiteral("多根时必须给每个根一个别名");
+        return false;
+    }
+
+    m_roots      = normalized;
+    m_sharedRoot = normalized.first().localPath;
     loadIndex();
 
     QSslConfiguration cfg = QSslConfiguration::defaultConfiguration();
@@ -144,6 +178,32 @@ bool SyncServer::listen(quint16 port, const QString &sharedRoot)
     return true;
 }
 
+bool SyncServer::splitRel(const QString &relPath, QString *rootAbs, QString *subRel) const
+{
+    if (m_roots.isEmpty())
+        return false;
+
+    // 单根且无别名：relPath 就是根内相对路径（兼容旧的"共享根"形态）
+    if (m_roots.first().alias.isEmpty()) {
+        *rootAbs = m_roots.first().localPath;
+        *subRel  = relPath;
+        return true;
+    }
+
+    const int slash = relPath.indexOf(QLatin1Char('/'));
+    if (slash <= 0)
+        return false;
+    const QString alias = relPath.left(slash);
+    for (const ServedRoot &r : m_roots) {
+        if (QString::compare(r.alias, alias, Qt::CaseInsensitive) == 0) {
+            *rootAbs = r.localPath;
+            *subRel  = relPath.mid(slash + 1);
+            return true;
+        }
+    }
+    return false;
+}
+
 void SyncServer::close()
 {
     for (auto it = m_connections.begin(); it != m_connections.end(); ++it) {
@@ -158,6 +218,7 @@ void SyncServer::close()
     if (m_indexDirty && !m_sharedRoot.isEmpty())
         saveIndex();
     m_sharedRoot.clear();
+    m_roots.clear();
 }
 
 quint16 SyncServer::port() const
@@ -173,6 +234,11 @@ QString SyncServer::lastError() const
 QString SyncServer::sharedRoot() const
 {
     return m_sharedRoot;
+}
+
+QList<ServedRoot> SyncServer::roots() const
+{
+    return m_roots;
 }
 
 int SyncServer::readyConnections() const
@@ -514,7 +580,15 @@ void SyncServer::handleGet(Connection &conn, const Frame &frame)
         return;
     }
 
-    QFile file(Sync::PathGuard::resolveUnder(m_sharedRoot, relPath));
+    QString rootAbs;
+    QString subRel;
+    if (!splitRel(relPath, &rootAbs, &subRel)) {
+        sendError(conn, frame.reqId, QStringLiteral("BAD_PATH"),
+                  QStringLiteral("没有匹配的同步根：%1").arg(relPath));
+        return;
+    }
+
+    QFile file(Sync::PathGuard::resolveUnder(rootAbs, subRel));
     if (!file.open(QIODevice::ReadOnly)) {
         sendError(conn, frame.reqId, QStringLiteral("NOT_FOUND"),
                   QStringLiteral("对端没有这个文件：%1").arg(relPath));
@@ -576,13 +650,21 @@ void SyncServer::handlePut(Connection &conn, const Frame &frame)
 
     // 目标子目录可能还不存在，而 resolveUnder 要求父目录已存在（它要解引用
     // junction 后才能复核前缀）。所以先逐段把父目录准备出来，再拼文件名。
-    const QFileInfo relInfo(relPath);
+    QString rootAbs;
+    QString subRel;
+    if (!splitRel(relPath, &rootAbs, &subRel)) {
+        sendError(conn, frame.reqId, QStringLiteral("BAD_PATH"),
+                  QStringLiteral("没有匹配的同步根：%1").arg(relPath));
+        return;
+    }
+
+    const QFileInfo relInfo(subRel);
     const QString parentRel = relInfo.path();
     QString parentAbs;
     if (parentRel.isEmpty() || parentRel == QStringLiteral("."))
-        parentAbs = QFileInfo(QDir(m_sharedRoot).absolutePath()).canonicalFilePath();
+        parentAbs = QFileInfo(QDir(rootAbs).absolutePath()).canonicalFilePath();
     else
-        parentAbs = Sync::PathGuard::ensureDirUnder(m_sharedRoot, parentRel);
+        parentAbs = Sync::PathGuard::ensureDirUnder(rootAbs, parentRel);
 
     if (parentAbs.isEmpty()) {
         sendError(conn, frame.reqId, QStringLiteral("BAD_PATH"),
@@ -660,7 +742,15 @@ void SyncServer::handlePutEnd(Connection &conn, const Frame &frame)
         return;
     }
 
-    const QString absPath = Sync::PathGuard::resolveUnder(m_sharedRoot, relPath);
+    QString rootAbs;
+    QString subRel;
+    if (!splitRel(relPath, &rootAbs, &subRel)) {
+        sendError(conn, frame.reqId, QStringLiteral("BAD_PATH"),
+                  QStringLiteral("没有匹配的同步根：%1").arg(relPath));
+        return;
+    }
+
+    const QString absPath = Sync::PathGuard::resolveUnder(rootAbs, subRel);
     QFile::remove(absPath);   // Windows 上 rename 不覆盖已存在文件
     if (!QFile::rename(partPath, absPath)) {
         QFile::remove(partPath);
@@ -691,7 +781,15 @@ void SyncServer::handleDelete(Connection &conn, const Frame &frame)
         return;
     }
 
-    const QString absPath = Sync::PathGuard::resolveUnder(m_sharedRoot, relPath);
+    QString rootAbs;
+    QString subRel;
+    if (!splitRel(relPath, &rootAbs, &subRel)) {
+        sendError(conn, frame.reqId, QStringLiteral("BAD_PATH"),
+                  QStringLiteral("没有匹配的同步根：%1").arg(relPath));
+        return;
+    }
+
+    const QString absPath = Sync::PathGuard::resolveUnder(rootAbs, subRel);
     if (!QFile::exists(absPath)) {
         // 已经不在了也算成功：同步是幂等的
         QJsonObject ack;
@@ -701,7 +799,7 @@ void SyncServer::handleDelete(Connection &conn, const Frame &frame)
         return;
     }
 
-    const QString trashDir = QDir(m_sharedRoot).filePath(QStringLiteral(".sync/trash"));
+    const QString trashDir = QDir(rootAbs).filePath(QStringLiteral(".sync/trash"));
     if (!QDir().mkpath(trashDir)) {
         sendError(conn, frame.reqId, QStringLiteral("TRASH_FAILED"),
                   QStringLiteral("无法创建回收目录"));
@@ -727,24 +825,40 @@ void SyncServer::handleDelete(Connection &conn, const Frame &frame)
 QList<ServedFile> SyncServer::collectFiles()
 {
     QList<ServedFile> out;
-    if (m_sharedRoot.isEmpty())
+    if (m_roots.isEmpty())
         return out;
 
-    const QDir rootDir(m_sharedRoot);
+    struct Candidate
+    {
+        QString rootAbs;
+        QString alias;
+        QString absPath;
+    };
+    QList<Candidate> candidates;
+    for (const ServedRoot &root : m_roots) {
+        if (root.localPath.isEmpty())
+            continue;
+        QDirIterator it(root.localPath, QDir::Files | QDir::NoDotAndDotDot,
+                        QDirIterator::Subdirectories);
+        while (it.hasNext())
+            candidates.append({root.localPath, root.alias, it.next()});
+    }
+
     QSet<QString> seen;
 
-    QDirIterator it(m_sharedRoot, QDir::Files | QDir::NoDotAndDotDot,
-                    QDirIterator::Subdirectories);
-    while (it.hasNext()) {
-        const QString absPath = it.next();
-        const QFileInfo info = it.fileInfo();
+    for (const Candidate &cand : candidates) {
+        const QFileInfo info(cand.absPath);
 
-        const QString relPath = rootDir.relativeFilePath(info.absoluteFilePath());
-        if (relPath.startsWith(QStringLiteral(".sync") + QLatin1Char('/'))
-            || relPath.startsWith(QStringLiteral(".assistant-sync") + QLatin1Char('/'))
-            || relPath.contains(QStringLiteral("/.assistant-part"))) {
+        const QString sub = QDir(cand.rootAbs).relativeFilePath(info.absoluteFilePath());
+        if (sub.startsWith(QStringLiteral(".sync") + QLatin1Char('/'))
+            || sub.startsWith(QStringLiteral(".assistant-sync") + QLatin1Char('/'))
+            || sub.contains(QStringLiteral("/.assistant-part"))
+            || sub.endsWith(QStringLiteral(".assistant-part"))) {
             continue;
         }
+        const QString relPath = cand.alias.isEmpty()
+                                    ? sub
+                                    : cand.alias + QLatin1Char('/') + sub;
 
         ServedFile f;
         f.relPath = relPath;

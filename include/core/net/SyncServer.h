@@ -28,6 +28,14 @@ struct ServedFile
     QString hash;
 };
 
+/// 一个对外服务的根：relPath 的第一段是 alias，其余部分相对 localPath。
+/// alias 为空表示"服务这一个根、relPath 不带前缀"（兼容旧的单共享根形态）。
+struct ServedRoot
+{
+    QString localPath;
+    QString alias;
+};
+
 /// ASYN v2 服务端（host 侧）。
 ///
 /// 只负责协议与认证：文件读写都落在构造时给的一个共享根目录里，
@@ -50,11 +58,14 @@ public:
     /// port = 0 时由系统分配，真实端口看 port()。
     /// sharedRoot 必须已存在且可写；其下每个一级目录就是一个同步别名。
     bool listen(quint16 port, const QString &sharedRoot);
+    /// 多根形态：每个根的 alias 必须非空、唯一，relPath = alias + '/' + 相对路径。
+    bool listen(quint16 port, const QList<ServedRoot> &roots);
     void close();
 
     quint16 port() const;
     QString lastError() const;
     QString sharedRoot() const;
+    QList<ServedRoot> roots() const;
 
     /// 已认证成功的连接数（测试与界面用）。
     int readyConnections() const;
@@ -113,6 +124,9 @@ private:
     QList<ServedFile> collectFiles();
     QString hashOf(const QString &absPath);
 
+    /// 把 relPath 拆成（根的绝对路径, 根内相对路径）。没有匹配的根返回 false。
+    bool splitRel(const QString &relPath, QString *rootAbs, QString *subRel) const;
+
     bool isPeerLocked(const QString &peer) const;
     void recordAuthFailure(const QString &peer);
     void clearAuthFailures(const QString &peer);
@@ -135,6 +149,8 @@ private:
     Identity                     m_identity;
     SecretLookup                 m_secretLookup;
     std::unique_ptr<TlsAcceptor> m_server;
+    QList<ServedRoot>            m_roots;
+    /// 第一个根的路径，仅用于兼容 `.sync/trash` 与 index.json 的落点。
     QString                      m_sharedRoot;
     QString                      m_lastError;
     QHash<QSslSocket *, std::shared_ptr<Connection>> m_connections;

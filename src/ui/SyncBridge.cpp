@@ -135,8 +135,8 @@ bool SyncBridge::init(const QString &dbPath)
     ensureDeviceId();
     refreshPairedDevices();
     startWatchers();
-    setStatus(m_roots.isEmpty() || m_sharedDir.isEmpty()
-                  ? QStringLiteral("请先添加要同步的文件夹与共享目录")
+    setStatus(m_roots.isEmpty() || !hasPeerCredentials()
+                  ? QStringLiteral("请先添加要同步的文件夹，并与主机配对")
                   : QStringLiteral("尚未同步"));
     return true;
 }
@@ -398,15 +398,16 @@ void SyncBridge::applyAutoSync()
 
 void SyncBridge::refreshChannel()
 {
+    // 直连为主：通道只反映「有没有和主机配对」，共享目录不再算一条通道
     QString ch;
     QString peer;
-    if (!m_sharedDir.isEmpty()) {
-        Sync::FolderTransport t(m_sharedDir);
-        t.setDeviceName(m_deviceName);
-        if (t.probe()) {
-            ch   = t.name();
-            peer = t.remoteDevice();
-        }
+    if (hasPeerCredentials()) {
+        ch = QStringLiteral("直连");
+        const Sync::Net::PeerAddress parsed =
+            Sync::Net::parsePeerAddress(m_config->syncPeerAddress(),
+                                       quint16(m_config->syncPort()));
+        if (parsed.ok)
+            peer = QStringLiteral("%1:%2").arg(parsed.host).arg(parsed.port);
     }
     if (ch != m_activeChannel) {
         m_activeChannel = ch;
@@ -538,13 +539,27 @@ void SyncBridge::startNetServer()
         setNetStatus(QStringLiteral("服务端已在运行"));
         return;
     }
-    if (m_sharedDir.isEmpty()) {
-        setNetStatus(QStringLiteral("先设置共享目录：服务端开放的就是这个文件夹"));
+    QList<Sync::Net::ServedRoot> served;
+    for (const QVariant &v : m_roots) {
+        const QVariantMap map = v.toMap();
+        Sync::Net::ServedRoot sr;
+        sr.localPath = map.value(QStringLiteral("localPath")).toString();
+        sr.alias     = map.value(QStringLiteral("alias")).toString();
+        if (sr.localPath.isEmpty())
+            continue;
+        if (sr.alias.isEmpty())
+            sr.alias = QFileInfo(sr.localPath).fileName();
+        served.append(sr);
+    }
+    if (served.isEmpty()) {
+        setNetStatus(QStringLiteral("先在下面添加至少一个同步文件夹：服务端开放的就是这些文件夹"));
         return;
     }
-    if (!QDir(m_sharedDir).exists()) {
-        setNetStatus(QStringLiteral("共享目录不存在：%1").arg(m_sharedDir));
-        return;
+    for (const Sync::Net::ServedRoot &sr : served) {
+        if (!QDir(sr.localPath).exists()) {
+            setNetStatus(QStringLiteral("同步文件夹不存在：%1").arg(sr.localPath));
+            return;
+        }
     }
 
     const Sync::Net::Identity identity =
@@ -563,12 +578,12 @@ void SyncBridge::startNetServer()
             m_netSecrets.insert(rec.deviceId, rec.secret);
     }
 
-    const QString root = m_sharedDir;
+    const QList<Sync::Net::ServedRoot> roots = served;
     const quint16 wantPort = quint16(m_config ? m_config->syncPort() : 45871);
     m_netRunning = true;
     setNetStatus(QStringLiteral("正在监听 %1 端口…").arg(wantPort));
 
-    m_netThread = QThread::create([this, identity, root, wantPort] {
+    m_netThread = QThread::create([this, identity, roots, wantPort] {
         auto *server = new Sync::Net::SyncServer(identity, [this](const QString &deviceId) {
             QMutexLocker locker(&m_netMutex);
             return m_netSecrets.value(deviceId);
@@ -595,7 +610,7 @@ void SyncBridge::startNetServer()
             }, Qt::QueuedConnection);
         });
 
-        if (!server->listen(wantPort, root)) {
+        if (!server->listen(wantPort, roots)) {
             const QString err = server->lastError();
             delete server;
             QMetaObject::invokeMethod(this, [this, err] {
@@ -810,11 +825,11 @@ void SyncBridge::syncNow()
         return;
     }
 
-    if (m_roots.isEmpty() || (m_sharedDir.isEmpty() && !hasPeerCredentials())) {
-        setStatus(QStringLiteral("请先添加要同步的文件夹，并设置共享目录（或与主机配对）"));
+    if (m_roots.isEmpty() || !hasPeerCredentials()) {
+        setStatus(QStringLiteral("请先添加要同步的文件夹，并完成与主机的配对"));
         // 同步没跑起来必须有痕迹：界面上只改一行状态，用户回头查不出为什么
-        Logger::get().warn("SyncBridge: 跳过同步（同步根 {} 个，共享目录「{}」）",
-                           m_roots.size(), m_sharedDir.toStdString());
+        Logger::get().warn("SyncBridge: 跳过同步（同步根 {} 个，已配对 {}）",
+                           m_roots.size(), hasPeerCredentials());
         return;
     }
 
@@ -829,7 +844,6 @@ void SyncBridge::syncNow()
         roots.append(Sync::SyncRoot{ m.value(QStringLiteral("localPath")).toString(),
                                      m.value(QStringLiteral("alias")).toString() });
     }
-    const QString shared = m_sharedDir;
     const QString name   = m_deviceName;
     const QString dbPath = m_dbPath;
 
@@ -850,7 +864,7 @@ void SyncBridge::syncNow()
         }
     }
 
-    m_worker = QThread::create([this, roots, shared, name, dbPath, netPeer] {
+    m_worker = QThread::create([this, roots, name, dbPath, netPeer] {
         // 工作线程自带独立连接名 —— QSqlDatabase 连接不可跨线程
         Sync::SyncResult r;
         SyncDatabase workerDb(QStringLiteral("sync_worker"));
@@ -864,8 +878,6 @@ void SyncBridge::syncNow()
             engine.setDeviceName(name);
 
             QList<std::shared_ptr<Sync::ITransport>> transports;
-            if (!shared.isEmpty())
-                transports.append(std::make_shared<Sync::FolderTransport>(shared));
             if (!netPeer.deviceSecret.isEmpty() && !netPeer.host.isEmpty()) {
                 transports.append(std::make_shared<Sync::Net::NetTransport>(netPeer));
                 Logger::get().info("SyncBridge: 已挂载直连通道 {}:{}", netPeer.host.toStdString(), netPeer.port);

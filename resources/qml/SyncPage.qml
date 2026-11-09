@@ -16,120 +16,6 @@ Rectangle {
     readonly property color borderColor: Style.borderColor
     readonly property color panelColor: Style.panelColor
 
-    // 「检查共享」的结果常驻：保存、同步后都不清空，只有重新检查才更新
-    property var sharedCheckResult: null
-    // 本机共享名与地址（对方填 \\本机IP\共享名）
-    property string localShareName: "SyncHub"
-    property string localIp: ""
-
-    // 一键共享：授权账号（留空 = 当前登录账号，由 C++ 补）
-    property string shareAccount: ""
-    // 一键连接：net use 的账号密码（都留空 = 用当前登录凭据）
-    property string connectUser: ""
-    property string connectPassword: ""
-
-    // 备用通道：共享目录（UNC / 网盘）的卡片默认收起，直连可用时用不到它
-    property bool showLegacyShare: false
-
-    // 角色（显式选择）：0 = 我开共享让别人连（主机），1 = 我连别人的共享（连接方）
-    // 初始值按已保存的共享目录形态推断，用户点过单选后以选择为准
-    property int roleMode: 0
-    readonly property bool isHostMode: roleMode === 0
-
-    readonly property string sharedDirInput: sharedDirField.text.trim()
-    readonly property bool isUnc: sharedDirInput.indexOf("\\\\") === 0
-                                   || sharedDirInput.indexOf("//") === 0
-    // 地址形态和角色对不上：连接方却填了本地路径，或主机却填了 UNC
-    readonly property bool dirMismatch: sharedDirInput.length > 0
-                                        && (isHostMode === isUnc)
-
-    // 对端清单里推断出的别名（客户端模式下才有意义）
-    readonly property var remoteAliasList: sharedCheckResult && sharedCheckResult.aliases
-                                           ? sharedCheckResult.aliases : []
-    readonly property bool aliasKnown: remoteAliasList.length === 1
-    readonly property string remoteAlias: aliasKnown ? String(remoteAliasList[0]) : ""
-    readonly property bool aliasNeedsFix: {
-        if (!aliasKnown)
-            return false
-        for (var i = 0; i < sync.roots.length; ++i)
-            if (String(sync.roots[i].alias) !== remoteAlias)
-                return true
-        return false
-    }
-
-    function shareAddress() {
-        // 一键共享成功后 C++ 给出 \\主机名\共享名（比 IP 更稳：IP 变了也不受影响）
-        if (String(sync.shareAddress).length > 0)
-            return String(sync.shareAddress)
-        return localIp.length > 0
-                ? "\\\\" + localIp + "\\" + localShareName
-                : ""
-    }
-
-    // 展示用的等价手动命令：目录/共享名/账号都取界面当前值，不再是写死的 E:\SyncHub
-    function shareCmdText() {
-        var dir = sharedDirInput.length > 0 ? sharedDirInput : "E:\\SyncHub"
-        var name = localShareName.length > 0 ? localShareName : "SyncHub"
-        var user = shareAccount.length > 0 ? shareAccount : "%USERNAME%"
-        return "net share " + name + "=\"" + dir + "\" /grant:" + user + ",change"
-    }
-
-    // 空别名自动填成对端用的那个（检查时调用）
-    function fillEmptyAliases() {
-        if (!aliasKnown)
-            return
-        for (var i = 0; i < sync.roots.length; ++i)
-            if (String(sync.roots[i].alias).length === 0)
-                sync.setRootAlias(i, remoteAlias)
-    }
-
-    // 强制把所有别名统一成对端的（用户点按钮时调用）
-    function applyRemoteAlias() {
-        if (!aliasKnown)
-            return
-        for (var i = 0; i < sync.roots.length; ++i)
-            sync.setRootAlias(i, remoteAlias)
-    }
-
-    function checkColor() {
-        if (!sharedCheckResult)
-            return mutedColor
-        if (!sharedCheckResult.ok)
-            return "#e74c3c"
-        return sharedCheckResult.hasManifest ? "#2ecc71" : "#f1c40f"
-    }
-
-    Component.onCompleted: {
-        localIp = sync.localIpv4()
-        var saved = String(sync.sharedDir)
-        roleMode = (saved.indexOf("\\\\") === 0 || saved.indexOf("//") === 0) ? 1 : 0
-        var d = String(sync.sharedDir).replace(/\\/g, "/")
-        var parts = d.split("/").filter(function (p) { return p.length > 0 })
-        if (parts.length > 0) {
-            var last = parts[parts.length - 1]
-            if (last.length > 0 && last.indexOf(":") < 0)
-                localShareName = last
-        }
-        // 配了共享目录但还没配对直连的机器，别让它以为入口丢了
-        if (saved.length > 0 && !sync.peerPaired)
-            showLegacyShare = true
-    }
-
-    Connections {
-        target: sync
-        function onSyncFinished(uploaded, downloaded, conflicts) {
-            sharedCheckResult = sync.checkShared()
-        }
-        function onShareOpFinished(ok, message) {
-            if (!ok)
-                return
-            // C++ 侧可能改过共享目录（连接成功、或主机首次共享），把输入框跟上
-            sharedDirField.text = sync.sharedDir
-            sharedCheckResult = sync.checkShared()
-            syncPage.fillEmptyAliases()
-        }
-    }
-
     ScrollView {
         anchors.fill: parent
         clip: true
@@ -198,56 +84,26 @@ Rectangle {
                 }
             }
 
-            // ---- 连接 ----
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: 8
-
-                Text {
-                    Layout.fillWidth: true
-                    wrapMode: Text.WordWrap
-                    color: syncPage.mutedColor
-                    font.pixelSize: Style.captionSize
-                    text: "共享目录（UNC / 网盘）是备用通道：两台机器能直连时不需要它。"
-                }
-                Button {
-                    text: syncPage.showLegacyShare ? "收起共享目录卡片" : "用共享目录…"
-                    onClicked: syncPage.showLegacyShare = !syncPage.showLegacyShare
-                }
-            }
-
+            // ---- 同步范围 ----
+            // ---- 直连（ASYN v2）----
             Rectangle {
                 Layout.fillWidth: true
-                Layout.preferredHeight: connectColumn.implicitHeight + 24
-                visible: syncPage.showLegacyShare
+                Layout.preferredHeight: directColumn.implicitHeight + 20
                 radius: Style.radius
                 color: syncPage.panelColor
                 border.color: syncPage.borderColor
 
                 ColumnLayout {
-                    id: connectColumn
+                    id: directColumn
                     anchors.fill: parent
-                    anchors.margins: 12
-                    spacing: 10
+                    anchors.margins: 10
+                    spacing: 8
 
                     Text {
-                        text: syncPage.isHostMode ? "本机共享给别人连（主机）" : "连接别人的共享（连接方）"
-                        color: syncPage.mutedColor
-                        font.pixelSize: 12
-                    }
-
-                    RowLayout {
-                        spacing: 16
-                        RadioButton {
-                            text: "我开共享，让别人连我"
-                            checked: syncPage.roleMode === 0
-                            onClicked: syncPage.roleMode = 0
-                        }
-                        RadioButton {
-                            text: "我连别人的共享"
-                            checked: syncPage.roleMode === 1
-                            onClicked: syncPage.roleMode = 1
-                        }
+                        text: "直连"
+                        color: syncPage.textColor
+                        font.pixelSize: Style.bodySize
+                        font.bold: true
                     }
 
                     Text {
@@ -255,9 +111,8 @@ Rectangle {
                         wrapMode: Text.WordWrap
                         color: syncPage.mutedColor
                         font.pixelSize: Style.captionSize
-                        text: syncPage.isHostMode
-                              ? "这台机器当主机：把本地文件夹共享出去，再把下面「让对方连我」的地址发给对方。"
-                              : "这台机器当连接方：填对方发给你的 \\\\IP\\共享名，点「检查」确认能连上。"
+                        text: "不经过共享目录：主机开一个端口，连接方拿 6 位码配对。"
+                              + "走 ASYN v2 over TLS，只有主机出示证书，客户端靠口令认证。"
                     }
 
                     RowLayout {
@@ -265,362 +120,161 @@ Rectangle {
                         spacing: 8
 
                         Text {
-                            text: syncPage.isHostMode ? "本机共享目录" : "对方共享目录"
+                            text: "本机地址"
                             color: syncPage.mutedColor
                             font.pixelSize: Style.captionSize
                             Layout.preferredWidth: 90
                         }
-
-                        Rectangle {
-                            Layout.fillWidth: true
-                            Layout.preferredHeight: 34
-                            radius: Style.radiusSmall
-                            color: "transparent"
-                            border.color: sharedDirField.activeFocus ? syncPage.accentColor
-                                                                    : syncPage.borderColor
-
-                            TextField {
-                                id: sharedDirField
-                                anchors.fill: parent
-                                anchors.leftMargin: 8
-                                anchors.rightMargin: 8
-                                text: sync.sharedDir
-                                placeholderText: syncPage.isHostMode
-                                                 ? "\\\\本机文件夹，例如 E:\\SyncHub"
-                                                 : "\\\\对方IP\\共享名，例如 \\\\100.116.234.107\\SyncHub"
-                                color: syncPage.textColor
-                                placeholderTextColor: syncPage.mutedColor
-                                font.pixelSize: Style.bodySize
-                                background: null
-                                onEditingFinished: sync.setSharedDir(text)
-                            }
-                        }
-                    }
-
-                    RowLayout {
-                        spacing: 8
-
-                        Button {
-                            text: "检查"
-                            enabled: sharedDirField.text.length > 0
-                            onClicked: {
-                                sync.setSharedDir(sharedDirField.text)
-                                sharedCheckResult = sync.checkShared()
-                                syncPage.fillEmptyAliases()
-                            }
-                        }
-                        Button {
-                            text: "保存"
-                            enabled: sharedDirField.text.length > 0
-                            onClicked: sync.setSharedDir(sharedDirField.text)
-                        }
-                        Button {
-                            text: "浏览…"
-                            onClicked: sharedDirDialog.open()
-                        }
-                        Button {
-                            text: "打开"
-                            enabled: sharedDirField.text.length > 0
-                            onClicked: sync.openPath(sharedDirField.text)
-                        }
-                        Button {
-                            text: "复制路径"
-                            enabled: sharedDirField.text.length > 0
-                            onClicked: sync.copyToClipboard(sharedDirField.text)
-                        }
-                    }
-
-                    // ---- 主机：一键开共享（net share + icacls，会弹 UAC） ----
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: 8
-                        visible: !syncPage.isUnc
-
-                        Rectangle {
-                            Layout.preferredWidth: 240
-                            Layout.preferredHeight: 34
-                            radius: Style.radiusSmall
-                            color: "transparent"
-                            border.color: accountField.activeFocus ? syncPage.accentColor
-                                                                   : syncPage.borderColor
-
-                            TextField {
-                                id: accountField
-                                anchors.fill: parent
-                                anchors.leftMargin: 8
-                                anchors.rightMargin: 8
-                                placeholderText: "授权给谁（留空 = 当前登录账号）"
-                                color: syncPage.textColor
-                                placeholderTextColor: syncPage.mutedColor
-                                font.pixelSize: Style.captionSize
-                                background: null
-                                onTextChanged: syncPage.shareAccount = text.trim()
-                            }
-                        }
-
-                        Button {
-                            text: sync.shareBusy ? "正在申请管理员权限…" : "一键开共享"
-                            enabled: !sync.shareBusy && sharedDirField.text.length > 0
-                            onClicked: sync.shareFolder(sharedDirField.text,
-                                                        syncPage.localShareName,
-                                                        syncPage.shareAccount)
-                        }
-                    }
-
-                    // ---- 连接方：一键连接（net use，不需要管理员权限） ----
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: 8
-                        visible: syncPage.isUnc
-
-                        Rectangle {
-                            Layout.preferredWidth: 160
-                            Layout.preferredHeight: 34
-                            radius: Style.radiusSmall
-                            color: "transparent"
-                            border.color: connectUserField.activeFocus ? syncPage.accentColor
-                                                                       : syncPage.borderColor
-
-                            TextField {
-                                id: connectUserField
-                                anchors.fill: parent
-                                anchors.leftMargin: 8
-                                anchors.rightMargin: 8
-                                placeholderText: "账号（可留空）"
-                                color: syncPage.textColor
-                                placeholderTextColor: syncPage.mutedColor
-                                font.pixelSize: Style.captionSize
-                                background: null
-                                onTextChanged: syncPage.connectUser = text.trim()
-                            }
-                        }
-
-                        Rectangle {
-                            Layout.preferredWidth: 160
-                            Layout.preferredHeight: 34
-                            radius: Style.radiusSmall
-                            color: "transparent"
-                            border.color: connectPasswordField.activeFocus ? syncPage.accentColor
-                                                                           : syncPage.borderColor
-
-                            TextField {
-                                id: connectPasswordField
-                                anchors.fill: parent
-                                anchors.leftMargin: 8
-                                anchors.rightMargin: 8
-                                echoMode: TextInput.Password
-                                placeholderText: "密码（留空 = 当前凭据）"
-                                color: syncPage.textColor
-                                placeholderTextColor: syncPage.mutedColor
-                                font.pixelSize: Style.captionSize
-                                background: null
-                                onTextChanged: syncPage.connectPassword = text
-                            }
-                        }
-
-                        Button {
-                            text: sync.shareBusy ? "连接中…" : "一键连接"
-                            enabled: !sync.shareBusy && sharedDirField.text.length > 0
-                            onClicked: sync.connectShared(sharedDirField.text,
-                                                          syncPage.connectUser,
-                                                          syncPage.connectPassword)
-                        }
-                    }
-
-                    Text {
-                        visible: String(sync.shareStatus).length > 0
-                        text: String(sync.shareStatus)
-                        color: syncPage.mutedColor
-                        font.pixelSize: Style.captionSize
-                        wrapMode: Text.WordWrap
-                        Layout.fillWidth: true
-                    }
-
-                    Text {
-                        visible: syncPage.isUnc
-                        text: "密码会出现在 net use 的进程参数里（本机管理员可见）；留空则用当前登录凭据。"
-                        color: syncPage.mutedColor
-                        font.pixelSize: Style.captionSize
-                        wrapMode: Text.WordWrap
-                        Layout.fillWidth: true
-                    }
-
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: 8
-
-                        Rectangle {
-                            Layout.preferredWidth: 8
-                            Layout.preferredHeight: 8
-                            Layout.alignment: Qt.AlignVCenter
-                            radius: 4
-                            color: checkColor()
-                        }
-
-                        Text {
-                            text: sharedCheckResult ? sharedCheckResult.message
-                                                    : "点「检查」看这台机器能不能访问共享目录"
-                            color: syncPage.mutedColor
-                            font.pixelSize: Style.captionSize
-                            wrapMode: Text.WordWrap
-                            Layout.fillWidth: true
-                        }
-                    }
-
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: 8
-                        visible: syncPage.isUnc && syncPage.aliasKnown
-
                         Text {
                             Layout.fillWidth: true
-                            wrapMode: Text.WordWrap
-                            color: syncPage.aliasNeedsFix ? "#f1c40f" : syncPage.mutedColor
-                            font.pixelSize: Style.captionSize
-                            text: syncPage.aliasNeedsFix
-                                  ? "对端用的别名是「" + syncPage.remoteAlias
-                                    + "」，两边不一致会各占一棵子树。"
-                                  : "别名已对齐：两边都是「" + syncPage.remoteAlias + "」"
-                        }
-
-                        Button {
-                            visible: syncPage.aliasNeedsFix
-                            text: "改成一致"
-                            onClicked: syncPage.applyRemoteAlias()
-                        }
-                    }
-
-                    Rectangle {
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: 1
-                        color: syncPage.borderColor
-                    }
-
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: 8
-                        visible: !syncPage.isUnc
-
-                        Text {
-                            text: "让对方连我"
-                            color: syncPage.mutedColor
-                            font.pixelSize: Style.captionSize
-                            Layout.preferredWidth: 64
-                        }
-
-                        Text {
-                            visible: shareAddress().length > 0
-                            text: shareAddress()
-                            color: syncPage.textColor
+                            elide: Text.ElideRight
+                            color: sync.netRunning ? syncPage.textColor : syncPage.mutedColor
                             font.pixelSize: Style.bodySize
-                            elide: Text.ElideMiddle
-                            Layout.fillWidth: true
+                            text: sync.netRunning
+                                  ? String(sync.netAddress)
+                                  : "未监听（点「开始监听」后显示，对方把它填到下面的地址框）"
                         }
-                        Text {
-                            visible: shareAddress().length === 0
-                            text: "未检测到局域网地址"
-                            color: syncPage.mutedColor
-                            font.pixelSize: Style.captionSize
-                            Layout.fillWidth: true
-                        }
-
-                        Rectangle {
-                            Layout.preferredWidth: 120
-                            Layout.preferredHeight: 34
-                            radius: Style.radiusSmall
-                            color: "transparent"
-                            border.color: shareNameField.activeFocus ? syncPage.accentColor
-                                                                     : syncPage.borderColor
-
-                            TextField {
-                                id: shareNameField
-                                anchors.fill: parent
-                                anchors.leftMargin: 8
-                                anchors.rightMargin: 8
-                                text: syncPage.localShareName
-                                placeholderText: "共享名"
-                                color: syncPage.textColor
-                                placeholderTextColor: syncPage.mutedColor
-                                font.pixelSize: Style.captionSize
-                                background: null
-                                onEditingFinished: syncPage.localShareName = text.trim()
-                            }
-                        }
-
                         Button {
-                            text: "复制地址"
-                            enabled: shareAddress().length > 0
-                            onClicked: sync.copyToClipboard(shareAddress())
+                            text: "复制"
+                            enabled: sync.netRunning && String(sync.netAddress).length > 0
+                            onClicked: sync.copyToClipboard(String(sync.netAddress))
                         }
                     }
 
                     RowLayout {
                         Layout.fillWidth: true
-                        spacing: 4
-                        visible: !syncPage.isUnc
+                        spacing: 8
 
                         Button {
-                            text: shareHelp.visible ? "▾ 怎么在本机开一次共享" : "▸ 怎么在本机开一次共享"
-                            flat: true
-                            onClicked: shareHelp.visible = !shareHelp.visible
+                            text: sync.netRunning ? "停止监听" : "开始监听"
+                            onClicked: {
+                                if (sync.netRunning)
+                                    sync.stopNetServer()
+                                else
+                                    sync.startNetServer()
+                            }
+                        }
+
+                        Button {
+                            text: sync.pairActive ? "关闭配对窗口" : "生成配对码"
+                            enabled: sync.netRunning
+                            onClicked: {
+                                if (sync.pairActive)
+                                    sync.stopPairing()
+                                else
+                                    sync.startPairing()
+                            }
+                        }
+
+                        Text {
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            color: sync.pairActive ? syncPage.accentColor : syncPage.mutedColor
+                            font.pixelSize: sync.pairActive ? 22 : Style.captionSize
+                            font.bold: sync.pairActive
+                            elide: Text.ElideRight
+                            text: sync.pairActive ? sync.pairCode : String(sync.netStatus)
                         }
                     }
 
-                    ColumnLayout {
-                        id: shareHelp
-                        visible: false
-                        Layout.fillWidth: true
-                        spacing: 6
+                    Repeater {
+                        model: sync.pairedDevices
 
-                        Text {
-                            text: "点上面的「一键开共享」即可（会弹 UAC，共享权限和 NTFS 权限一起设）。"
-                                  + "想手动执行就用这段等价命令（路径、共享名、账号都取上面的当前值）："
-                            color: syncPage.mutedColor
-                            font.pixelSize: Style.captionSize
-                            wrapMode: Text.WordWrap
+                        delegate: RowLayout {
                             Layout.fillWidth: true
+                            spacing: 8
+
+                            Text {
+                                Layout.fillWidth: true
+                                color: syncPage.mutedColor
+                                font.pixelSize: Style.captionSize
+                                elide: Text.ElideMiddle
+                                text: modelData.deviceId + " · "
+                                      + String(modelData.fingerprint).substring(0, 16)
+                            }
+
+                            Button {
+                                text: "解除"
+                                onClicked: sync.forgetDevice(modelData.deviceId)
+                            }
                         }
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
 
                         Rectangle {
                             Layout.fillWidth: true
-                            Layout.preferredHeight: 56
+                            Layout.preferredHeight: 32
                             radius: Style.radiusSmall
-                            color: Qt.rgba(0, 0, 0, 0.25)
+                            color: "transparent"
+                            border.color: peerField.activeFocus ? syncPage.accentColor : syncPage.borderColor
 
-                            TextEdit {
-                                id: shareCmd
+                            TextField {
+                                id: peerField
                                 anchors.fill: parent
-                                anchors.margins: 8
-                                readOnly: true
-                                selectByMouse: true
-                                wrapMode: TextEdit.WrapAnywhere
+                                anchors.leftMargin: 8
+                                anchors.rightMargin: 8
+                                placeholderText: "主机地址，例如 100.116.234.107:45871"
                                 color: syncPage.textColor
-                                font.family: "Consolas"
+                                placeholderTextColor: syncPage.mutedColor
                                 font.pixelSize: Style.captionSize
-                                text: syncPage.shareCmdText()
+                                background: null
                             }
                         }
 
-                        RowLayout {
-                            spacing: 8
-                            Button {
-                                text: "复制命令"
-                                onClicked: sync.copyToClipboard(shareCmd.text)
+                        Rectangle {
+                            Layout.preferredWidth: 96
+                            Layout.preferredHeight: 32
+                            radius: Style.radiusSmall
+                            color: "transparent"
+                            border.color: codeField.activeFocus ? syncPage.accentColor : syncPage.borderColor
+
+                            TextField {
+                                id: codeField
+                                anchors.fill: parent
+                                anchors.leftMargin: 8
+                                anchors.rightMargin: 8
+                                placeholderText: "6 位码"
+                                maximumLength: 6
+                                color: syncPage.textColor
+                                placeholderTextColor: syncPage.mutedColor
+                                font.pixelSize: Style.captionSize
+                                background: null
                             }
                         }
+
+                        Button {
+                            text: "配对"
+                            enabled: peerField.text.length > 0 && codeField.text.length === 6
+                            onClicked: sync.pairWithPeer(peerField.text, codeField.text)
+                        }
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+                        visible: sync.peerPaired
 
                         Text {
-                            text: "两台设备填同一个共享目录、同一个别名，才能对上。"
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
                             color: syncPage.mutedColor
                             font.pixelSize: Style.captionSize
-                            wrapMode: Text.WordWrap
-                            Layout.fillWidth: true
+                            text: "已与主机配对；每轮同步会同时挂载直连通道。"
+                        }
+
+                        Button {
+                            text: "解除配对"
+                            onClicked: sync.unpairPeer()
                         }
                     }
                 }
             }
 
-            // ---- 同步范围 ----
+            Text {
+
             Rectangle {
                 Layout.fillWidth: true
                 Layout.preferredHeight: rootsColumn.implicitHeight + 24
@@ -992,16 +646,16 @@ Rectangle {
             }
 
             Text {
-                text: "这个名称会写进共享目录的清单，也用作投递区里属于你的文件夹名，"
-                      + "对端靠它认出文件是谁发的。两台设备不要用同一个名称。"
+                text: "配对时主机看到的就是这个名称，两台设备不要用同一个。"
                 color: syncPage.mutedColor
                 font.pixelSize: Style.captionSize
                 wrapMode: Text.WordWrap
                 Layout.fillWidth: true
             }
 
-            // ---- 收件箱 ----
+            // ---- 收件箱：仍绑共享目录的 _投递/，直连版投递（B 阶段）做完前先藏起来 ----
             RowLayout {
+                visible: false
                 spacing: 8
 
                 Text {
@@ -1024,195 +678,6 @@ Rectangle {
                 }
             }
 
-            // ---- 直连（ASYN v2）----
-            Rectangle {
-                Layout.fillWidth: true
-                Layout.preferredHeight: directColumn.implicitHeight + 20
-                radius: Style.radius
-                color: syncPage.panelColor
-                border.color: syncPage.borderColor
-
-                ColumnLayout {
-                    id: directColumn
-                    anchors.fill: parent
-                    anchors.margins: 10
-                    spacing: 8
-
-                    Text {
-                        text: "直连（实验）"
-                        color: syncPage.textColor
-                        font.pixelSize: Style.bodySize
-                        font.bold: true
-                    }
-
-                    Text {
-                        Layout.fillWidth: true
-                        wrapMode: Text.WordWrap
-                        color: syncPage.mutedColor
-                        font.pixelSize: Style.captionSize
-                        text: "不经过共享目录：主机开一个端口，连接方拿 6 位码配对。"
-                              + "走 ASYN v2 over TLS，只有主机出示证书，客户端靠口令认证。"
-                    }
-
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: 8
-
-                        Text {
-                            text: "本机地址"
-                            color: syncPage.mutedColor
-                            font.pixelSize: Style.captionSize
-                            Layout.preferredWidth: 90
-                        }
-                        Text {
-                            Layout.fillWidth: true
-                            elide: Text.ElideRight
-                            color: sync.netRunning ? syncPage.textColor : syncPage.mutedColor
-                            font.pixelSize: Style.bodySize
-                            text: sync.netRunning
-                                  ? String(sync.netAddress)
-                                  : "未监听（点「开始监听」后显示，对方把它填到下面的地址框）"
-                        }
-                        Button {
-                            text: "复制"
-                            enabled: sync.netRunning && String(sync.netAddress).length > 0
-                            onClicked: sync.copyToClipboard(String(sync.netAddress))
-                        }
-                    }
-
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: 8
-
-                        Button {
-                            text: sync.netRunning ? "停止监听" : "开始监听"
-                            onClicked: {
-                                if (sync.netRunning)
-                                    sync.stopNetServer()
-                                else
-                                    sync.startNetServer()
-                            }
-                        }
-
-                        Button {
-                            text: sync.pairActive ? "关闭配对窗口" : "生成配对码"
-                            enabled: sync.netRunning
-                            onClicked: {
-                                if (sync.pairActive)
-                                    sync.stopPairing()
-                                else
-                                    sync.startPairing()
-                            }
-                        }
-
-                        Text {
-                            Layout.fillWidth: true
-                            wrapMode: Text.WordWrap
-                            color: sync.pairActive ? syncPage.accentColor : syncPage.mutedColor
-                            font.pixelSize: sync.pairActive ? 22 : Style.captionSize
-                            font.bold: sync.pairActive
-                            elide: Text.ElideRight
-                            text: sync.pairActive ? sync.pairCode : String(sync.netStatus)
-                        }
-                    }
-
-                    Repeater {
-                        model: sync.pairedDevices
-
-                        delegate: RowLayout {
-                            Layout.fillWidth: true
-                            spacing: 8
-
-                            Text {
-                                Layout.fillWidth: true
-                                color: syncPage.mutedColor
-                                font.pixelSize: Style.captionSize
-                                elide: Text.ElideMiddle
-                                text: modelData.deviceId + " · "
-                                      + String(modelData.fingerprint).substring(0, 16)
-                            }
-
-                            Button {
-                                text: "解除"
-                                onClicked: sync.forgetDevice(modelData.deviceId)
-                            }
-                        }
-                    }
-
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: 8
-
-                        Rectangle {
-                            Layout.fillWidth: true
-                            Layout.preferredHeight: 32
-                            radius: Style.radiusSmall
-                            color: "transparent"
-                            border.color: peerField.activeFocus ? syncPage.accentColor : syncPage.borderColor
-
-                            TextField {
-                                id: peerField
-                                anchors.fill: parent
-                                anchors.leftMargin: 8
-                                anchors.rightMargin: 8
-                                placeholderText: "主机地址，例如 100.116.234.107:45871"
-                                color: syncPage.textColor
-                                placeholderTextColor: syncPage.mutedColor
-                                font.pixelSize: Style.captionSize
-                                background: null
-                            }
-                        }
-
-                        Rectangle {
-                            Layout.preferredWidth: 96
-                            Layout.preferredHeight: 32
-                            radius: Style.radiusSmall
-                            color: "transparent"
-                            border.color: codeField.activeFocus ? syncPage.accentColor : syncPage.borderColor
-
-                            TextField {
-                                id: codeField
-                                anchors.fill: parent
-                                anchors.leftMargin: 8
-                                anchors.rightMargin: 8
-                                placeholderText: "6 位码"
-                                maximumLength: 6
-                                color: syncPage.textColor
-                                placeholderTextColor: syncPage.mutedColor
-                                font.pixelSize: Style.captionSize
-                                background: null
-                            }
-                        }
-
-                        Button {
-                            text: "配对"
-                            enabled: peerField.text.length > 0 && codeField.text.length === 6
-                            onClicked: sync.pairWithPeer(peerField.text, codeField.text)
-                        }
-                    }
-
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: 8
-                        visible: sync.peerPaired
-
-                        Text {
-                            Layout.fillWidth: true
-                            wrapMode: Text.WordWrap
-                            color: syncPage.mutedColor
-                            font.pixelSize: Style.captionSize
-                            text: "已与主机配对；每轮同步会同时挂载直连通道。"
-                        }
-
-                        Button {
-                            text: "解除配对"
-                            onClicked: sync.unpairPeer()
-                        }
-                    }
-                }
-            }
-
-            Text {
                 text: "Assistant v" + appVersion + " · 设备同步"
                 color: syncPage.mutedColor
                 font.pixelSize: Style.captionSize
@@ -1225,15 +690,6 @@ Rectangle {
         id: rootDialog
         title: "选择要同步的文件夹"
         onAccepted: sync.addRoot(selectedFolder)
-    }
-
-    FolderDialog {
-        id: sharedDirDialog
-        title: "选择共享目录"
-        onAccepted: {
-            sharedDirField.text = sync.toLocalPath(selectedFolder.toString())
-            sync.setSharedDir(sharedDirField.text)
-        }
     }
 
     FileDialog {
