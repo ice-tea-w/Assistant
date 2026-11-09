@@ -28,6 +28,9 @@ Rectangle {
     property string connectUser: ""
     property string connectPassword: ""
 
+    // 备用通道：共享目录（UNC / 网盘）的卡片默认收起，直连可用时用不到它
+    property bool showLegacyShare: false
+
     // 角色（显式选择）：0 = 我开共享让别人连（主机），1 = 我连别人的共享（连接方）
     // 初始值按已保存的共享目录形态推断，用户点过单选后以选择为准
     property int roleMode: 0
@@ -107,6 +110,9 @@ Rectangle {
             if (last.length > 0 && last.indexOf(":") < 0)
                 localShareName = last
         }
+        // 配了共享目录但还没配对直连的机器，别让它以为入口丢了
+        if (saved.length > 0 && !sync.peerPaired)
+            showLegacyShare = true
     }
 
     Connections {
@@ -193,9 +199,27 @@ Rectangle {
             }
 
             // ---- 连接 ----
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 8
+
+                Text {
+                    Layout.fillWidth: true
+                    wrapMode: Text.WordWrap
+                    color: syncPage.mutedColor
+                    font.pixelSize: Style.captionSize
+                    text: "共享目录（UNC / 网盘）是备用通道：两台机器能直连时不需要它。"
+                }
+                Button {
+                    text: syncPage.showLegacyShare ? "收起共享目录卡片" : "用共享目录…"
+                    onClicked: syncPage.showLegacyShare = !syncPage.showLegacyShare
+                }
+            }
+
             Rectangle {
                 Layout.fillWidth: true
                 Layout.preferredHeight: connectColumn.implicitHeight + 24
+                visible: syncPage.showLegacyShare
                 radius: Style.radius
                 color: syncPage.panelColor
                 border.color: syncPage.borderColor
