@@ -34,25 +34,27 @@ PASS   : TestSync::pathGuard(æŽ§åˆ¶å­—ç¬¦)
 PASS   : TestSync::pathGuard(æœ«å°¾ç©ºæ ¼)
 PASS   : TestSync::pathGuard(æœ«å°¾ç‚¹)
 PASS   : TestSync::resolveUnderStaysInsideRoot()
+PASS   : TestSync::ensureDirUnderCreatesSegments()
 PASS   : TestSync::databaseBaseline()
 PASS   : TestSync::databaseConflicts()
+PASS   : TestSync::databaseDevices()
 PASS   : TestSync::folderTransportRoundTrip()
 PASS   : TestSync::folderTransportRejectsTraversal()
 PASS   : TestSync::folderTransportFetchMissing()
 PASS   : TestSync::folderTransportLockHeld()
 PASS   : TestSync::folderTransportLockTakeover()
 PASS   : TestSync::folderTransportRemoteAliases()
-QWARN  : TestSync::engineTwoDevicesSequential() QTemporaryDir: Unable to remove "C:\\Users\\idea\\AppData\\Local\\Temp\\assistant_tests-CLMnJa" most likely due to the presence of read-only files.
+QWARN  : TestSync::engineTwoDevicesSequential() QTemporaryDir: Unable to remove "C:\\Users\\idea\\AppData\\Local\\Temp\\assistant_tests-OlqOHP" most likely due to the presence of read-only files.
 PASS   : TestSync::engineTwoDevicesSequential()
-QWARN  : TestSync::engineTwoRootsNoCollision() QTemporaryDir: Unable to remove "C:\\Users\\idea\\AppData\\Local\\Temp\\assistant_tests-bmolDW" most likely due to the presence of read-only files.
+QWARN  : TestSync::engineTwoRootsNoCollision() QTemporaryDir: Unable to remove "C:\\Users\\idea\\AppData\\Local\\Temp\\assistant_tests-UajMvo" most likely due to the presence of read-only files.
 PASS   : TestSync::engineTwoRootsNoCollision()
-QWARN  : TestSync::engineSkipsWhenRemoteEmpty() QTemporaryDir: Unable to remove "C:\\Users\\idea\\AppData\\Local\\Temp\\assistant_tests-NbeALM" most likely due to the presence of read-only files.
+QWARN  : TestSync::engineSkipsWhenRemoteEmpty() QTemporaryDir: Unable to remove "C:\\Users\\idea\\AppData\\Local\\Temp\\assistant_tests-cTPhWl" most likely due to the presence of read-only files.
 PASS   : TestSync::engineSkipsWhenRemoteEmpty()
 PASS   : TestSync::configRootsRoundTrip()
 PASS   : TestSync::deliveryNameRoundTrip()
 PASS   : TestSync::deliveryOwnCheck()
 PASS   : TestSync::deliveryPlaceIncoming()
-QWARN  : TestSync::databaseReceived() QTemporaryDir: Unable to remove "C:\\Users\\idea\\AppData\\Local\\Temp\\assistant_tests-EfZlDp" most likely due to the presence of read-only files.
+QWARN  : TestSync::databaseReceived() QTemporaryDir: Unable to remove "C:\\Users\\idea\\AppData\\Local\\Temp\\assistant_tests-JRUaOQ" most likely due to the presence of read-only files.
 PASS   : TestSync::databaseReceived()
 PASS   : TestSync::configWatchInboxRoundTrip()
 PASS   : TestSync::shareBat(plain)
@@ -62,6 +64,8 @@ PASS   : TestSync::suggestShareNameRules()
 PASS   : TestSync::connectArgsBuild()
 PASS   : TestSync::explainExitCodes()
 PASS   : TestSync::probeErrorDistinguishesFailures()
+QINFO  : TestSync::tlsBackendSelfCheck() TLS Ö§³Ö: ÊÇ | µ±Ç°ºó¶Ë: [schannel] | ¿ÉÓÃºó¶Ë: [cert-only, schannel] | °æ±¾: Secure Channel, Windows 10.0.26200
+PASS   : TestSync::tlsBackendSelfCheck()
 PASS   : TestSync::cleanupTestCase()
-Totals: 59 passed, 0 failed, 0 skipped, 0 blacklisted, 342ms
+Totals: 62 passed, 0 failed, 0 skipped, 0 blacklisted, 406ms
 ********* Finished testing of TestSync *********
