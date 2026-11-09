@@ -84,7 +84,6 @@ Rectangle {
                 }
             }
 
-            // ---- 同步范围 ----
             // ---- 直连（ASYN v2）----
             Rectangle {
                 Layout.fillWidth: true
@@ -112,7 +111,9 @@ Rectangle {
                         color: syncPage.mutedColor
                         font.pixelSize: Style.captionSize
                         text: "不经过共享目录：主机开一个端口，连接方拿 6 位码配对。"
-                              + "走 ASYN v2 over TLS，只有主机出示证书，客户端靠口令认证。"
+                              + "走 ASYN v2 over TLS，只有主机出示证书，客户端靠口令认证。\n"
+                              + "配对后点下面「立即同步」：两边按「本地 / 上次基线 / 对端清单」比对，"
+                              + "只传差异、双向生效，文件直接走这条 TLS 连接，不经过任何中转。"
                     }
 
                     RowLayout {
@@ -132,7 +133,7 @@ Rectangle {
                             font.pixelSize: Style.bodySize
                             text: sync.netRunning
                                   ? String(sync.netAddress)
-                                  : "未监听（点「开始监听」后显示，对方把它填到下面的地址框）"
+                                  : "未监听（点「开始监听」）"
                         }
                         Button {
                             text: "复制"
@@ -273,8 +274,7 @@ Rectangle {
                 }
             }
 
-            Text {
-
+            // ---- 同步范围 ----
             Rectangle {
                 Layout.fillWidth: true
                 Layout.preferredHeight: rootsColumn.implicitHeight + 24
@@ -449,7 +449,9 @@ Rectangle {
             }
 
             // ---- 发送文件（折叠，默认收起）----
+            // ---- 发送：仍走共享目录的 _投递/（旧通道），直连直发在 B 阶段 ----
             Rectangle {
+                visible: false
                 Layout.fillWidth: true
                 Layout.preferredHeight: sendColumn.implicitHeight + 20
                 radius: Style.radius
@@ -678,6 +680,7 @@ Rectangle {
                 }
             }
 
+            Text {
                 text: "Assistant v" + appVersion + " · 设备同步"
                 color: syncPage.mutedColor
                 font.pixelSize: Style.captionSize
