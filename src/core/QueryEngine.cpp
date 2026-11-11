@@ -1,5 +1,7 @@
 #include "core/QueryEngine.h"
 
+#include "core/FileFlags.h"
+#include "core/FileKind.h"
 #include "core/FileSnapshot.h"
 #include "core/QueryParser.h"
 #include "core/SnapshotManager.h"
@@ -41,6 +43,23 @@ struct Rank
     }
 };
 
+/// 只带过滤 token（`:doc`）时的排序：mtime 降序，同刻按文件名升序。
+struct RecentRank
+{
+    const FileSnapshot *snapshot = nullptr;
+
+    bool better(int a, int b) const
+    {
+        const qint64 ma = snapshot->mtimeAt(a);
+        const qint64 mb = snapshot->mtimeAt(b);
+        if (ma != mb)
+            return ma > mb;
+        return snapshot->lowerAt(a) < snapshot->lowerAt(b);
+    }
+
+    bool operator()(int a, int b) const { return better(a, b); }
+};
+
 } // namespace
 
 QueryEngine::QueryEngine(const SnapshotManager &snapshots)
@@ -59,7 +78,7 @@ QList<QueryEngine::Match> QueryEngine::query(const QString &raw, int limit) cons
         return out;
 
     const QueryParser::Parsed parsed = QueryParser::parse(raw);
-    if (parsed.terms.isEmpty())
+    if (parsed.isEmpty())
         return out;   // 空查询 / 纯否定项：文件不进结果（与旧语义一致）
 
     QVarLengthArray<QStringView, 4> terms;
@@ -71,13 +90,142 @@ QList<QueryEngine::Match> QueryEngine::query(const QString &raw, int limit) cons
     for (const QString &t : parsed.negations)
         negations.append(QStringView(t));
 
+    // `in:` 的两种形态预先准备好，避免在逐行循环里做字符串拼接
+    QVarLengthArray<QString, 2>     inWrapped;   // "/token/" 的持有者（QStringView 不能悬空）
+    inWrapped.reserve(static_cast<int>(parsed.inFilters.size()));
+    for (const QString &f : parsed.inFilters)
+        inWrapped.append(QStringLiteral("/") + f + QStringLiteral("/"));
+
+    QVarLengthArray<QStringView, 2> inTokens;
+    QVarLengthArray<QStringView, 2> inSegments;
+    inTokens.reserve(inWrapped.size());
+    inSegments.reserve(inWrapped.size());
+    for (int k = 0; k < parsed.inFilters.size(); ++k) {
+        inTokens.append(QStringView(parsed.inFilters.at(k)));
+        inSegments.append(QStringView(inWrapped.at(k)));
+    }
+
+    QVarLengthArray<QStringView, 4> extensionViews;
+    extensionViews.reserve(static_cast<int>(parsed.extensions.size()));
+    for (const QString &e : parsed.extensions)
+        extensionViews.append(QStringView(e));
+
+    const int count = snapshot->size();
+
+    // 过滤谓词先判（一条 `&` / 一次比较），避免为将被过滤掉的条目做打分。
+    auto passesFilters = [&](int i) -> bool {
+        if (parsed.hasKind) {
+            uint16_t mask = snapshot->catMaskAt(i);
+            if (mask == 0)
+                mask = FileKind::Other;   // 迁移前的旧行：按“未归类”对待
+            if ((mask & parsed.kindMask) == 0)
+                return false;
+        }
+
+        if (!extensionViews.isEmpty()) {
+            const QStringView name = snapshot->lowerAt(i);
+            const qsizetype dot = name.lastIndexOf(QLatin1Char('.'));
+            if (dot <= 0)
+                return false;
+            const QStringView ext = name.mid(dot + 1);
+            bool hit = false;
+            for (const QStringView &wanted : extensionViews) {
+                if (ext == wanted) {
+                    hit = true;
+                    break;
+                }
+            }
+            if (!hit)
+                return false;
+        }
+
+        if (!inTokens.isEmpty()) {
+            const QStringView path = snapshot->pathViewAt(i);
+            bool hit = false;
+            for (int k = 0; k < inTokens.size(); ++k) {
+                // 路径前缀（`in:C:/work`）或任意一段目录名（`in:downloads`）
+                if (path.startsWith(inTokens.at(k), Qt::CaseInsensitive)
+                    || path.contains(inSegments.at(k), Qt::CaseInsensitive)) {
+                    hit = true;
+                    break;
+                }
+            }
+            if (!hit)
+                return false;
+        }
+
+        if (parsed.hasSize) {
+            const qint64 size = snapshot->sizeAt(i);
+            if (parsed.sizeMin >= 0 && size < parsed.sizeMin)
+                return false;
+            if (parsed.sizeMax >= 0 && size > parsed.sizeMax)
+                return false;
+        }
+
+        if (parsed.hasDate) {
+            const qint64 mtime = snapshot->mtimeAt(i);
+            if (parsed.dateAfter > 0 && mtime < parsed.dateAfter)
+                return false;
+            if (parsed.dateBefore > 0 && mtime >= parsed.dateBefore)
+                return false;
+        }
+
+        return true;
+    };
+
+    auto passesNegations = [&](int i) -> bool {
+        const QStringView text(snapshot->lowerAt(i));
+        for (const QStringView &neg : negations) {
+            if (ScoreEngine::contains(neg, text))
+                return false;
+        }
+        return true;
+    };
+
+    // ---- 只带过滤 token（无自由词）：按 mtime 列“最近文件” ----
+    if (terms.isEmpty()) {
+        if (!parsed.hasFilters())
+            return out;   // 只有否定项：与旧语义一致，不出文件
+
+        const RecentRank recent{ snapshot.get() };
+        std::priority_queue<int, std::vector<int>, RecentRank> heap(recent);
+
+        for (int i = 0; i < count; ++i) {
+            if (!passesFilters(i) || !passesNegations(i))
+                continue;
+            if (static_cast<int>(heap.size()) < limit) {
+                heap.push(i);
+            } else if (recent.better(i, heap.top())) {
+                heap.pop();
+                heap.push(i);
+            }
+        }
+
+        std::vector<int> picked;
+        picked.reserve(heap.size());
+        while (!heap.empty()) {
+            picked.push_back(heap.top());
+            heap.pop();
+        }
+        std::sort(picked.begin(), picked.end(),
+                  [&recent](int a, int b) { return recent.better(a, b); });
+
+        out.reserve(static_cast<int>(picked.size()));
+        for (int index : picked)
+            out.append({ index, 100, ScoreEngine::Tier::Recent });
+        return out;
+    }
+
+    // ---- 自由词查询：过滤 → 打分 → top-K ----
     const Rank rank{ snapshot.get() };
     std::priority_queue<Candidate, std::vector<Candidate>, Rank> heap(rank);
 
-    const int count     = snapshot->size();
     const int termCount = static_cast<int>(terms.size());
 
     for (int i = 0; i < count; ++i) {
+        if (!passesFilters(i) || !passesNegations(i))
+            continue;
+
         // QStringView 是零拷贝视图；快照在整个查询期间由上面的 shared_ptr 保活
         const QStringView text(snapshot->lowerAt(i));
 
@@ -98,19 +246,15 @@ QList<QueryEngine::Match> QueryEngine::query(const QString &raw, int limit) cons
         if (!matched)
             continue;
 
-        bool excluded = false;
-        for (const QStringView &neg : negations) {
-            if (ScoreEngine::contains(neg, text)) {
-                excluded = true;
-                break;
-            }
-        }
-        if (excluded)
-            continue;
-
         // 多词取**平均分**：既保持与单档同一尺度（不会因为词多就冲到 2000），
         // 又比"取最弱词"更能反映整体匹配质量。
-        const Candidate candidate{ i, sum / termCount, best };
+        int score = sum / termCount;
+
+        // demote 策略：工程目录内的文件仍然可搜，但降权 30%（治理文档 §1.2）
+        if ((snapshot->flagsAt(i) & FileFlags::Project) != 0)
+            score = score * 7 / 10;
+
+        const Candidate candidate{ i, score, best };
 
         if (static_cast<int>(heap.size()) < limit) {
             heap.push(candidate);

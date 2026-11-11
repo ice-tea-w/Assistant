@@ -20,6 +20,7 @@ namespace ScoreEngine {
 enum class Tier
 {
     None = 0,
+    Recent,          ///< 只带过滤 token（`:doc`）时按 mtime 列出的"最近文件"，不打匹配分
     EditDistance,
     Subsequence,
     Contains,

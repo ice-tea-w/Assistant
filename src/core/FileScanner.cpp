@@ -1,4 +1,7 @@
 #include "core/FileScanner.h"
+
+#include "core/FileClassifier.h"
+#include "core/FileRules.h"
 #include "core/Logger.h"
 
 #include <QDir>
@@ -6,6 +9,7 @@
 #include <QSet>
 #include <QStandardPaths>
 
+#include <utility>
 #include <vector>
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -22,6 +26,15 @@ namespace {
 
 /// 1601-01-01 到 1970-01-01 之间的秒数（FILETIME 的纪元差）
 constexpr qint64 kFileTimeEpochOffsetSec = 11644473600LL;
+
+/// 工程哨兵前瞻窗口（Phase B）。
+///
+/// 为什么需要前瞻：句柄栈是**流式**的，进入子目录时还没有它的目录清单，
+/// 而"是否整棵跳过"必须在读第一条子项**之前**决定（否则顺序与截断都会变）。
+/// 打开子目录时先读最多这么多条到缓冲区里，命中哨兵就整棵丢弃；没命中就把缓冲区
+/// 当作正常的待处理条目继续 —— **不额外 stat、不改变条目顺序**。
+/// 超过这个窗口才出现哨兵的项目根会被漏判（现实中不存在，且可调大名单弥补）。
+constexpr int kProjectProbeEntries = 256;
 
 QString toWinSeparators(const QString &path)
 {
@@ -73,17 +86,54 @@ qint64 fileTimeToUnixSec(const FILETIME &ft)
     return static_cast<qint64>(ticks.QuadPart / 10000000ULL) - kFileTimeEpochOffsetSec;
 }
 
-/// 句柄栈的一层。`data` 里始终装着"当前待处理的那一条"。
-struct Frame
+bool isDotOrDotDot(const QString &name)
 {
-    HANDLE           handle = INVALID_HANDLE_VALUE;
-    WIN32_FIND_DATAW data{};
-    bool             firstPending = false;   ///< data 里是 FindFirstFileExW 的返回值
-    QString          dirLong;                ///< `\\?\` 形式（拼子目录用）
-    QString          dirNormal;              ///< 普通形式（交给上层）
+    return name == QLatin1String(".") || name == QLatin1String("..");
+}
+
+/// 一条已从 `WIN32_FIND_DATAW` 拷出来的待处理条目。
+/// 不直接存 `WIN32_FIND_DATAW`（592 字节/条），前瞻 256 条 × 深度也只要几百 KB。
+struct PendingEntry
+{
+    QString name;
+    qint64  size  = 0;
+    qint64  mtime = 0;
+    DWORD   attrs = 0;
+
+    bool isDirectory() const { return (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0; }
 };
 
-bool openFrame(const QString &dirLong, const QString &dirNormal, Frame *frame, DWORD *error)
+PendingEntry toPending(const WIN32_FIND_DATAW &data)
+{
+    PendingEntry e;
+    e.name  = QString::fromWCharArray(data.cFileName);
+    e.size  = (static_cast<qint64>(data.nFileSizeHigh) << 32)
+              | static_cast<qint64>(data.nFileSizeLow);
+    e.mtime = fileTimeToUnixSec(data.ftLastWriteTime);
+    e.attrs = data.dwFileAttributes;
+    return e;
+}
+
+/// 句柄栈的一层：自己的 `HANDLE` + 前瞻缓冲。
+struct Frame
+{
+    HANDLE        handle = INVALID_HANDLE_VALUE;
+    WIN32_FIND_DATAW data{};
+    bool          exhausted = false;   ///< 枚举已经读完（缓冲里可能还有条目）
+    QString       dirLong;             ///< `\\?\` 形式（拼子目录用）
+    QString       dirNormal;           ///< 普通形式（交给上层）
+    bool          isProject = false;   ///< 位于工程子树（demote 策略下打标）
+    uint16_t      rootId    = 0;       ///< 扫描根序号（1 起）
+
+    std::vector<PendingEntry> pending;
+    std::size_t   pendingPos = 0;
+};
+
+/// 打开目录并**前瞻**最多 `probeLimit` 条（用于工程哨兵识别）。
+/// probeLimit 至少为 1 —— 第一条也走缓冲，nextEntry 才能统一从缓冲/FindNext 取。
+bool openFrame(const QString &dirLong, const QString &dirNormal,
+               int probeLimit, bool isProject, uint16_t rootId,
+               Frame *frame, DWORD *error)
 {
     QString pattern = dirLong;
     if (!pattern.endsWith(QLatin1Char('\\')))
@@ -103,19 +153,63 @@ bool openFrame(const QString &dirLong, const QString &dirNormal, Frame *frame, D
         return false;
     }
 
-    frame->firstPending = true;
-    frame->dirLong      = dirLong;
-    frame->dirNormal    = dirNormal;
+    frame->dirLong     = dirLong;
+    frame->dirNormal   = dirNormal;
+    frame->isProject   = isProject;
+    frame->rootId      = rootId;
+    frame->exhausted   = false;
+    frame->pending.clear();
+    frame->pendingPos  = 0;
+
+    frame->pending.reserve(static_cast<std::size_t>(qBound(1, probeLimit, kProjectProbeEntries)));
+
+    int stored = 0;
+    while (stored < probeLimit) {
+        const QString name = QString::fromWCharArray(frame->data.cFileName);
+        if (!isDotOrDotDot(name)) {
+            frame->pending.push_back(toPending(frame->data));
+            ++stored;
+            // 注意：存满前瞻窗口就**不要**再推进句柄 —— 最后一条已经进了缓冲，
+            // 下一条由 nextEntry() 的 FindNextFileW 取。这里多推进一次会丢一条。
+            if (stored >= probeLimit)
+                break;
+        }
+        if (!FindNextFileW(frame->handle, &frame->data)) {
+            frame->exhausted = true;
+            break;
+        }
+    }
+
     return true;
 }
 
-bool nextEntry(Frame *frame)
+/// 取下一个条目：先清空前瞻缓冲，再继续 `FindNextFileW`。
+bool nextEntry(Frame *frame, PendingEntry *out)
 {
-    if (frame->firstPending) {
-        frame->firstPending = false;
+    if (frame->pendingPos < frame->pending.size()) {
+        *out = std::move(frame->pending[frame->pendingPos]);
+        ++frame->pendingPos;
+        if (frame->pendingPos == frame->pending.size()) {
+            // 缓冲用完就清空（容量留给这一层，Frame 弹栈时一起释放）。不要 shrink_to_fit：
+            // 那会让每个目录都多一次分配/释放，扫描吞吐会掉。
+            frame->pending.clear();
+            frame->pendingPos = 0;
+        }
         return true;
     }
-    return FindNextFileW(frame->handle, &frame->data) != 0;
+
+    while (!frame->exhausted) {
+        if (!FindNextFileW(frame->handle, &frame->data)) {
+            frame->exhausted = true;
+            return false;
+        }
+        const QString name = QString::fromWCharArray(frame->data.cFileName);
+        if (isDotOrDotDot(name))
+            continue;
+        *out = toPending(frame->data);
+        return true;
+    }
+    return false;
 }
 
 void closeFrame(Frame *frame)
@@ -126,9 +220,13 @@ void closeFrame(Frame *frame)
     }
 }
 
-bool isDotOrDotDot(const QString &name)
+bool hasProjectSentinel(const Frame &frame, const ExcludeRuleSet &rules)
 {
-    return name == QLatin1String(".") || name == QLatin1String("..");
+    for (const PendingEntry &e : frame.pending) {
+        if (rules.isProjectSentinel(e.name))
+            return true;
+    }
+    return false;
 }
 
 } // namespace
@@ -152,14 +250,9 @@ QStringList defaultRoots()
 
 const QStringList &defaultExcludedDirNames()
 {
-    // 函数内静态：线上一处、线程安全、零重复构造
-    static const QStringList kNames = {
-        QStringLiteral("node_modules"),
-        QStringLiteral("__pycache__"),
-        QStringLiteral(".cache"),
-        QStringLiteral(".git"),
-        QStringLiteral(".svn"),
-    };
+    // 名单只有一份：定义在 ExcludeRuleSet::defaultDirNames()。
+    // 函数内静态：线上一处、线程安全、零重复构造。
+    static const QStringList kNames = ExcludeRuleSet::defaultDirNames();
     return kNames;
 }
 
@@ -176,6 +269,10 @@ Stats scan(const QStringList &roots,
         out->clear();
         out->reserve(4096);
     }
+
+    const ExcludeRuleSet *rules = options.rules;
+    const FileClassifier *classifier = options.classifier;
+    const bool projectGuard = rules && rules->projectGuardEnabled();
 
     // ---- 根目录预处理：去重 + 只留真实存在的目录 ----
     QStringList pendingRoots;          // 普通形式
@@ -207,14 +304,18 @@ Stats scan(const QStringList &roots,
 
     auto cancelled = [&shouldCancel]() { return shouldCancel && shouldCancel(); };
 
+    uint16_t rootOrdinal = 0;
     for (const QString &rootNormal : pendingRoots) {
         if (stats.hitHardLimit || stats.cancelled)
             break;
 
+        ++rootOrdinal;
+
         Frame rootFrame;
         DWORD err = 0;
         const QString rootLong = toLongPath(toWinSeparators(rootNormal));
-        if (!openFrame(rootLong, rootNormal, &rootFrame, &err)) {
+        // 根目录不做工程哨兵判定：根是用户显式指定的，哪怕它本身是个工程也要扫。
+        if (!openFrame(rootLong, rootNormal, 1, false, rootOrdinal, &rootFrame, &err)) {
             if (err == ERROR_ACCESS_DENIED)
                 ++stats.deniedDirs;
             Logger::get().warn("FileScanner: 打不开根 {}（Win32 错误 {}）",
@@ -223,7 +324,7 @@ Stats scan(const QStringList &roots,
         }
 
         ++stats.dirsVisited;
-        stack.push_back(rootFrame);
+        stack.push_back(std::move(rootFrame));
 
         while (!stack.empty()) {
             if (cancelled()) {
@@ -232,18 +333,15 @@ Stats scan(const QStringList &roots,
             }
 
             Frame &top = stack.back();
-            if (!nextEntry(&top)) {          // 这一层枚举完了
+            PendingEntry current;
+            if (!nextEntry(&top, &current)) {          // 这一层枚举完了
                 closeFrame(&top);
                 stack.pop_back();
                 continue;
             }
 
-            const WIN32_FIND_DATAW &data = top.data;
-            const QString name = QString::fromWCharArray(data.cFileName);
-            if (isDotOrDotDot(name))
-                continue;
-
-            const DWORD attrs = data.dwFileAttributes;
+            const QString &name = current.name;
+            const DWORD attrs = current.attrs;
 
             // P0-1：不跟随 reparse point（junction / 符号链接 / 挂载点都不下探）
             if (attrs & FILE_ATTRIBUTE_REPARSE_POINT)
@@ -252,9 +350,18 @@ Stats scan(const QStringList &roots,
             if (options.skipHidden && (attrs & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM)))
                 continue;
 
-            if (attrs & FILE_ATTRIBUTE_DIRECTORY) {
+            if (current.isDirectory()) {
                 // P0-2：目录级剪枝 —— 判定一次，整棵子树不进
-                if (options.excludedDirNames.contains(name, Qt::CaseInsensitive)) {
+                const bool excludedByName =
+                    rules ? rules->excludesDirName(name)
+                          : options.excludedDirNames.contains(name, Qt::CaseInsensitive);
+                if (excludedByName) {
+                    ++stats.prunedDirs;
+                    continue;
+                }
+
+                // demote 策略：工程子树里的构建产物目录整棵跳过
+                if (rules && top.isProject && rules->excludesProjectBuildDir(name)) {
                     ++stats.prunedDirs;
                     continue;
                 }
@@ -262,11 +369,25 @@ Stats scan(const QStringList &roots,
                 Frame child;
                 DWORD childErr = 0;
                 const QString childNormal = joinNormal(top.dirNormal, name);
-                if (!openFrame(joinLong(top.dirLong, name), childNormal, &child, &childErr)) {
+                const int probeLimit = projectGuard ? kProjectProbeEntries : 1;
+                if (!openFrame(joinLong(top.dirLong, name), childNormal, probeLimit,
+                               top.isProject, top.rootId, &child, &childErr)) {
                     // 权限拒绝/被占用：逐目录跳过并计数，不影响其它子树
                     if (childErr == ERROR_ACCESS_DENIED)
                         ++stats.deniedDirs;
                     continue;
+                }
+
+                if (projectGuard && hasProjectSentinel(child, *rules)) {
+                    if (rules->projectPolicy() == ExcludeRuleSet::ProjectPolicy::Skip) {
+                        closeFrame(&child);
+                        ++stats.projectDirsSkipped;
+                        continue;
+                    }
+                    if (rules->projectPolicy() == ExcludeRuleSet::ProjectPolicy::Demote) {
+                        child.isProject = true;
+                        ++stats.projectDirsDemoted;
+                    }
                 }
 
                 ++stats.dirsVisited;
@@ -274,13 +395,22 @@ Stats scan(const QStringList &roots,
                 continue;
             }
 
+            // ---- 文件级规则 ----
+            if (rules && rules->excludesFile(name, current.size)) {
+                ++stats.filesSkipped;
+                continue;
+            }
+
             if (out) {
                 Entry entry;
                 entry.dirPath = top.dirNormal;
                 entry.name    = name;
-                entry.size    = (static_cast<qint64>(data.nFileSizeHigh) << 32)
-                                | static_cast<qint64>(data.nFileSizeLow);
-                entry.mtime   = fileTimeToUnixSec(data.ftLastWriteTime);
+                entry.size    = current.size;
+                entry.mtime   = current.mtime;
+                entry.catMask = classifier ? classifier->classify(name) : 0;
+                entry.flags   = top.isProject ? static_cast<uint8_t>(FileFlags::Project)
+                                              : static_cast<uint8_t>(FileFlags::None);
+                entry.rootId  = top.rootId;
                 out->append(std::move(entry));
             }
             ++stats.files;

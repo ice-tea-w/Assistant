@@ -1,11 +1,15 @@
 #pragma once
 
 #include <QString>
+#include <QStringView>
 #include <QtGlobal>
 
+#include <cstdint>
 #include <memory>
 #include <utility>
 #include <vector>
+
+#include "core/FileFlags.h"
 
 /// 文件索引的**不可变快照** —— 查询层唯一允许接触的数据表示。
 ///
@@ -13,8 +17,9 @@
 /// 访问器之后，查询代码只认 `size()` + `xFooAt(i)`，**永远不直接摸容器**。这样将来
 /// 换 SoA / 目录字典 / UTF-8 表示时，改动只落在这个文件里，不波及查询层与测试。
 ///
-/// v1 物理表示：`std::vector<FileEntry>`（3 个 QString + 2 个标量）。20 万条约
-/// 50–70 MB，低于预算，且"省内存"的手段都不是当前已知的瓶颈（全部 gated）。
+/// 物理表示：`std::vector<FileEntry>`（3 个 QString + 标量 + 治理字段）。
+/// Phase B 加了 `catMask` / `flags` / `rootId`：20 万条约 +6 MB，仍在预算内，
+/// 换来的是**查询期过滤零额外分配**（一条 `&` 判定，不查 DB、不碰磁盘）。
 class FileSnapshot
 {
 public:
@@ -27,6 +32,9 @@ public:
         QString path;       // 绝对路径（**定位键，不是文件身份**，见 §3.6）
         qint64  size  = 0;  // 字节
         qint64  mtime = 0;  // Unix 秒
+        uint16_t catMask = 0;  // FileKind 位（0 = 尚未归类，按 Other 对待）
+        uint8_t  flags   = 0;  // FileFlags 位
+        uint16_t rootId  = 0;  // 扫描根序号（1 起，0 = 未知）
     };
 
     /// 构建期写入器：扫描线程用它攒数据，扫完 `finish()` 得到可发布的快照。
@@ -37,7 +45,9 @@ public:
         void reserve(int n) { m_entries.reserve(static_cast<std::size_t>(n)); }
 
         /// 追加一条。`nameLower` 在这里算一次（不在每条查询里算 N 次）。
-        void add(const QString &name, const QString &path, qint64 size, qint64 mtime)
+        /// 治理字段有默认值，老的调用点（golden / 补丁）不用改。
+        void add(const QString &name, const QString &path, qint64 size, qint64 mtime,
+                 uint16_t catMask = 0, uint8_t flags = 0, uint16_t rootId = 0)
         {
             FileEntry e;
             e.name      = name;
@@ -45,6 +55,9 @@ public:
             e.path      = path;
             e.size      = size;
             e.mtime     = mtime;
+            e.catMask   = catMask;
+            e.flags     = flags;
+            e.rootId    = rootId;
             m_entries.push_back(std::move(e));
         }
 
@@ -73,11 +86,18 @@ public:
     qint64  sizeAt(int i) const { return at(i).size; }
     qint64  mtimeAt(int i) const { return at(i).mtime; }
 
+    uint16_t catMaskAt(int i) const { return at(i).catMask; }
+    uint8_t  flagsAt(int i) const { return at(i).flags; }
+    uint16_t rootIdAt(int i) const { return at(i).rootId; }
+
     /// 匹配热路径：**零拷贝**，故意返回 const 引用而不是 QString。
     ///
     /// 每条查询要对全表每个条目调一次；按值返回等于每次按键复制 20 万个字符串。
     /// 生命周期绑定快照本身 —— 查询期间调用方持有 `shared_ptr`，所以安全。
     const QString &lowerAt(int i) const { return at(i).nameLower; }
+
+    /// `in:` 过滤用的路径视图：同样零拷贝。只在带 `in:` token 的查询里用。
+    QStringView pathViewAt(int i) const { return QStringView(at(i).path); }
 
 private:
     const FileEntry &at(int i) const { return m_entries[static_cast<std::size_t>(i)]; }

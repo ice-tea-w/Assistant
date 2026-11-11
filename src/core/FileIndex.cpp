@@ -1,6 +1,8 @@
 #include "core/FileIndex.h"
 
 #include "core/FileEventDispatcher.h"
+#include "core/FileClassifier.h"
+#include "core/FileRules.h"
 #include "core/FileSnapshot.h"
 #include "core/SnapshotManager.h"
 #include "core/FileScanner.h"
@@ -9,6 +11,7 @@
 #include "database/FileIndexDatabase.h"
 
 #include <QDateTime>
+#include <QDir>
 #include <QElapsedTimer>
 #include <QFileInfo>
 #include <QHash>
@@ -30,6 +33,36 @@ namespace {
 constexpr int kSoftBudgetEntries = 300000;
 constexpr int kHardLimitEntries  = 1000000;
 
+/// `to` 的接受集合是不是 `from` 的子集？
+/// 是的话可以直接在现有快照上“再筛一遍”（毫秒级），不必回 DB 重读。
+bool kindFilterNarrows(const KindFilter &from, const KindFilter &to)
+{
+    if (from == to || to.mode == KindFilter::Mode::All)
+        return false;
+
+    if (from.mode == KindFilter::Mode::All)
+        return true;   // All → 任意白/黑名单，一定是收窄
+
+    if (from.mode == KindFilter::Mode::Whitelist
+        && to.mode == KindFilter::Mode::Whitelist) {
+        if ((to.kinds & static_cast<uint16_t>(~from.kinds)) != 0)
+            return false;
+        for (const QString &ext : to.extraExtensions) {
+            if (!from.extraExtensions.contains(ext))
+                return false;
+        }
+        return true;
+    }
+
+    if (from.mode == KindFilter::Mode::Blacklist
+        && to.mode == KindFilter::Mode::Blacklist) {
+        // 黑名单变大 = 接受集合变小
+        return (from.kinds & static_cast<uint16_t>(~to.kinds)) == 0;
+    }
+
+    return false;
+}
+
 } // namespace
 
 /// 扫描工作线程：采集（`FileScanner`）+ 差量写库（`FileIndexDatabase`）+ 建快照。
@@ -42,11 +75,15 @@ class ScanWorker : public QThread
 {
 public:
     ScanWorker(int entryLimit, QString databasePath, QStringList roots,
+               FileClassifier classifier, ExcludeRuleSet rules, KindFilter kindFilter,
                QObject *parent = nullptr)
         : QThread(parent)
         , m_entryLimit(entryLimit > 0 ? entryLimit : kHardLimitEntries)
         , m_databasePath(std::move(databasePath))
         , m_roots(std::move(roots))
+        , m_classifier(std::move(classifier))
+        , m_rules(std::move(rules))
+        , m_kindFilter(std::move(kindFilter))
     {
     }
 
@@ -70,8 +107,9 @@ protected:
 
         // ---- 1. 采集（worker 线程，可取消） ----
         FileScanner::Options options;
-        options.maxEntries       = m_entryLimit;
-        options.excludedDirNames = FileScanner::defaultExcludedDirNames();
+        options.maxEntries = m_entryLimit;
+        options.rules      = &m_rules;
+        options.classifier = &m_classifier;
 
         const QStringList roots = m_roots.isEmpty() ? FileScanner::defaultRoots() : m_roots;
         QVector<FileScanner::Entry> entries;
@@ -81,9 +119,11 @@ protected:
                                  });
 
         Logger::get().info("FileScanner: {} files / {} dirs in {} ms "
-                           "(pruned {}, denied {}, cancelled={}, hitLimit={})",
+                           "(pruned {}, projectSkip {}, projectDemote {}, fileRules {}, "
+                           "denied {}, cancelled={}, hitLimit={})",
                            scan.files, scan.dirsVisited, scan.elapsedMs,
-                           scan.prunedDirs, scan.deniedDirs,
+                           scan.prunedDirs, scan.projectDirsSkipped, scan.projectDirsDemoted,
+                           scan.filesSkipped, scan.deniedDirs,
                            scan.cancelled, scan.hitHardLimit);
 
         // ---- 2. 差量持久化（同一线程：QSqlDatabase 线程亲和） ----
@@ -96,10 +136,13 @@ protected:
                 diskRows.reserve(entries.size());
                 for (const FileScanner::Entry &e : entries) {
                     FileIndexDatabase::FileRow row;
-                    row.path  = e.path();
-                    row.name  = e.name;
-                    row.size  = e.size;
-                    row.mtime = e.mtime;
+                    row.path   = e.path();
+                    row.name   = e.name;
+                    row.size   = e.size;
+                    row.mtime  = e.mtime;
+                    row.catMask = e.catMask;
+                    row.flags   = e.flags;
+                    row.rootId  = e.rootId;
                     diskRows.append(std::move(row));
                 }
 
@@ -128,13 +171,24 @@ protected:
         }
 
         // ---- 3. 建快照（不可变；发布由 GUI 线程做） ----
+        // DB 存**全量**（只受采集规则约束），快照按 kindFilter 白名单筛选构建 ——
+        // 这样切换“只要文档 / 全都要”只需从 DB 重建，不必重扫磁盘（治理文档 §1.1）。
         FileSnapshot::Builder builder;
         builder.reserve(entries.size());
-        for (const FileScanner::Entry &e : entries)
-            builder.add(e.name, e.path(), e.size, e.mtime);
+        for (const FileScanner::Entry &e : entries) {
+            if (!m_kindFilter.accepts(e.catMask, e.name))
+                continue;
+            builder.add(e.name, e.path(), e.size, e.mtime, e.catMask, e.flags, e.rootId);
+        }
 
         snapshot  = builder.finish();
         elapsedMs = timer.elapsed();
+
+        if (snapshot->size() != entries.size()) {
+            Logger::get().info("FileIndex: kindFilter 过滤掉 {} 条（{}/{} 进快照）",
+                               entries.size() - snapshot->size(),
+                               snapshot->size(), entries.size());
+        }
 
         if (scan.hitHardLimit)
             Logger::get().warn("FileIndex: 已达硬保护上限 {} 条，停止索引（**不驱逐**已有条目）；"
@@ -149,6 +203,9 @@ private:
     const int         m_entryLimit;
     const QString     m_databasePath;
     const QStringList m_roots;   ///< 空 = FileScanner::defaultRoots()
+    FileClassifier    m_classifier;
+    ExcludeRuleSet    m_rules;
+    KindFilter        m_kindFilter;
 };
 
 // ---------------------------------------------------------------------------
@@ -159,6 +216,7 @@ FileIndex::FileIndex(QObject *parent)
     : QObject(parent)
     , m_snapshots(std::make_unique<SnapshotManager>())
     , m_query(std::make_unique<QueryEngine>(*m_snapshots))
+    , m_classifier(std::make_unique<FileClassifier>())
 {
 }
 
@@ -215,8 +273,14 @@ void FileIndex::startColdLoad()
             const auto all = db.loadAll();
             rows = static_cast<int>(all.size());
             builder.reserve(rows);
-            for (const auto &row : all)
-                builder.add(row.name, row.path, row.size, row.mtime);
+            for (const auto &row : all) {
+                // 归类始终以当前分类器为准：v1→v2 旧行是 0，用户改 override 也不用等重扫。
+                const uint16_t mask = m_classifier->classify(row.name);
+                if (!m_kindFilter.accepts(mask, row.name))
+                    continue;
+                builder.add(row.name, row.path, row.size, row.mtime,
+                            mask, row.flags, row.rootId);
+            }
             db.close();
         }
     }
@@ -252,7 +316,8 @@ void FileIndex::startScan()
         m_worker.reset();
     }
 
-    m_worker = std::make_unique<ScanWorker>(m_entryLimit, m_databasePath, m_roots);
+    m_worker = std::make_unique<ScanWorker>(m_entryLimit, m_databasePath, m_roots,
+                                            *m_classifier, m_rules, m_kindFilter);
     connect(m_worker.get(), &QThread::finished, this, &FileIndex::onScanFinished);
 
     m_scanning = true;
@@ -297,6 +362,143 @@ void FileIndex::setSnapshot(std::shared_ptr<const FileSnapshot> snapshot)
 void FileIndex::setEntryLimit(int maxEntries)
 {
     m_entryLimit = maxEntries > 0 ? maxEntries : 0;
+}
+
+// ---------------------------------------------------------------------------
+// Phase B：治理注入
+// ---------------------------------------------------------------------------
+
+void FileIndex::setClassifier(const FileClassifier &classifier)
+{
+    *m_classifier = classifier;
+
+    // 归类变了 → 已有的 cat_mask 可能过时。扫描中不另起快照，交给这轮扫描后的重扫；
+    // 否则直接从 DB 重建（每行重新归类一次，不扫盘）。
+    if (m_scanning) {
+        m_pendingRefresh = true;
+        return;
+    }
+    if (m_snapshots->current())
+        reloadFromDatabase();
+}
+
+const FileClassifier &FileIndex::classifier() const
+{
+    return *m_classifier;
+}
+
+void FileIndex::setExcludeRules(const ExcludeRuleSet &rules)
+{
+    // 采集规则的变更代价是“重扫磁盘”，这里**刻意不自动触发** —— 由调用方决定
+    // 何时 refresh（UI 需要先提示“正在重新建立索引”）。
+    m_rules = rules;
+}
+
+const ExcludeRuleSet &FileIndex::excludeRules() const
+{
+    return m_rules;
+}
+
+void FileIndex::setKindFilter(const KindFilter &filter)
+{
+    if (m_kindFilter == filter)
+        return;
+
+    const KindFilter previous = m_kindFilter;
+    m_kindFilter = filter;
+
+    if (m_scanning) {
+        m_pendingRefresh = true;
+        return;
+    }
+    if (!m_snapshots->current())
+        return;
+
+    // 收窄可以在当前快照上再筛（33k 条 <10 ms）；放宽必须回 DB —— 被筛掉的
+    // 条目已经不在快照里了。这是治理文档 §9 “切换白名单 <50 ms” 的落点。
+    if (kindFilterNarrows(previous, filter))
+        rebuildSnapshotFromCurrent();
+    else
+        reloadFromDatabase();
+}
+
+const KindFilter &FileIndex::kindFilter() const
+{
+    return m_kindFilter;
+}
+
+void FileIndex::rebuildSnapshotFromCurrent()
+{
+    const std::shared_ptr<const FileSnapshot> current = m_snapshots->current();
+    if (!current)
+        return;
+
+    QElapsedTimer timer;
+    timer.start();
+
+    FileSnapshot::Builder builder;
+    builder.reserve(current->size());
+    for (int i = 0; i < current->size(); ++i) {
+        const QString name = current->nameAt(i);
+        uint16_t mask = current->catMaskAt(i);
+        if (mask == 0)
+            mask = m_classifier->classify(name);
+        if (!m_kindFilter.accepts(mask, name))
+            continue;
+        builder.add(name, current->pathAt(i), current->sizeAt(i), current->mtimeAt(i),
+                    mask, current->flagsAt(i), current->rootIdAt(i));
+    }
+
+    auto snapshot = builder.finish();
+    const int entries = snapshot->size();
+    m_snapshots->publish(std::move(snapshot));
+
+    Logger::get().info("FileIndex: 收窄 kindFilter — {} 条（{} ms，kindFilter={}）",
+                       entries, timer.elapsed(),
+                       KindFilter::modeToString(m_kindFilter.mode).toStdString());
+    emit indexStateChanged();
+}
+
+qint64 FileIndex::reloadFromDatabase()
+{
+    if (m_databasePath.isEmpty() || !QFileInfo::exists(m_databasePath))
+        return -1;
+
+    QElapsedTimer timer;
+    timer.start();
+
+    FileSnapshot::Builder builder;
+    int rows = 0;
+    {
+        FileIndexDatabase db(QStringLiteral("file_index_filter"));
+        if (!db.open(m_databasePath))
+            return -1;
+
+        const auto all = db.loadAll();
+        rows = static_cast<int>(all.size());
+        builder.reserve(rows);
+        for (const auto &row : all) {
+            // 归类始终以当前分类器为准（用户 override 无需重扫即可生效）
+            const uint16_t mask = m_classifier->classify(row.name);
+            if (!m_kindFilter.accepts(mask, row.name))
+                continue;
+            builder.add(row.name, row.path, row.size, row.mtime,
+                        mask, row.flags, row.rootId);
+        }
+        db.close();
+    }
+
+    auto snapshot = builder.finish();
+    const int entries = snapshot->size();
+    m_dbRows = rows;
+    m_snapshots->publish(std::move(snapshot));
+
+    const qint64 ms = timer.elapsed();
+    Logger::get().info("FileIndex: 从 DB 重建快照 — {}/{} 条（{} ms，kindFilter={}）",
+                       entries, rows, ms,
+                       KindFilter::modeToString(m_kindFilter.mode).toStdString());
+    emit indexStateChanged();
+    return ms;
 }
 
 QList<SearchResult> FileIndex::query(const QString &text, int limit)
@@ -460,13 +662,29 @@ void FileIndex::patchSnapshotInWorker(QVector<FileSystemEvent> batch)
     QSet<QString> handled;
     handled.reserve(changes.size());
 
-    auto rowFor = [](const QString &path) {
+    // 事件只知道路径：根序号靠前缀反查（找不到就 0，不影响查询）
+    auto rootIdFor = [this](const QString &path) -> uint16_t {
+        const QStringList rs = roots();
+        for (int r = 0; r < rs.size(); ++r) {
+            QString norm = QDir::fromNativeSeparators(rs.at(r));
+            while (norm.size() > 3 && norm.endsWith(QLatin1Char('/')))
+                norm.chop(1);
+            if (!norm.isEmpty() && path.startsWith(norm, Qt::CaseInsensitive))
+                return static_cast<uint16_t>(r + 1);
+        }
+        return 0;
+    };
+
+    auto rowFor = [this, &rootIdFor](const QString &path, uint8_t flags) {
         FileIndexDatabase::FileRow row;
         const QFileInfo info(path);
-        row.path  = path;
-        row.name  = info.fileName();
-        row.size  = info.size();
-        row.mtime = info.lastModified().toSecsSinceEpoch();
+        row.path    = path;
+        row.name    = info.fileName();
+        row.size    = info.size();
+        row.mtime   = info.lastModified().toSecsSinceEpoch();
+        row.catMask = m_classifier->classify(row.name);
+        row.flags   = flags;
+        row.rootId  = rootIdFor(path);
         return row;
     };
 
@@ -477,7 +695,12 @@ void FileIndex::patchSnapshotInWorker(QVector<FileSystemEvent> batch)
         const QString key  = path.toLower();
         auto it = changes.constFind(key);
         if (it == changes.constEnd()) {
-            builder.add(current->nameAt(i), path, current->sizeAt(i), current->mtimeAt(i));
+            const QString name = current->nameAt(i);
+            uint16_t mask = current->catMaskAt(i);
+            if (mask == 0)
+                mask = m_classifier->classify(name);
+            builder.add(name, path, current->sizeAt(i), current->mtimeAt(i),
+                        mask, current->flagsAt(i), current->rootIdAt(i));
             continue;
         }
 
@@ -488,9 +711,19 @@ void FileIndex::patchSnapshotInWorker(QVector<FileSystemEvent> batch)
         const QFileInfo info(path);
         if (!info.isFile())
             continue;                                  // 目录/已消失：不进索引
-        builder.add(info.fileName(), path, info.size(), info.lastModified().toSecsSinceEpoch());
+
+        const QString name = info.fileName();
+        const uint16_t mask = m_classifier->classify(name);
+        const uint8_t flags = current->flagsAt(i);
+        const qint64 size = info.size();
+        const qint64 mtime = info.lastModified().toSecsSinceEpoch();
+
+        // DB 是“采集面全量”：即使被 kindFilter 挡在快照外，也要更新库里这一行。
         if (it->type == FileSystemEvent::Modified)
-            diff.changed.append(rowFor(path));
+            diff.changed.append(rowFor(path, flags));
+
+        if (m_kindFilter.accepts(mask, name))
+            builder.add(name, path, size, mtime, mask, flags, current->rootIdAt(i));
     }
 
     for (auto it = changes.constBegin(); it != changes.constEnd(); ++it) {
@@ -503,9 +736,16 @@ void FileIndex::patchSnapshotInWorker(QVector<FileSystemEvent> batch)
         const QFileInfo info(it->path);
         if (!info.isFile())
             continue;
-        builder.add(info.fileName(), it->path, info.size(),
-                    info.lastModified().toSecsSinceEpoch());
-        diff.added.append(rowFor(it->path));
+
+        const QString name = info.fileName();
+        const uint16_t mask = m_classifier->classify(name);
+        diff.added.append(rowFor(it->path, FileFlags::None));
+
+        if (m_kindFilter.accepts(mask, name)) {
+            builder.add(name, it->path, info.size(),
+                        info.lastModified().toSecsSinceEpoch(),
+                        mask, FileFlags::None, rootIdFor(it->path));
+        }
     }
 
     std::shared_ptr<const FileSnapshot> patched = builder.finish();

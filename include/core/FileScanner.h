@@ -5,7 +5,11 @@
 #include <QVector>
 #include <QtGlobal>
 
+#include <cstdint>
 #include <functional>
+
+class ExcludeRuleSet;
+class FileClassifier;
 
 /// 采集层：Win32 **迭代式 DFS**（架构文档 §3.2）。
 ///
@@ -22,6 +26,11 @@
 ///     截出来的集合就变了，A2 的 golden 对比会跟着失真。
 ///  3. 长路径统一走 `\\?\` 前缀；存给上层的路径是**普通形式**（`/` 分隔），
 ///     这样 `QUrl::fromLocalFile` / `QDesktopServices` 与既有代码都照常工作。
+///
+/// Phase B（治理）在这一层加了三个钩子：目录级规则（`ExcludeRuleSet`）、
+/// 文件级规则（大小 / 通配）、工程哨兵识别（Skip / Demote）。哨兵识别用
+/// **前瞻缓冲**（打开子目录时先读最多 256 条）实现 —— 不额外 stat、不改变遍历顺序，
+/// 详见 `docs/devlog/2026-11-12.md`。
 namespace FileScanner {
 
 struct Options
@@ -29,17 +38,27 @@ struct Options
     /// 硬保护上限：到了就**停止索引**（不驱逐已有条目，§3.3）。
     int maxEntries = 1000000;
     /// 目录级剪枝：命中即整棵子树跳过（比较目录名，大小写不敏感）。
+    /// 只在 `rules == nullptr` 时使用（向后兼容 A1–A4 的调用点与 golden）。
     QStringList excludedDirNames;
     /// 跳过隐藏/系统项（沿用既有语义：`QDir` 不带 `Hidden` 时 Windows 上两者都跳过）。
     bool skipHidden = true;
+
+    /// Phase B：完整排除规则（目录名 / 通配 / 大小 / 工程哨兵）。
+    /// 非空时**取代** `excludedDirNames`；调用方负责保证生命周期覆盖 `scan()`。
+    const ExcludeRuleSet *rules = nullptr;
+    /// Phase B：给每个文件打 `catMask`。为空则 `catMask = 0`（未归类）。
+    const FileClassifier *classifier = nullptr;
 };
 
 struct Entry
 {
-    QString dirPath;   ///< 所在目录（普通形式、`/` 分隔、无尾部斜杠）
-    QString name;      ///< 文件名（含扩展名，原始大小写）
-    qint64  size  = 0; ///< 字节
-    qint64  mtime = 0; ///< Unix 秒
+    QString  dirPath;   ///< 所在目录（普通形式、`/` 分隔、无尾部斜杠）
+    QString  name;      ///< 文件名（含扩展名，原始大小写）
+    qint64   size  = 0; ///< 字节
+    qint64   mtime = 0; ///< Unix 秒
+    uint16_t catMask = 0;  ///< FileKind 位
+    uint8_t  flags   = 0;  ///< FileFlags 位
+    uint16_t rootId  = 0;  ///< 扫描根序号（1 起）
 
     /// 完整路径。扫描期刻意不拼串（逐条分配），只在真正需要时拼。
     QString path() const;
@@ -51,6 +70,9 @@ struct Stats
     int    dirsVisited = 0;
     int    prunedDirs  = 0;   ///< 被目录级剪枝跳过的子树数
     int    deniedDirs  = 0;   ///< 权限被拒 / 打不开而跳过的目录数
+    int    projectDirsSkipped = 0;  ///< 识别为工程且 policy=skip 的子树数
+    int    projectDirsDemoted = 0;  ///< 识别为工程且 policy=demote 的目录数
+    int    filesSkipped = 0;        ///< 被文件级规则（通配/大小）挡掉的文件数
     bool   hitHardLimit = false;
     bool   cancelled    = false;
     qint64 elapsedMs    = 0;
@@ -70,7 +92,7 @@ QStringList defaultRoots();
 
 /// 默认目录级剪枝名单（`node_modules` / `.git` / `.cache` / `__pycache__` / `.svn`）。
 ///
-/// 这是**唯一**一份：旧 `FileSearcher` 也用它（A3 把原先散在两处的名单收成一处）。
+/// 这是**唯一**一份：旧 `FileSearcher` 与 `ExcludeRuleSet::defaultDirNames()` 都用它。
 /// 返回常引用 —— 遍历时每个目录都要问一次，别每次构造一个 QStringList。
 const QStringList &defaultExcludedDirNames();
 

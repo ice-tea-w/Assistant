@@ -2,7 +2,11 @@
 
 #include <QObject>
 #include <QString>
+#include <QVariant>
 #include <QVariantList>
+
+#include "core/FileClassifier.h"
+#include "core/FileRules.h"
 
 class ConfigManager : public QObject
 {
@@ -51,6 +55,14 @@ public:
     /// 索引硬保护上限（架构 §3.3）：到了就**停止索引**，不驱逐已有条目。
     /// 默认 100 万；软预算（30 万）只记日志，不动作。
     int fileIndexHardLimitEntries() const;
+
+    // ---- 文件治理（Phase B，`fileIndex.kindFilter` / `fileIndex.exclude`）----
+    /// 扩展名归类器（含 `kindOverrides` 与 `extraExtensions`）。
+    const FileClassifier &fileClassifier() const;
+    /// 采集排除规则（目录名 / 通配 / 大小 / 工程哨兵）。
+    const ExcludeRuleSet &excludeRules() const;
+    /// 检索过滤白名单（改它只需重建快照，不需重扫）。
+    const KindFilter &kindFilter() const;
     // ---- 设备同步（Phase: 联网功能）----
     QString syncLocalRoot() const;             // 本地共享根（单根时代的旧字段，保留兼容）
     /// 要同步的本地文件夹列表，每项 {localPath, alias}。为空时回退到 syncLocalRoot。
@@ -108,6 +120,10 @@ private:
     QString m_logLevel;
     bool    m_autoStart = false;   // 注册表镜像，不持久化到 JSON
     int     m_fileIndexHardLimit = 1000000;   // 架构 §3.3 的硬保护上限
+    FileClassifier m_fileClassifier;          // Phase B：扩展名 → 种类
+    ExcludeRuleSet m_excludeRules;            // Phase B：采集排除规则
+    KindFilter     m_kindFilter;              // Phase B：检索白名单
+    QVariantMap    m_kindOverrides;           // Phase B：原始 kindOverrides（扩展名 → token）
     QString m_filePath;
 
     QString m_syncLocalRoot;

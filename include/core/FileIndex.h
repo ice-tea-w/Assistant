@@ -10,8 +10,10 @@
 #include <memory>
 
 #include "contract/FileSystemEvent.h"
+#include "core/FileRules.h"
 #include "ui/SearchResult.h"
 
+class FileClassifier;
 class FileSnapshot;
 class SnapshotManager;
 class QueryEngine;
@@ -89,6 +91,31 @@ public:
     /// 事件在 GUI 线程回调进来，补丁计算在一次性工作线程里做（不阻塞界面）。
     void setEventSource(FileEventDispatcher *dispatcher);
 
+    // ---- Phase B：治理（种类过滤 + 排除规则 + 工程识别）----
+    //
+    // 两个概念不要混（治理文档 §1.1）：
+    //  - `ExcludeRuleSet` 是**采集规则**：改了必须重扫（`refresh()`）；
+    //  - `KindFilter` 是**检索过滤**：改了只需从 DB 重建快照（不扫盘）。
+    // 三者都必须在 `startAsync()` 之前注入时最省事；运行期调用也安全。
+
+    /// 种类归类器（扩展名表 + 用户覆盖）。传副本 —— 扫描 worker 会拿到自己的拷贝。
+    void setClassifier(const FileClassifier &classifier);
+    const FileClassifier &classifier() const;
+
+    /// 采集排除规则（目录名 / 通配 / 大小 / 工程哨兵）。**不自动重扫**：
+    /// 调用方在配置变更后应调用 `refresh()`（重扫是慢路径，UI 必须提示）。
+    void setExcludeRules(const ExcludeRuleSet &rules);
+    const ExcludeRuleSet &excludeRules() const;
+
+    /// 检索过滤（白名单/黑名单）。运行期调用会**从 DB 重建快照**（不重扫磁盘）；
+    /// 数据库不可用时退化为“等下一次扫描生效”。
+    void setKindFilter(const KindFilter &filter);
+    const KindFilter &kindFilter() const;
+
+    /// 只用 `file_index.db` 重建当前快照（不扫盘）。返回重建耗时（ms）。
+    /// 公开出来是因为“种类白名单切换”是它的主要用户，测试也用它验证“改过滤不重扫”。
+    qint64 reloadFromDatabase();
+
 signals:
     /// 第一份快照（或重扫后的新快照）发布完成，在 **GUI 线程**发出。
     void indexReady(int entries, qint64 msLastScan);
@@ -110,9 +137,15 @@ private:
     void patchSnapshotInWorker(QVector<FileSystemEvent> batch);
     void publishPatchedSnapshot(std::shared_ptr<const FileSnapshot> snapshot, int changedEvents);
 
+    /// 收窄白名单：在现有快照上再筛一遍（不读 DB、不扫盘）。
+    void rebuildSnapshotFromCurrent();
+
     std::unique_ptr<SnapshotManager> m_snapshots;
     std::unique_ptr<QueryEngine>     m_query;
     std::unique_ptr<ScanWorker>      m_worker;
+    std::unique_ptr<FileClassifier>  m_classifier;
+    ExcludeRuleSet                   m_rules;
+    KindFilter                       m_kindFilter;
     QString m_databasePath;
     bool   m_scanning       = false;
     bool   m_pendingRefresh = false;

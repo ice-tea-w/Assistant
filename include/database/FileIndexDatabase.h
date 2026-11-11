@@ -5,6 +5,8 @@
 #include <QVector>
 #include <QtGlobal>
 
+#include <cstdint>
+
 class QSqlDatabase;
 
 /// `file_index.db` 的读写（架构文档 §3.5）。
@@ -30,6 +32,10 @@ public:
         QString name;
         qint64  size  = 0;
         qint64  mtime = 0;   ///< Unix 秒
+        uint16_t catMask  = 0;   ///< FileKind 位（v2 列）
+        uint8_t  flags    = 0;   ///< FileFlags 位（v2 列）
+        uint16_t rootId   = 0;   ///< 扫描根序号（v2 列）
+        uint16_t originId = 0;   ///< 来源（Phase C 的下载 box；当前恒 0）
     };
 
     /// 三方差集（§3.5）：`diskSet` vs `dbSet`，交集内按 `(size, mtime)` 判 changed。

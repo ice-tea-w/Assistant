@@ -105,6 +105,10 @@ int main(int argc, char *argv[])
     fileIndex.setDatabasePath(QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation)
                               + QStringLiteral("/file_index.db"));
     fileIndex.setEntryLimit(config.fileIndexHardLimitEntries());
+    // Phase B：治理三件套必须在 startAsync() 之前注入 —— 扫描 worker 拿到的是拷贝。
+    fileIndex.setClassifier(config.fileClassifier());
+    fileIndex.setExcludeRules(config.excludeRules());
+    fileIndex.setKindFilter(config.kindFilter());
     backend.setFileIndex(&fileIndex);
 
     // A5b：扫描完之后接上增量事件源。

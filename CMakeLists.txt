@@ -137,6 +137,9 @@ set(ASSISTANT_INDEX_TEST_SOURCES
     src/core/ScoreEngine.cpp
     src/core/QueryParser.cpp
     src/core/QueryEngine.cpp
+    src/core/FileKind.cpp
+    src/core/FileClassifier.cpp
+    src/core/FileRules.cpp
     src/core/FileScanner.cpp
     src/core/FileSearcher.cpp
     src/core/FileIndex.cpp
@@ -222,6 +225,10 @@ add_executable(assistant_tests
     # 配置层往返也要测（同步根列表靠它持久化）
     src/core/ConfigManager.cpp
     src/core/AutoStart.cpp
+    # ConfigManager 现在也持有 Phase B 治理配置（分类器 / 排除规则 / 白名单）
+    src/core/FileKind.cpp
+    src/core/FileClassifier.cpp
+    src/core/FileRules.cpp
 )
 
 target_include_directories(assistant_tests PRIVATE
@@ -311,4 +318,18 @@ target_link_libraries(assistant_search_tests PRIVATE
 
 add_test(NAME search_providers COMMAND assistant_search_tests)
 set_tests_properties(search_providers PROPERTIES
+    ENVIRONMENT "PATH=${VCPKG_BIN_DIR};${VCPKG_DBG_BIN_DIR};$ENV{PATH}")
+
+# ---- Phase B：文件治理（分类 / 排除规则 / 查询语法 / 白名单重建）----
+add_executable(assistant_governance_tests
+    tests/test_file_governance.cpp
+    ${ASSISTANT_INDEX_TEST_SOURCES}
+)
+target_include_directories(assistant_governance_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_compile_definitions(assistant_governance_tests PRIVATE APP_VERSION="${PROJECT_VERSION}")
+target_link_libraries(assistant_governance_tests PRIVATE
+    Qt6::Core Qt6::Sql Qt6::Test spdlog::spdlog)
+
+add_test(NAME file_governance COMMAND assistant_governance_tests)
+set_tests_properties(file_governance PROPERTIES
     ENVIRONMENT "PATH=${VCPKG_BIN_DIR};${VCPKG_DBG_BIN_DIR};$ENV{PATH}")

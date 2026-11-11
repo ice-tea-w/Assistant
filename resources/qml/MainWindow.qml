@@ -64,6 +64,41 @@ ApplicationWindow {
         }
     }
 
+    // ---- Phase B：种类过滤 Chip ----
+    // Chip ↔ 查询文本双向：点击等于在输入框里插入/删除对应 token。
+    // 空 token 的「全部」只清掉种类 token，保留自由词（"报告 :doc" → "报告"）。
+    readonly property var kindTokens: [":doc", ":img", ":vid", ":aud",
+                                       ":zip", ":exe", ":code", ":pdf"]
+
+    function isKindToken(text) {
+        return kindTokens.indexOf(String(text).toLowerCase()) >= 0
+    }
+
+    function chipActive(token) {
+        var parts = searchInput.text.toLowerCase().split(/\s+/)
+        if (token === "") {
+            for (var i = 0; i < parts.length; ++i)
+                if (isKindToken(parts[i])) return false
+            return true
+        }
+        return parts.indexOf(token) >= 0
+    }
+
+    function toggleKindChip(token) {
+        var parts = searchInput.text.split(/\s+/).filter(function(p) { return p.length > 0 })
+        if (token === "") {
+            parts = parts.filter(function(p) { return !isKindToken(p) })
+        } else {
+            var at = -1
+            for (var i = 0; i < parts.length; ++i)
+                if (String(parts[i]).toLowerCase() === token) at = i
+            if (at >= 0) parts.splice(at, 1)
+            else parts.push(token)
+        }
+        searchInput.text = parts.join(" ")
+        searchInput.cursorPosition = searchInput.text.length
+    }
+
     Component.onCompleted: ready = true
 
     function dock() {
@@ -299,6 +334,56 @@ ApplicationWindow {
                         }
                     }
                 }
+            }
+
+            // ---- 种类过滤 Chip（Phase B）----
+            // 视觉上是一行“标签”，点击即改查询文本；Chip 高亮由查询文本反推，
+            // 所以手输 `:doc` 也会让「文档」亮起来（双向同步）。
+            RowLayout {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 24
+                spacing: 4
+
+                Repeater {
+                    model: [
+                        { "token": "",      "label": "全部" },
+                        { "token": ":doc",  "label": "文档" },
+                        { "token": ":img",  "label": "图片" },
+                        { "token": ":vid",  "label": "视频" },
+                        { "token": ":aud",  "label": "音频" },
+                        { "token": ":zip",  "label": "压缩" },
+                        { "token": ":exe",  "label": "安装包" },
+                        { "token": ":code", "label": "代码" },
+                        { "token": ":pdf",  "label": "PDF" }
+                    ]
+
+                    delegate: Rectangle {
+                        id: chip
+                        readonly property bool active: window.chipActive(modelData.token)
+                        Layout.preferredWidth: chipLabel.implicitWidth + 14
+                        Layout.preferredHeight: 22
+                        radius: 11
+                        color: active ? accentColor : panelColor
+                        border.color: active ? activeBorder : borderColor
+                        border.width: 1
+
+                        Text {
+                            id: chipLabel
+                            anchors.centerIn: parent
+                            text: modelData.label
+                            font.pixelSize: 11
+                            color: chip.active ? Style.accentTextColor : mutedColor
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: window.toggleKindChip(modelData.token)
+                        }
+                    }
+                }
+
+                Item { Layout.fillWidth: true }
             }
 
             // ---- Results list ----

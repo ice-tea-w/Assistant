@@ -66,6 +66,12 @@ void ConfigManager::applyDefaults()
     // A7 起 v2 是唯一实现（旧 FileSearcher 已从产品路径删除）。
     m_fileIndexHardLimit = 1000000;   // §3.3 硬保护上限（软预算 30 万只记日志）
 
+    // Phase B 治理：默认“全都要 + 排除噪音 + 工程目录跳过”
+    m_fileClassifier = FileClassifier();
+    m_excludeRules   = ExcludeRuleSet();
+    m_kindFilter     = KindFilter();
+    m_kindOverrides.clear();
+
     // 设备同步：路径留空由用户在设置页填；设备名默认取主机名
     m_syncLocalRoot.clear();
     m_syncRoots.clear();
@@ -137,6 +143,86 @@ void ConfigManager::load()
                 if (v > 0)
                     m_fileIndexHardLimit = v;
             }
+
+            // ---- Phase B：治理配置 ----
+            if (fi.contains("kindFilter") && fi["kindFilter"].is_object()) {
+                auto &kf = fi["kindFilter"];
+                m_kindFilter = KindFilter();
+                m_kindFilter.mode = KindFilter::modeFromString(
+                    QString::fromStdString(kf.value("mode", std::string("all"))));
+
+                if (kf.contains("kinds") && kf["kinds"].is_array()) {
+                    for (const auto &item : kf["kinds"]) {
+                        const uint16_t mask = FileKind::fromToken(
+                            QString::fromStdString(item.get<std::string>()));
+                        m_kindFilter.kinds = static_cast<uint16_t>(m_kindFilter.kinds | mask);
+                    }
+                }
+                if (kf.contains("extraExtensions") && kf["extraExtensions"].is_array()) {
+                    for (const auto &item : kf["extraExtensions"]) {
+                        QString ext = QString::fromStdString(item.get<std::string>()).toLower();
+                        while (ext.startsWith(QLatin1Char('.')))
+                            ext.remove(0, 1);
+                        if (!ext.isEmpty()) {
+                            m_kindFilter.extraExtensions.insert(ext);
+                            m_fileClassifier.addExtraExtension(ext);
+                        }
+                    }
+                }
+                if (kf.contains("kindOverrides") && kf["kindOverrides"].is_object()) {
+                    m_kindOverrides.clear();
+                    for (auto it = kf["kindOverrides"].begin(); it != kf["kindOverrides"].end(); ++it) {
+                        if (!it.value().is_string())
+                            continue;
+                        const QString token = QString::fromStdString(
+                            it.value().get<std::string>()).toLower();
+                        const uint16_t mask = FileKind::fromToken(QStringView(token));
+                        if (mask == 0)
+                            continue;
+                        const QString ext = QString::fromStdString(it.key()).toLower();
+                        m_kindOverrides.insert(ext, token);
+                        m_fileClassifier.setOverride(ext, mask);
+                    }
+                }
+            }
+
+            if (fi.contains("exclude") && fi["exclude"].is_object()) {
+                auto &ex = fi["exclude"];
+                m_excludeRules = ExcludeRuleSet();
+
+                auto readList = [](const json &node) {
+                    QStringList out;
+                    if (!node.is_array())
+                        return out;
+                    for (const auto &item : node) {
+                        if (item.is_string())
+                            out.append(QString::fromStdString(item.get<std::string>()));
+                    }
+                    return out;
+                };
+
+                if (ex.contains("dirNames"))
+                    m_excludeRules.setDirNames(readList(ex["dirNames"]));
+                if (ex.contains("dirGlobs"))
+                    m_excludeRules.setDirGlobs(readList(ex["dirGlobs"]));
+                if (ex.contains("fileGlobs"))
+                    m_excludeRules.setFileGlobs(readList(ex["fileGlobs"]));
+                if (ex.contains("projectSentinels"))
+                    m_excludeRules.setProjectSentinels(readList(ex["projectSentinels"]));
+
+                const qint64 minSize = ex.value("minSizeBytes", 0LL);
+                const qint64 maxMb   = ex.value("maxSizeMB", 0LL);
+                m_excludeRules.setSizeLimits(minSize, maxMb > 0 ? maxMb * 1024 * 1024 : 0);
+
+                if (ex.contains("projectPolicy")) {
+                    m_excludeRules.setProjectPolicy(ExcludeRuleSet::projectPolicyFromString(
+                        QString::fromStdString(ex.value("projectPolicy", std::string("skip")))));
+                }
+                if (ex.contains("excludeProjectBuildDirs")) {
+                    m_excludeRules.setExcludeProjectBuildDirs(
+                        ex.value("excludeProjectBuildDirs", true));
+                }
+            }
         }
         // sync（设备同步）
         if (j.contains("sync")) {
@@ -198,6 +284,47 @@ void ConfigManager::save()
     j["fileIndex"] = {
         {"hardLimitEntries",  m_fileIndexHardLimit}
     };
+
+    // Phase B：治理配置写回（kindFilter / exclude 都是可选节，写全便于用户手改）
+    {
+        auto &fi = j["fileIndex"];
+
+        fi["kindFilter"]["mode"] = KindFilter::modeToString(m_kindFilter.mode).toStdString();
+        fi["kindFilter"]["kinds"] = json::array();
+        for (const QString &token : FileKind::allTokens()) {
+            const uint16_t mask = FileKind::fromToken(QStringView(token));
+            if (mask != 0 && (m_kindFilter.kinds & mask) != 0)
+                fi["kindFilter"]["kinds"].push_back(token.toStdString());
+        }
+        fi["kindFilter"]["extraExtensions"] = json::array();
+        for (const QString &ext : m_kindFilter.extraExtensions)
+            fi["kindFilter"]["extraExtensions"].push_back(ext.toStdString());
+
+        fi["kindFilter"]["kindOverrides"] = json::object();
+        for (auto it = m_kindOverrides.constBegin(); it != m_kindOverrides.constEnd(); ++it) {
+            fi["kindFilter"]["kindOverrides"][it.key().toStdString()] =
+                it.value().toString().toStdString();
+        }
+        fi["exclude"]["dirNames"]  = json::array();
+        for (const QString &s : m_excludeRules.dirNames())
+            fi["exclude"]["dirNames"].push_back(s.toStdString());
+        fi["exclude"]["dirGlobs"] = json::array();
+        for (const QString &s : m_excludeRules.dirGlobs())
+            fi["exclude"]["dirGlobs"].push_back(s.toStdString());
+        fi["exclude"]["fileGlobs"] = json::array();
+        for (const QString &s : m_excludeRules.fileGlobs())
+            fi["exclude"]["fileGlobs"].push_back(s.toStdString());
+        fi["exclude"]["projectSentinels"] = json::array();
+        for (const QString &s : m_excludeRules.projectSentinels())
+            fi["exclude"]["projectSentinels"].push_back(s.toStdString());
+        fi["exclude"]["minSizeBytes"] = m_excludeRules.minSizeBytes();
+        fi["exclude"]["maxSizeMB"] = m_excludeRules.maxSizeBytes() > 0
+                                         ? m_excludeRules.maxSizeBytes() / (1024 * 1024)
+                                         : 0;
+        fi["exclude"]["projectPolicy"] =
+            ExcludeRuleSet::projectPolicyToString(m_excludeRules.projectPolicy()).toStdString();
+        fi["exclude"]["excludeProjectBuildDirs"] = m_excludeRules.excludesProjectBuildDirs();
+    }
     j["sync"] = {
         {"localRoot",  m_syncLocalRoot.toStdString()},
         {"sharedDir",  m_syncSharedDir.toStdString()},
@@ -238,6 +365,9 @@ QString ConfigManager::hotkeyKey() const       { return m_hotkeyKey; }
 QString ConfigManager::logLevel() const       { return m_logLevel; }
 bool    ConfigManager::autoStart() const      { return m_autoStart; }
 int     ConfigManager::fileIndexHardLimitEntries() const { return m_fileIndexHardLimit; }
+const FileClassifier &ConfigManager::fileClassifier() const { return m_fileClassifier; }
+const ExcludeRuleSet &ConfigManager::excludeRules() const  { return m_excludeRules; }
+const KindFilter     &ConfigManager::kindFilter() const    { return m_kindFilter; }
 
 QString ConfigManager::syncLocalRoot() const  { return m_syncLocalRoot; }
 QVariantList ConfigManager::syncRoots() const { return m_syncRoots; }

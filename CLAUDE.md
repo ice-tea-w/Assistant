@@ -60,7 +60,7 @@ cmake --build build --config Debug
 
 ## 当前开发阶段
 
-**v0.4.0 文件子系统 A 阶段** + **M4 插件市场已合并**（2026-11-04）
+**v0.4.0 文件子系统 A 阶段 + Phase B 功能一** + **M4 插件市场已合并**（2026-11-12）
 
 已完成：
 - Phase 0: Hello 窗口、编译环境
@@ -125,6 +125,19 @@ Phase 3 剩余（收尾中，写在这里便于续接）：
       phase 2；QML `Ctrl+Enter` 打开所在文件夹、`Shift+Enter` 复制路径未做；`fileIndex.debugScore` 未做
 - [ ] A8 拼音首字母
 
+**v0.4.x 文件治理 Phase B · 功能一**（`docs/architecture/文件治理功能设计.md` §1）：
+- [x] **B1 种类过滤 + 工程排除 + 查询语法**（2026-11-12）：`FileKind`（16 位掩码）+
+      `FileClassifier`（扩展名/多段后缀/名称表/用户覆盖）+ `FileRules`（`KindFilter` 白名单 +
+      `ExcludeRuleSet` 目录/通配/大小/工程哨兵）；`FileScanner` 工程哨兵**前瞻 256 条**（保持 DFS 顺序、
+      不额外 stat）；`QueryParser` 扩展 `:doc` / `ext:` / `in:` / `size:` / `date:` / 短语；
+      `QueryEngine` **过滤先于打分** + 只带过滤 token 时按 mtime 列最近文件 + demote 降权 30%；
+      快照加 `catMask/flags/rootId`，`file_index.db` 的 v2 治理列开始真正写入并参与差量比较；
+      QML 搜索框下 9 个过滤 Chip（与输入文本双向同步）。19 个用例，`ctest` 8/8。
+      详见 `docs/devlog/2026-11-12.md`
+- [ ] **B2 设置页白名单 UI**（现在只能改 `config.json`）：收窄白名单走快路径（33k <10 ms），
+      放宽需从 DB 重建（33k ≈250 ms，未达 §9 的 <50 ms，等 A6b 列式载入）
+- [ ] **B3「待整理」Chip / 下载 box** → Phase C；`dirGlobs` 目前只按目录名匹配，相对路径 glob 未做
+
 > ✅ **P0-3 已修掉**：不再套 2 万条任意截断，真机索引 20000 → **31845** 条，
 > `Documents`/`Downloads` 终于进得来。A3 的 Win32 扫描器扫 31845 条只要 **459–502 ms**。
 > ✅ **查询已提速 2–8 倍**（A4，Release）：2 万条 1–3 字符 **3.9 ms**（旧 18.7，4.8×）、
@@ -163,21 +176,24 @@ Phase 3 剩余（收尾中，写在这里便于续接）：
 | 模块 | 文件 | 职责 |
 |------|------|------|
 | Logger | `include/core/Logger.h`, `src/core/Logger.cpp` | 命名空间级单例, 双 sink (控制台+文件滚动 5MB×3) |
-| ConfigManager | `include/core/ConfigManager.h`, `src/core/ConfigManager.cpp` | JSON 配置读写, Q_PROPERTY 暴露给 QML |
+| ConfigManager | `include/core/ConfigManager.h`, `src/core/ConfigManager.cpp` | JSON 配置读写, Q_PROPERTY 暴露给 QML；Phase B 起还解析/回写 `fileIndex.kindFilter` / `fileIndex.exclude`（分类器、排除规则、白名单的**唯一配置来源**） |
 | HistoryDatabase | `include/database/HistoryDatabase.h`, `src/database/HistoryDatabase.cpp` | SQLite 3 张表 (search/command/app_launch history) |
 | AppBridge | `include/ui/AppBridge.h`, `src/ui/AppBridge.cpp` | QML↔C++ 桥梁；A7 起内部由 provider 组成（builtin / calc / files），k-way merge 出结果 |
 | SearchResult | `include/ui/SearchResult.h` | 统一搜索模型 (id, title, subtitle, type, priority, score, resultText, path) |
 | FuzzyMatcher | `include/core/FuzzyMatcher.h`, `src/core/FuzzyMatcher.cpp` | 五级模糊匹配打分 (精确>前缀>词边界>包含>编辑距离)。**A4 起只剩 `legacy` 退路与"跨模块分数尺度"的参照**，文件查询走 `ScoreEngine` |
 | ScoreEngine | `include/core/ScoreEngine.h`, `src/core/ScoreEngine.cpp` | 打分内核：tier 判定（四档数值与 `FuzzyMatcher` **逐位相同**）+ **贪心 O(m) 子序列**（351–399 空档）+ 有界编辑距离；全程零分配 |
-| QueryParser | `include/core/QueryParser.h`, `src/core/QueryParser.cpp` | A 阶段最小语法：自由词按空白 **AND**、`-词` 否定；整串只 `toLower` 一次 |
-| QueryEngine | `include/core/QueryEngine.h`, `src/core/QueryEngine.cpp` | 查询引擎：Parser → 逐条打分 → **top-K min-heap**（替代全排序）；只依赖快照只读接口 |
+| QueryParser | `include/core/QueryParser.h`, `src/core/QueryParser.cpp` | 查询语法：自由词 **AND**、`-词` 否定、`"短语"`；Phase B 起 `:doc/:img/...`、`ext:`、`in:`、`size:`、`date:`（非法 token 降级自由词）；整串只 `toLower` 一次 |
+| QueryEngine | `include/core/QueryEngine.h`, `src/core/QueryEngine.cpp` | 查询引擎：**过滤先于打分**（kind/ext/in/size/date）→ 逐条打分 → **top-K min-heap**；只带过滤 token 时按 mtime 列最近文件；demote 工程文件降权 30%；只依赖快照只读接口 |
+| FileKind | `include/core/FileKind.h`, `src/core/FileKind.cpp` | 16 位种类掩码（doc/sheet/slide/pdf/img/vid/aud/zip/exe/code/font/data/ebook/lnk/disk/other）+ token 别名；位值写进 DB |
+| FileClassifier | `include/core/FileClassifier.h`, `src/core/FileClassifier.cpp` | 扩展名 → 种类查表（多段后缀最长优先、名称表、用户 `kindOverrides`/`extraExtensions`）；O(1)、不做内容嗅探 |
+| FileRules | `include/core/FileRules.h`, `src/core/FileRules.cpp` | `KindFilter`（检索白名单/黑名单）+ `ExcludeRuleSet`（目录名/通配/大小/工程哨兵/构建目录）+ 通配匹配；采集规则与检索规则的分界就在这两个类型 |
 | AppIndexer | `include/core/AppIndexer.h`, `src/core/AppIndexer.cpp` | 扫描 Start Menu `.lnk` (IShellLink COM), 解析目标路径, 去重排序 |
 | FileSearcher | `include/core/FileSearcher.h`, `src/core/FileSearcher.cpp` | 自控前序 DFS（`walkDir`，不跟随 junction、目录级剪枝）+ FuzzyMatcher 打分 top-N, 索引上限 2 万。**A7 起产品路径零调用，仅剩 golden 的对照实现**（删除需先重写该用例） |
-| FileSnapshot | `include/core/FileSnapshot.h` | 不可变只读快照（`Builder` 写入 → `nameAt/lowerAt/pathAt/sizeAt/mtimeAt` 读出）；物理表示藏在这层之后，查询层不摸容器 |
+| FileSnapshot | `include/core/FileSnapshot.h` | 不可变只读快照（`Builder` 写入 → `nameAt/lowerAt/pathAt/sizeAt/mtimeAt` 读出）；Phase B 加 `catMaskAt/flagsAt/rootIdAt`（查询期过滤零分配）；物理表示藏在这层之后，查询层不摸容器 |
 | SnapshotManager | `include/core/SnapshotManager.h`, `src/core/SnapshotManager.cpp` | 快照的 COW 发布（`std::atomic<std::shared_ptr<const T>>`）；读侧取一份即用，无需加锁 |
-| FileIndex | `include/core/FileIndex.h`, `src/core/FileIndex.cpp` | 文件索引**门面**（薄）：`startAsync` 后台扫描 + `query` + `stats` + A5b 的 `setEventSource` / `setRoots`；`engine=v2` 时经 AppBridge 提供文件结果。扫描/写库都在 worker 线程（`QSqlDatabase` 线程亲和） |
-| FileScanner | `include/core/FileScanner.h`, `src/core/FileScanner.cpp` | 采集层：Win32 **句柄栈 DFS**（`FindFirstFileExW` + `FindExInfoBasic` + `LARGE_FETCH`）；目录级剪枝、不跟随 reparse point、长路径 `\\?\`、权限拒绝计数、可取消。剪枝名单只有这一份 |
-| FileIndexDatabase | `include/database/FileIndexDatabase.h`, `src/database/FileIndexDatabase.cpp` | `file_index.db`（独立连接 `file_index`）：dirs/files/roots 三表、三方差集、UPSERT 批量事务。**派生数据**，可删库重扫 |
+| FileIndex | `include/core/FileIndex.h`, `src/core/FileIndex.cpp` | 文件索引**门面**（薄）：`startAsync` 后台扫描 + `query` + `stats` + A5b 的 `setEventSource` / `setRoots` + Phase B 的 `setClassifier` / `setExcludeRules` / `setKindFilter`（收窄走快路径、放宽 `reloadFromDatabase`）。扫描/写库都在 worker 线程（`QSqlDatabase` 线程亲和） |
+| FileScanner | `include/core/FileScanner.h`, `src/core/FileScanner.cpp` | 采集层：Win32 **句柄栈 DFS**（`FindFirstFileExW` + `FindExInfoBasic` + `LARGE_FETCH`）；目录级剪枝、不跟随 reparse point、长路径 `\\?\`、权限拒绝计数、可取消；Phase B 加**工程哨兵前瞻 256 条**（skip/demote，保持 DFS 顺序）与文件级规则。剪枝名单只有这一份 |
+| FileIndexDatabase | `include/database/FileIndexDatabase.h`, `src/database/FileIndexDatabase.cpp` | `file_index.db`（独立连接 `file_index`）：dirs/files/roots 三表、三方差集、UPSERT 批量事务；Phase B 起真正读写 `cat_mask/flags/root_id/origin_id`，且这些字段参与差量比较。**派生数据**，可删库重扫 |
 | DatabaseMigrator | `include/database/DatabaseMigrator.h`, `src/database/DatabaseMigrator.cpp` | `PRAGMA user_version` **前向**迁移，每步一事务；高版本库拒绝；禁止 DROP+重建 |
 | Calculator | `include/core/Calculator.h`, `src/core/Calculator.cpp` | 递归下降解析器, PEMDAS + 一元正负号 + 括号 |
 | TrayManager | `include/ui/TrayManager.h`, `src/ui/TrayManager.cpp` | 系统托盘图标 + 右键菜单 |
@@ -208,7 +224,7 @@ Phase 3 剩余（收尾中，写在这里便于续接）：
 > **DB 约定**：每个功能一个独立 DB 文件 + 独立 `QSqlDatabase` 连接名（见 `ClipboardDatabase`），不要共用一个连接。
 > **QML 约定**：搜索浮窗走 `AppBridge`，主面板走 `PanelBridge`，同步页走 `SyncBridge`（第三个桥，注入面板引擎）。
 > **测试约定**：QTest（`Qt6::Test`），不是 GTest；`tests/*.cpp` 里要 `#include "<名字>.moc"` 让 AUTOMOC 处理 `Q_OBJECT`。
-> **测试目标**：`assistant_tests`（同步）、`assistant_watch_tests`（A5 事件源）、`assistant_index_tests`（事件→索引→查询）、`assistant_search_tests`（provider + k-way merge），外加 `assistant_golden` / `assistant_a3` / `assistant_bench`；`ctest` 一次跑全 7 项。
+> **测试目标**：`assistant_tests`（同步）、`assistant_watch_tests`（A5 事件源）、`assistant_index_tests`（事件→索引→查询）、`assistant_search_tests`（provider + k-way merge）、`assistant_governance_tests`（Phase B 分类/规则/语法/白名单），外加 `assistant_golden` / `assistant_a3` / `assistant_bench`；`ctest` 一次跑全 8 项。
 
 ## Git 规范
 

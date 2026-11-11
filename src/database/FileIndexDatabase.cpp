@@ -14,12 +14,18 @@ namespace {
 
 /// 一条 UPSERT 覆盖 added 与 changed 两种情况。
 /// 注意 `frecency` **不在** DO UPDATE 里 —— 它是用户行为的累积，重扫不该清零。
+/// `origin_id` 用 CASE 保护：当前轮没有来源信息（0）时，不要把 Phase C 写进去的值抹掉。
 const char *kUpsertSql =
-    "INSERT INTO files (path, name, name_lower, dir_id, ext, size, mtime) "
-    "VALUES (:path, :name, :name_lower, :dir_id, :ext, :size, :mtime) "
+    "INSERT INTO files (path, name, name_lower, dir_id, ext, size, mtime,"
+    "                   cat_mask, flags, root_id, origin_id) "
+    "VALUES (:path, :name, :name_lower, :dir_id, :ext, :size, :mtime,"
+    "        :cat_mask, :flags, :root_id, :origin_id) "
     "ON CONFLICT(path) DO UPDATE SET "
     "  name = excluded.name, name_lower = excluded.name_lower, dir_id = excluded.dir_id,"
-    "  ext = excluded.ext, size = excluded.size, mtime = excluded.mtime";
+    "  ext = excluded.ext, size = excluded.size, mtime = excluded.mtime,"
+    "  cat_mask = excluded.cat_mask, flags = excluded.flags, root_id = excluded.root_id,"
+    "  origin_id = CASE WHEN excluded.origin_id != 0 THEN excluded.origin_id"
+    "                   ELSE files.origin_id END";
 
 bool execSql(QSqlDatabase &db, const QString &sql, QString *error)
 {
@@ -194,7 +200,8 @@ QVector<FileIndexDatabase::FileRow> FileIndexDatabase::loadAll() const
         return rows;
 
     QSqlQuery q(*m_db);
-    if (!q.exec(QStringLiteral("SELECT path, name, size, mtime FROM files"))) {
+    if (!q.exec(QStringLiteral("SELECT path, name, size, mtime, cat_mask, flags, root_id, origin_id "
+                               "FROM files"))) {
         Logger::get().warn("FileIndexDatabase: loadAll 失败 — {}",
                            q.lastError().text().toStdString());
         return rows;
@@ -202,10 +209,14 @@ QVector<FileIndexDatabase::FileRow> FileIndexDatabase::loadAll() const
 
     while (q.next()) {
         FileRow row;
-        row.path  = q.value(0).toString();
-        row.name  = q.value(1).toString();
-        row.size  = q.value(2).toLongLong();
-        row.mtime = q.value(3).toLongLong();
+        row.path     = q.value(0).toString();
+        row.name     = q.value(1).toString();
+        row.size     = q.value(2).toLongLong();
+        row.mtime    = q.value(3).toLongLong();
+        row.catMask  = static_cast<uint16_t>(q.value(4).toInt());
+        row.flags    = static_cast<uint8_t>(q.value(5).toInt());
+        row.rootId   = static_cast<uint16_t>(q.value(6).toInt());
+        row.originId = static_cast<uint16_t>(q.value(7).toInt());
         rows.append(std::move(row));
     }
     return rows;
@@ -322,6 +333,10 @@ bool FileIndexDatabase::applyDiff(const Diff &diff)
         upsert.bindValue(QStringLiteral(":ext"),        ext);
         upsert.bindValue(QStringLiteral(":size"),       row.size);
         upsert.bindValue(QStringLiteral(":mtime"),      row.mtime);
+        upsert.bindValue(QStringLiteral(":cat_mask"),   static_cast<int>(row.catMask));
+        upsert.bindValue(QStringLiteral(":flags"),      static_cast<int>(row.flags));
+        upsert.bindValue(QStringLiteral(":root_id"),    static_cast<int>(row.rootId));
+        upsert.bindValue(QStringLiteral(":origin_id"),  static_cast<int>(row.originId));
 
         if (!upsert.exec()) {
             m_lastError = upsert.lastError().text();
@@ -414,10 +429,15 @@ FileIndexDatabase::Diff FileIndexDatabase::diff(const QVector<FileRow> &diskRows
 
         seen[it.value()] = 1;
         const FileRow &db = dbRows.at(it.value());
-        if (db.size == disk.size && db.mtime == disk.mtime)
+        // 治理字段也参与比较：v1→v2 迁移后的旧行 cat_mask 还是 0，下一次扫描必须
+        // 把它们判成 changed 重写一遍，否则种类过滤要对着一张全 0 的表工作。
+        if (db.size == disk.size && db.mtime == disk.mtime
+            && db.catMask == disk.catMask && db.flags == disk.flags
+            && db.rootId == disk.rootId) {
             ++out.unchanged;
-        else
+        } else {
             out.changed.append(disk);
+        }
     }
 
     for (int i = 0; i < dbRows.size(); ++i) {
