@@ -38,7 +38,7 @@ from .crypto import (
     encrypt_file,
     inspect_container,
 )
-from .errors import FileGuardError, ScanCancelledError, ServiceError
+from .errors import FileGuardError, ScanCancelledError, ServiceError, describe_os_error
 from .fsutil import restrict_acl
 from .scan import ScanControl, SensitiveScanner
 
@@ -424,6 +424,7 @@ def dispatch(
             throttle_bps=_as_int(params, "throttle_bps", 0, minimum=0),
             skip_paths=[cfg.home],
             progress=progress,
+            include_cloud=_as_flag(params, "include_cloud"),
         )
         report = scanner.scan(
             _require_list(params, "paths"),
@@ -452,10 +453,25 @@ def dispatch(
             path,
             version=version,
             dest=_optional_str(params, "dest"),
+            dest_root=_optional_str(params, "dest_root"),
+            strip_prefix=_optional_str(params, "strip_prefix"),
             overwrite=_as_flag(params, "force"),
+            allow_conflict=_as_flag(params, "allow_conflict"),
         )
         session.audit.record("restore", path=path, detail=f"还原版本 {result.get('version')}")
         return result
+    if method == "backup.diff":
+        from_version = params.get("from_version")
+        if from_version is not None:
+            from_version = _as_int(params, "from_version", minimum=1)
+        to_version = params.get("to_version")
+        if to_version is not None:
+            to_version = _as_int(params, "to_version", minimum=1)
+        return session.backups.diff(
+            _require_str(params, "path"),
+            from_version=from_version,
+            to_version=to_version,
+        )
     if method == "backup.list":
         return session.backups.list(_optional_str(params, "path"))
     if method == "backup.verify":
@@ -620,6 +636,12 @@ class _Handler(BaseHTTPRequestHandler):
         except FileGuardError as exc:
             code = 400 if getattr(exc, "exit_code", 1) == 1 else 409
             self._send(code, {"ok": False, "error": {"type": type(exc).__name__, "message": str(exc)}})
+        except OSError as exc:
+            # 文件被占用/无权限/磁盘满：给主程序一个能直接展示给用户的提示
+            self._send(
+                409,
+                {"ok": False, "error": {"type": type(exc).__name__, "message": describe_os_error(exc)}},
+            )
         except Exception as exc:  # noqa: BLE001 - 模块自身异常兜底，不能让服务进程挂掉
             self._send(500, {"ok": False, "error": {"type": "InternalError", "message": str(exc)}})
 

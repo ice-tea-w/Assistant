@@ -23,14 +23,16 @@
 
 from __future__ import annotations
 
+import difflib
 import hashlib
 import hmac
 import os
 import re
+import tempfile
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterable, Optional, Union
+from typing import Any, Callable, Iterable, Optional, Union
 
 from .audit import DEDUP_LABEL, EncryptedLog
 from .crypto import (
@@ -48,9 +50,36 @@ from .fsutil import is_reparse_point
 EVENT_BACKUP = "backup"
 EVENT_PURGE = "purge"
 
+#: 版本对比的文本上限（超过就只报大小/哈希，不做行级 diff）
+DIFF_MAX_BYTES = 1 << 20
+#: 单次 diff 最多输出的行数（防止超大文本把 UI 打爆）
+DIFF_MAX_LINES = 400
+
 #: 索引里的对象相对路径必须长这样，防止被篡改/导入的索引把恢复写到别处
 _OBJECT_REL_RE = re.compile(r"^[0-9a-f]{2}/[0-9a-f]{64}\.fgc$")
 _HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _read_limited(path: Path, limit: int) -> bytes:
+    with open(path, "rb") as handle:
+        return handle.read(limit)
+
+
+def _decode_text(data: bytes) -> Optional[str]:
+    """能当文本看就返回 str，否则 None（含 NUL 即视为二进制）。
+
+    顺手剥掉 UTF-8 BOM：Windows 记事本/PowerShell 保存的文本常带 BOM，
+    不剥掉会把 ``\ufeff`` 带到 diff 里，在 GBK 控制台上打印还可能直接报错。
+    """
+    if b"\x00" in data[:8192]:
+        return None
+    for encoding in ("utf-8", "gb18030"):
+        try:
+            text = data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+        return text[1:] if text.startswith("\ufeff") else text
+    return None
 
 
 @dataclass
@@ -199,7 +228,13 @@ class BackupStore:
             self._apply_row(self._cache, row)
 
     # ---- 备份 -----------------------------------------------------
-    def backup_file(self, path: Union[str, Path], *, note: str = "") -> dict[str, Any]:
+    def backup_file(
+        self,
+        path: Union[str, Path],
+        *,
+        note: str = "",
+        progress: Optional[Callable[[int, int], None]] = None,
+    ) -> dict[str, Any]:
         path = Path(path).resolve()
         if not path.is_file():
             raise FileGuardError(f"要备份的文件不存在：{path}")
@@ -228,6 +263,7 @@ class BackupStore:
                 chunk_size=self.chunk_size,
                 overwrite=True,
                 hash_plaintext=True,
+                progress=progress,
             )
             # 加密时同步计算明文哈希，才能真正发现"备份过程中源文件被改"
             if result.get("sha256") != sha:
@@ -260,20 +296,25 @@ class BackupStore:
         }
 
     def backup_paths(
-        self, paths: Iterable[Union[str, Path]], *, recursive: bool = True, note: str = ""
+        self,
+        paths: Iterable[Union[str, Path]],
+        *,
+        recursive: bool = True,
+        note: str = "",
+        progress: Optional[Callable[[int, int], None]] = None,
     ) -> list[dict[str, Any]]:
         results: list[dict[str, Any]] = []
         for item in paths:
             item = Path(item).expanduser()
             if item.is_file():
-                results.append(self.backup_file(item, note=note))
+                results.append(self.backup_file(item, note=note, progress=progress))
             elif item.is_dir():
                 if not recursive:
                     results.append({"skipped": True, "reason": "目录未启用递归", "path": str(item)})
                     continue
                 for file_path in self._iter_dir(item):
                     try:
-                        results.append(self.backup_file(file_path, note=note))
+                        results.append(self.backup_file(file_path, note=note, progress=progress))
                     except (FileGuardError, OSError) as exc:
                         results.append({"skipped": True, "reason": str(exc), "path": str(file_path)})
             else:
@@ -317,13 +358,34 @@ class BackupStore:
         *,
         version: Optional[int] = None,
         dest: Optional[Union[str, Path]] = None,
+        dest_root: Optional[Union[str, Path]] = None,
+        strip_prefix: Optional[Union[str, Path]] = None,
         overwrite: bool = False,
+        allow_conflict: bool = False,
     ) -> dict[str, Any]:
+        """还原某个版本。
+
+        **跨机/异地还原**：传 ``dest_root`` 可以把"原机器上的绝对路径"映射到新根目录——
+        默认按"去掉盘符/UNC 前缀后的相对路径"还原（``C:\\Users\\a\\docs\\x.txt`` →
+        ``<dest_root>\\Users\\a\\docs\\x.txt``）；配合 ``strip_prefix`` 可以按旧根目录裁剪
+        （如 ``strip_prefix="C:\\Users\\a"`` → ``<dest_root>\\docs\\x.txt``）。
+        ``dest_root`` 与 ``dest`` 互斥。
+
+        冲突保护（多用户场景）：如果目标文件当前内容**不在任何备份版本里**，
+        说明备份之后被改过（可能是别人改的、还没入档）。这时：
+
+        1. 默认拒绝覆盖，并先把当前内容自动备份成一个新版本（不会丢数据）；
+        2. 确认要覆盖时传 ``allow_conflict=True``（CLI：``--allow-conflict``）。
+
+        如果当前内容恰好等于某个已备份版本（包括最新版），说明内容在库里可找回，
+        覆盖旧版本属于正常的"版本回滚"，不触发冲突。
+        """
         key = str(Path(path).expanduser())
         current = self._current_entries()
-        versions = current.get(key) or current.get(str(Path(path).resolve()))
-        if not versions:
+        all_versions = current.get(key) or current.get(str(Path(path).resolve()))
+        if not all_versions:
             raise FileGuardError(f"没有该文件的备份：{path}")
+        versions = all_versions
         if version is not None:
             versions = [e for e in versions if e.version == version]
             if not versions:
@@ -338,11 +400,38 @@ class BackupStore:
         obj = self._safe_object_path(entry.object)
         if not obj.exists():
             raise FileGuardError(f"备份对象缺失：{obj}")
-        target = Path(dest).expanduser() if dest else Path(entry.path)
+        if dest_root is not None:
+            target = self._map_target(original, dest_root, strip_prefix, dest)
+        else:
+            target = Path(dest).expanduser() if dest else Path(entry.path)
         if target.exists() and target.is_dir():
             raise FileGuardError(f"还原目标是一个目录：{target}")
         if target.exists() and not overwrite:
             raise FileGuardError(f"还原目标已存在：{target}（如需覆盖请用 --force）")
+
+        conflict = False
+        preserved: Optional[dict[str, Any]] = None
+        if target.exists():
+            try:
+                current_sha = self.sha256_file(target)
+            except OSError as exc:
+                raise FileGuardError(f"无法读取还原目标（可能被占用/无权限）：{exc}") from exc
+            known_hashes = {item.sha256 for item in all_versions}
+            if current_sha not in known_hashes:
+                conflict = True
+                preserved = self._auto_snapshot(target)
+                if not allow_conflict:
+                    saved = (
+                        f"已把当前内容自动备份为 v{preserved['version']}；"
+                        if preserved and preserved.get("version")
+                        else "自动快照失败；"
+                    )
+                    raise FileGuardError(
+                        "目标文件在备份后被修改过且未入档（可能是其他用户/程序改的）："
+                        f"当前 SHA-256 {current_sha[:12]}… 不在任何备份版本里。"
+                        f"{saved}确认要用旧版本覆盖请加 --allow-conflict"
+                    )
+
         result = decrypt_file(
             obj,
             target,
@@ -364,6 +453,139 @@ class BackupStore:
             "restored_to": str(target),
             "sha256": entry.sha256,
             "size": entry.size,
+            "conflict": conflict,
+            "preserved_current_version": (preserved or {}).get("version"),
+        }
+
+    @staticmethod
+    def _map_target(
+        original: Path,
+        dest_root: Union[str, Path],
+        strip_prefix: Optional[Union[str, Path]],
+        dest: Optional[Union[str, Path]],
+    ) -> Path:
+        """把"原机器上的绝对路径"映射到新的目标根目录（跨机/异地还原用）。"""
+        if dest is not None:
+            raise FileGuardError("--dest-root 与 --dest 不能同时使用")
+        root = Path(dest_root).expanduser()
+        if strip_prefix is not None:
+            base = Path(strip_prefix).expanduser()
+            try:
+                relative = original.relative_to(base)
+            except ValueError as exc:
+                raise FileGuardError(
+                    f"备份路径不在 --strip-prefix 之下：{original}（前缀 {base}）"
+                ) from exc
+        else:
+            # 去掉盘符/UNC 前缀，保留后面的目录结构
+            relative = Path(*original.parts[1:]) if original.anchor else original
+        return root / relative
+
+    def _auto_snapshot(self, target: Path) -> Optional[dict[str, Any]]:
+        """覆盖前把目标当前内容入档；内容已在库里时会按增量规则自动跳过。"""
+        try:
+            return self.backup_file(target, note="还原前自动快照（目标在备份后被修改过）")
+        except (FileGuardError, OSError):
+            return None
+
+    def _materialize(self, entry: BackupEntry, dest: Path) -> None:
+        """把某个版本的备份对象解密到临时文件，并校验与索引哈希一致。"""
+        obj = self._safe_object_path(entry.object)
+        if not obj.exists():
+            raise FileGuardError(f"备份对象缺失：{obj}（版本 v{entry.version}）")
+        result = decrypt_file(obj, dest, self.password, overwrite=True, hash_plaintext=True)
+        if result.get("sha256") != entry.sha256:
+            raise IntegrityError(f"版本 v{entry.version} 的对象内容与索引不一致")
+
+    def diff(
+        self,
+        path: Union[str, Path],
+        *,
+        from_version: Optional[int] = None,
+        to_version: Optional[int] = None,
+        max_bytes: int = DIFF_MAX_BYTES,
+        max_lines: int = DIFF_MAX_LINES,
+    ) -> dict[str, Any]:
+        """比较同一路径的两个备份版本（默认：上一版 vs 最新版）。
+
+        文本类给出 unified diff（最多 ``max_lines`` 行），二进制/超大文件只给
+        "变了没 + 大小与哈希"，避免把 UI 撑爆、也避免把整个大文件解到内存。
+        """
+        versions = self._current_entries().get(str(Path(path).expanduser().resolve()), [])
+        if not versions:
+            raise FileGuardError(f"没有该文件的备份：{path}")
+        by_version = {entry.version: entry for entry in versions}
+        if to_version is None:
+            to_entry = versions[-1]
+        else:
+            to_entry = by_version.get(to_version)
+            if to_entry is None:
+                raise FileGuardError(f"该文件没有第 {to_version} 个备份版本")
+        if from_version is None:
+            older = [entry for entry in versions if entry.version < to_entry.version]
+            if not older:
+                raise FileGuardError("没有更早的版本可对比（至少需要两个版本）")
+            from_entry = older[-1]
+        else:
+            from_entry = by_version.get(from_version)
+            if from_entry is None:
+                raise FileGuardError(f"该文件没有第 {from_version} 个备份版本")
+
+        changed = from_entry.sha256 != to_entry.sha256
+        kind = "none"
+        diff_text = ""
+        truncated = False
+        if changed:
+            with tempfile.TemporaryDirectory(prefix="fg-diff-") as tmp:
+                left = Path(tmp) / f"v{from_entry.version}"
+                right = Path(tmp) / f"v{to_entry.version}"
+                self._materialize(from_entry, left)
+                self._materialize(to_entry, right)
+                left_bytes = _read_limited(left, max_bytes + 1)
+                right_bytes = _read_limited(right, max_bytes + 1)
+                if len(left_bytes) <= max_bytes and len(right_bytes) <= max_bytes:
+                    left_text = _decode_text(left_bytes)
+                    right_text = _decode_text(right_bytes)
+                    if left_text is not None and right_text is not None:
+                        kind = "text"
+                        lines = list(
+                            difflib.unified_diff(
+                                left_text.splitlines(),
+                                right_text.splitlines(),
+                                fromfile=f"v{from_entry.version}",
+                                tofile=f"v{to_entry.version}",
+                                lineterm="",
+                                n=2,
+                            )
+                        )
+                        if len(lines) > max_lines:
+                            lines = lines[:max_lines]
+                            truncated = True
+                        diff_text = "\n".join(lines)
+                    else:
+                        kind = "binary"
+                else:
+                    kind = "binary"
+                    truncated = True
+        return {
+            "path": from_entry.path,
+            "from": {
+                "version": from_entry.version,
+                "sha256": from_entry.sha256,
+                "size": from_entry.size,
+                "ts": from_entry.ts,
+            },
+            "to": {
+                "version": to_entry.version,
+                "sha256": to_entry.sha256,
+                "size": to_entry.size,
+                "ts": to_entry.ts,
+            },
+            "changed": changed,
+            "kind": kind,
+            "size_delta": to_entry.size - from_entry.size,
+            "diff": diff_text,
+            "truncated": truncated,
         }
 
     # ---- 完整性/清理 ----------------------------------------------

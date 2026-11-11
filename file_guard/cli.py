@@ -21,6 +21,7 @@ import getpass
 import json
 import os
 import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -52,7 +53,7 @@ from .crypto import (
     rekey_file,
     verify_file,
 )
-from .errors import FileGuardError, PasswordError
+from .errors import FileGuardError, PasswordError, describe_os_error
 from .integrity import build_manifest, load_manifest, save_manifest, verify_manifest
 from .scan import SEVERITY_LABEL, SensitiveScanner
 from .watch import DirectoryWatcher, auto_backup_changes, auto_encrypt_idle
@@ -71,6 +72,37 @@ def _human_size(num: int) -> str:
             return f"{value:.1f}{unit}"
         value /= 1024
     return f"{num}B"
+
+
+def _progress_reporter(label: str) -> Optional[tuple[Any, Any]]:
+    """给交互终端用的轻量进度输出（非 tty / --json / --quiet 时返回 None）。
+
+    加密/解密/备份大文件时，用户最怕"没反应"；这里按 1% 粒度刷新一行，
+    结束后把进度行擦掉，避免污染正常输出。
+    """
+    if not sys.stderr.isatty():
+        return None
+    state: dict[str, int] = {"percent": -1}
+
+    def report(done: int, total: int) -> None:
+        percent = int(done * 100 / total) if total else 100
+        if percent != state["percent"]:
+            state["percent"] = percent
+            print(f"\r{label} {percent:3d}%", end="", file=sys.stderr, flush=True)
+
+    def finish() -> None:
+        print("\r" + " " * (len(label) + 8) + "\r", end="", file=sys.stderr, flush=True)
+
+    return report, finish
+
+
+def _make_progress(args: argparse.Namespace, label: str) -> tuple[Optional[Any], Any]:
+    if getattr(args, "json", False) or getattr(args, "quiet", False):
+        return None, (lambda: None)
+    reporter = _progress_reporter(label)
+    if reporter is None:
+        return None, (lambda: None)
+    return reporter[0], reporter[1]
 
 
 def _load_config(args: argparse.Namespace) -> Config:
@@ -266,14 +298,19 @@ def cmd_encrypt(args: argparse.Namespace) -> int:
     outputs = _resolve_outputs(targets, out, decrypt=False)
     results = []
     for (path, _base), dst in zip(targets, outputs):
-        info = encrypt_file(
-            path,
-            dst,
-            password,
-            iterations=cfg.iterations,
-            chunk_size=cfg.chunk_size,
-            overwrite=args.force,
-        )
+        progress, finish = _make_progress(args, f"加密 {path.name}")
+        try:
+            info = encrypt_file(
+                path,
+                dst,
+                password,
+                iterations=cfg.iterations,
+                chunk_size=cfg.chunk_size,
+                overwrite=args.force,
+                progress=progress,
+            )
+        finally:
+            finish()
         audit.record(EVENT_ENCRYPT, path=path, detail=f"生成 {info['dst']}", container=info["dst"])
         if args.remove_source:
             path.unlink()
@@ -306,7 +343,11 @@ def cmd_decrypt(args: argparse.Namespace) -> int:
     outputs = _resolve_outputs(targets, out, decrypt=True)
     results = []
     for (path, _base), dst in zip(targets, outputs):
-        info = decrypt_file(path, dst, password, overwrite=args.force)
+        progress, finish = _make_progress(args, f"解密 {path.name}")
+        try:
+            info = decrypt_file(path, dst, password, overwrite=args.force, progress=progress)
+        finally:
+            finish()
         audit.record(EVENT_DECRYPT, path=path, detail=f"还原到 {info['dst']}")
         if args.remove_source:
             path.unlink()
@@ -377,6 +418,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
         throttle_bps=args.throttle,
         skip_paths=[cfg.home],
         progress=progress,
+        include_cloud=bool(getattr(args, "include_cloud", False)),
     )
     started = time.monotonic()
     try:
@@ -468,7 +510,15 @@ def cmd_backup(args: argparse.Namespace) -> int:
     audit = _make_audit(cfg, password)
     action = args.backup_action
     if action == "add":
-        results = store.backup_paths(args.paths, recursive=not args.no_recursive)
+        progress, finish = _make_progress(args, "备份")
+        try:
+            results = store.backup_paths(
+                args.paths,
+                recursive=not args.no_recursive,
+                progress=progress,
+            )
+        finally:
+            finish()
         for item in results:
             if item.get("skipped"):
                 if not args.json and not args.quiet:
@@ -501,10 +551,44 @@ def cmd_backup(args: argparse.Namespace) -> int:
             args.path,
             version=args.version,
             dest=args.dest,
+            dest_root=getattr(args, "dest_root", None),
+            strip_prefix=getattr(args, "strip_prefix", None),
             overwrite=args.force,
+            allow_conflict=bool(getattr(args, "allow_conflict", False)),
         )
-        audit.record(EVENT_RESTORE, path=args.path, detail=f"还原版本 {result['version']} 到 {result['restored_to']}")
-        _emit(args, result, f"[OK] 已还原 {result['path']}（版本 {result['version']}）-> {result['restored_to']}")
+        audit.record(
+            EVENT_RESTORE,
+            path=args.path,
+            detail=f"还原版本 {result['version']} 到 {result['restored_to']}"
+            + (f"（覆盖了未入档修改，已快照 v{result['preserved_current_version']}）"
+               if result.get("conflict") else ""),
+        )
+        text = f"[OK] 已还原 {result['path']}（版本 {result['version']}）-> {result['restored_to']}"
+        if result.get("conflict"):
+            text += f"\n     注意：目标文件此前有未入档修改，已自动快照为 v{result['preserved_current_version']}"
+        _emit(args, result, text)
+        return 0
+    if action == "diff":
+        result = store.diff(
+            args.path,
+            from_version=args.from_version,
+            to_version=args.to_version,
+        )
+        if args.json:
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        elif not args.quiet:
+            left, right = result["from"], result["to"]
+            if not result["changed"]:
+                print(f"v{left['version']} 与 v{right['version']} 内容一致（SHA-256 相同）")
+            else:
+                print(
+                    f"v{left['version']} -> v{right['version']}：{result['kind']} 差异，"
+                    f"大小 {result['size_delta']:+d} B"
+                )
+                if result["diff"]:
+                    print(result["diff"])
+                if result["truncated"]:
+                    print("（差异过长，已截断；可用 --json 获取完整结构）")
         return 0
     if action == "verify":
         result = store.verify(full=args.full)
@@ -643,6 +727,39 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         add("数据目录可读写", True, str(cfg.home))
     except OSError as exc:
         add("数据目录可读写", False, f"{cfg.home}：{exc}")
+
+    # 1.1) 数据目录 ACL：不要共享给同机其他用户（否则 token/审计/备份暴露）
+    if os.name == "nt":
+        icacls = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "icacls.exe"
+        if icacls.exists():
+            try:
+                completed = subprocess.run(
+                    [str(icacls), str(cfg.home)],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=15,
+                    creationflags=0x08000000,
+                )
+                output = (completed.stdout or "") + (completed.stderr or "")
+                too_open = [
+                    name
+                    for name in ("Everyone", "BUILTIN\\Users", "Authenticated Users", "Users:")
+                    if name.lower() in output.lower()
+                ]
+                if too_open:
+                    add(
+                        "数据目录权限",
+                        False,
+                        f"ACL 过于宽松（含 {', '.join(too_open)}），同机其他用户可能读到 token/审计/备份；"
+                        "建议用 icacls 收紧到仅当前用户",
+                        level="warning",
+                    )
+                else:
+                    add("数据目录权限", True, "已限制为当前用户（未发现 Everyone/Users 授权）")
+            except (OSError, subprocess.SubprocessError) as exc:
+                add("数据目录权限", True, f"无法检查 ACL（{exc}），忽略", level="info")
 
     # 2) 配置
     if cfg.config_file.exists():
@@ -816,6 +933,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-size", type=int, default=2 << 20, help="单文件最大读取字节数")
     p.add_argument("--throttle", type=int, default=0, help="限速（字节/秒），0 表示不限")
     p.add_argument("--low-priority", action="store_true", help="降低进程优先级（Windows）")
+    p.add_argument("--include-cloud", action="store_true",
+                   help="读取云盘「仅在线」占位文件的正文（默认跳过，避免触发大批下载）")
     p.add_argument("--out", help="把 JSON 报告写入文件")
     p.set_defaults(func=cmd_scan)
 
@@ -852,7 +971,26 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("path")
     q.add_argument("--version", type=int)
     q.add_argument("--dest")
+    q.add_argument(
+        "--dest-root",
+        help="跨机/异地还原：把原绝对路径映射到该根目录（去掉盘符后保留目录结构）",
+    )
+    q.add_argument(
+        "--strip-prefix",
+        help="配合 --dest-root：先裁掉旧机器上的路径前缀（例如 C:\\Users\\alice）",
+    )
     q.add_argument("--force", action="store_true")
+    q.add_argument(
+        "--allow-conflict",
+        action="store_true",
+        help="目标文件有未入档修改时仍强制覆盖（默认会先自动快照并拒绝）",
+    )
+    q.set_defaults(func=cmd_backup)
+
+    q = bsub.add_parser("diff", parents=[common], help="比较同一路径的两个备份版本")
+    q.add_argument("path")
+    q.add_argument("--from", dest="from_version", type=int, help="起始版本（默认：上一版）")
+    q.add_argument("--to", dest="to_version", type=int, help="目标版本（默认：最新版）")
     q.set_defaults(func=cmd_backup)
     q = bsub.add_parser("verify", parents=[common])
     q.add_argument("--full", action="store_true", help="逐个解密校验备份对象")
@@ -898,6 +1036,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
+    # GBK 控制台遇到无法编码的字符（BOM、emoji、生僻字）默认会直接抛 UnicodeEncodeError，
+    # 把"打印报告"变成崩溃；这里统一降级为替换字符，保证命令能正常退出。
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")  # type: ignore[attr-defined]
+        except (AttributeError, OSError, ValueError):
+            pass
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
@@ -912,7 +1057,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print("\n已取消", file=sys.stderr)
         return 130
     except OSError as exc:
-        print(f"系统错误：{exc}", file=sys.stderr)
+        print(f"系统错误：{describe_os_error(exc)}", file=sys.stderr)
         return 1
 
 

@@ -1,4 +1,4 @@
-﻿# file_guard · 桌面助手「文件安全模块」Python 参考实现
+# file_guard · 桌面助手「文件安全模块」Python 参考实现
 
 > 对应《桌面助手 — 文件安全模块设计方案》四大子模块（加密解密 / 敏感检测 / 操作审计 / 安全备份），
 > 是一套**能直接跑起来、能接进桌面助手**的最小实现，不是伪代码。
@@ -32,10 +32,12 @@ python -m file_guard scan "合同.docx" --min-risk medium --out report.json
 python -m file_guard log list --limit 20
 python -m file_guard log verify          # 校验哈希链有没有被改过
 
-# 6) 增量加密备份 + 误删恢复 / 版本回滚
+# 6) 增量加密备份 + 误删恢复 / 版本回滚 / 版本差异
 python -m file_guard backup add "合同.docx"
 python -m file_guard backup list "合同.docx"
-python -m file_guard backup restore "合同.docx" --version 1
+python -m file_guard backup restore "合同.docx" --version 1 --force                      # 目标被改过 → 先自动快照并拒绝
+python -m file_guard backup restore "合同.docx" --version 1 --force --allow-conflict    # 确认覆盖别人的改动
+python -m file_guard backup diff "合同.docx"                                            # 上一版 vs 最新版 diff
 
 # 7) 作为本地服务跑起来，给桌面助手主程序调用
 python -m file_guard serve --port 8765
@@ -70,7 +72,7 @@ file_guard/
 │  ├─ service.py     # 本地 HTTP JSON-RPC 服务（独立进程，松耦合，回环 + token + Host/Origin 校验）
 │  ├─ cli.py         # 命令行 / 右键菜单 / 主程序子进程调用入口
 │  └─ config.py      # 目录布局与参数（带类型/范围校验）
-├─ tests/            # 126 个 unittest（含安全评审回归 test_security.py + 新能力 test_extras.py）
+├─ tests/            # 142 个 unittest（含安全评审回归 test_security.py + 新能力 test_extras.py）
 ├─ examples/demo.py  # 无依赖也能看的完整演示（需要本目录做 sys.path）
 ├─ scripts/install-context-menu.ps1   # Windows 右键菜单注册脚本（需手动执行）
 ├─ scripts/run_acceptance.py          # 临时验收脚本：不接主程序，整链路跑一遍并出报告
@@ -79,6 +81,9 @@ file_guard/
 ├─ docs/从设计方案到代码.md            # 逐页对照 + 集成方式 + 关键代码讲解
 ├─ docs/安全评审与加固.md              # 安全评审报告：问题清单 / 影响 / 修复 / 残余风险
 ├─ docs/框架临时验证报告.md            # 上次临时验收的结果（52 项，含耗时与人工确认项）
+├─ docs/代码讲解提纲.md                # 怎么讲这套代码：5/15/30 分钟讲法 + 演示脚本 + Q&A
+├─ docs/多用户与冲突处理报告.md        # 两个用户改同一文件：权限边界 / 冲突保护 / 版本 diff
+├─ docs/兼容性与体验优化报告.md        # 跨机还原 / 进度 / 友好错误 / 云盘占位兼容
 ├─ docs/运行截图/                      # 真实运行效果截图（PNG）+ 原始输出（TXT）+ 重出图说明
 └─ requirements.txt
 ```
@@ -95,6 +100,10 @@ file_guard/
 | 操作审计日志（第 7 页） | `audit.py` | 每条 JSON 用 AES-256-GCM 单独加密、**每条独立随机 nonce**；`h_i = HMAC-SHA256(h_{i-1} ‖ nonce_i ‖ ct_i)` 防篡改/删除/重排；seq 检测删行；meta 带 HMAC 签名与"下一条序号"高水位，检测回滚 |
 | 安全备份恢复（第 7 页） | `backup.py` | 内容 SHA-256 去重（增量）；对象名用密钥化 HMAC（不泄露明文哈希）；备份对象就是 FGC1 容器；索引本身也加密；支持版本回滚、误删恢复、`verify --full`、`gc` |
 | 监听变化自动备份 | `watch.auto_backup_changes`、`watch --auto-backup` | 监听到新增/修改即增量备份（内容未变自动跳过），可选同时记审计事件 |
+| 多用户冲突保护 | `backup.restore(allow_conflict=...)`、`restore --allow-conflict` | 还原前检测目标是否被他人改过且未入档：默认拒绝并自动快照当前内容，确认后才覆盖 |
+| 备份版本差异 | `backup.diff`、`backup diff`、RPC `backup.diff` | 比较两个版本：文本给 unified diff，二进制/超大文件只报大小+哈希，可定位"改了哪些内容" |
+| 跨机/异地还原 | `restore --dest-root`、`--strip-prefix` | 旧机器绝对路径映射到新根目录，配合备份库整体拷贝即可异地恢复 |
+| 云盘占位兼容 | `fsutil.is_cloud_placeholder`、`scan --include-cloud` | 默认跳过 OneDrive「仅在线」文件正文，避免扫描触发大规模云端下载 |
 | 长任务不阻塞 UI/主程序 | `service.JobManager`（`job.submit/status/cancel/list`） | 扫描/备份可丢后台线程，轮询进度；扫描可中途取消；同时最多 4 个任务 |
 | 装好先自检 | `cli doctor` | 一次检查数据目录、审计链、备份索引、模块完整性、磁盘、token，输出 JSON 便于主程序展示 |
 | 五层架构（第 8 页） | 包结构 | UI=CLI/右键菜单，业务层=scan/audit/backup，底层安全层=crypto，文件系统层=全部走用户授权路径 + 系统目录自动跳过 |
@@ -161,7 +170,7 @@ curl -X POST http://127.0.0.1:8765/rpc ^
 
 ```bash
 python -m unittest discover -s tests -v
-# Ran 126 tests ... OK (skipped=1)
+# Ran 142 tests ... OK (skipped=1)
 ```
 
 覆盖：AES-GCM 往返/篡改/截断/错误密码/原子写、日志链篡改与并发追加、扫描规则与误报、备份去重与版本回滚、DPAPI、HTTP 鉴权与 RPC、CLI 端到端，

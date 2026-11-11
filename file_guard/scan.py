@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Optional, Sequence, Union
 
 from .errors import FileGuardError, ScanCancelledError
-from .fsutil import is_reparse_point
+from .fsutil import is_cloud_placeholder, is_reparse_point
 
 SEVERITY_ORDER = {"high": 3, "medium": 2, "low": 1, "none": 0}
 SEVERITY_LABEL = {"high": "高", "medium": "中", "low": "低", "none": "无"}
@@ -300,10 +300,13 @@ class SensitiveScanner:
         skip_dir_names: Optional[set[str]] = None,
         skip_paths: Optional[Sequence[Union[str, Path]]] = None,
         progress: Optional[Callable[[int, int, Optional[str]], None]] = None,
+        include_cloud: bool = False,
     ) -> None:
         self.max_file_size = max_file_size
         self.workers = max(1, workers)
         self.throttle_bps = max(0, throttle_bps)
+        #: 默认不读"仅在线"的云盘占位文件（读一下 = 触发整份下载）
+        self.include_cloud = include_cloud
         self.skip_dir_names = {n.lower() for n in (skip_dir_names or DEFAULT_SKIP_DIR_NAMES)}
         self.skip_paths = [Path(p).resolve() for p in (skip_paths or [])]
         self.progress = progress
@@ -399,6 +402,11 @@ class SensitiveScanner:
         except OSError as exc:
             return FileRisk(path=str(path), size=0, note=f"无法读取：{exc}")
         risk = FileRisk(path=str(path), size=stat.st_size)
+        if not self.include_cloud and is_cloud_placeholder(path):
+            # 云盘占位文件：本地读一下就会触发整份下载，默认只按文件名提示
+            risk.note = "云盘占位文件（内容未下载），跳过正文；需要读取请加 --include-cloud"
+            risk.findings.extend(self._name_findings(path))
+            return self._finalize(risk)
         if stat.st_size > self.max_file_size:
             risk.note = f"文件超过 {self.max_file_size} 字节，跳过正文检测"
             risk.findings.extend(self._name_findings(path))
@@ -622,6 +630,7 @@ def scan_paths(
     control: Optional[ScanControl] = None,
     progress: Optional[Callable[[int, int, Optional[str]], None]] = None,
     skip_paths: Sequence[Union[str, Path]] = (),
+    include_cloud: bool = False,
 ) -> ScanReport:
     """便捷入口：给路径列表，返回扫描报告。"""
     scanner = SensitiveScanner(
@@ -630,5 +639,6 @@ def scan_paths(
         throttle_bps=throttle_bps,
         progress=progress,
         skip_paths=skip_paths,
+        include_cloud=include_cloud,
     )
     return scanner.scan(paths, control=control, min_risk=min_risk)
