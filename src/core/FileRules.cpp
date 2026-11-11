@@ -41,6 +41,13 @@ QString extensionOf(const QString &name)
 
 bool KindFilter::accepts(uint16_t catMask, const QString &fileName) const
 {
+    const int slash = fileName.lastIndexOf(QLatin1Char('/'));
+    const QString name = (slash >= 0 ? fileName.mid(slash + 1) : fileName).toLower();
+    return acceptsLower(catMask, QStringView(name));
+}
+
+bool KindFilter::acceptsLower(uint16_t catMask, QStringView lowerName) const
+{
     if (mode == Mode::All)
         return true;
 
@@ -51,14 +58,17 @@ bool KindFilter::accepts(uint16_t catMask, const QString &fileName) const
     if ((catMask & kinds) != 0)
         return true;
 
-    if (!extraExtensions.isEmpty()) {
-        const int slash = fileName.lastIndexOf(QLatin1Char('/'));
-        const QString name = (slash >= 0 ? fileName.mid(slash + 1) : fileName).toLower();
-        const int dot = name.lastIndexOf(QLatin1Char('.'));
-        if (dot > 0 && dot + 1 < name.size()
-            && extraExtensions.contains(name.mid(dot + 1))) {
+    if (extraExtensions.isEmpty())
+        return false;
+
+    const qsizetype dot = lowerName.lastIndexOf(QLatin1Char('.'));
+    if (dot <= 0 || dot + 1 >= lowerName.size())
+        return false;
+
+    const QStringView ext = lowerName.mid(dot + 1);
+    for (const QString &wanted : extraExtensions) {
+        if (ext == QStringView(wanted))
             return true;
-        }
     }
     return false;
 }

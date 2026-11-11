@@ -21,9 +21,36 @@ Rectangle {
     property string hotkeyStatus: ""
     property bool   hotkeyStatusOk: false
 
-    ColumnLayout {
+    // ---- 文件索引范围（Phase B）----
+    // kindSelection 用本地副本：勾选过程中不写配置，点「应用」才落盘。
+    // 初值直接绑定配置；用户勾选后改成普通数组（绑定断开），避免每次点击都写盘。
+    property var kindSelection: config.fileKindFilterKinds
+    property string fileStatus: ""
+
+    function toggleKind(token, on) {
+        var next = kindSelection.slice()
+        var at = next.indexOf(token)
+        if (on && at < 0)
+            next.push(token)
+        else if (!on && at >= 0)
+            next.splice(at, 1)
+        kindSelection = next
+    }
+
+    // 内容比窗口高（Phase B 加了文件索引范围），用 Flickable 滚动，
+    // 否则最后一项会被裁掉且没有任何提示。
+    Flickable {
+        id: settingsFlick
         anchors.fill: parent
         anchors.margins: 8
+        clip: true
+        contentWidth: width
+        contentHeight: settingsColumn.implicitHeight
+        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+    ColumnLayout {
+        id: settingsColumn
+        width: settingsFlick.width
         spacing: 20
 
         Text {
@@ -115,6 +142,162 @@ Rectangle {
                 }
 
                 onActivated: config.setLogLevel(currentText)
+            }
+        }
+
+        // ---- 文件索引范围（Phase B：种类过滤 + 工程排除）----
+        ColumnLayout {
+            Layout.fillWidth: true
+            spacing: 8
+
+            Text {
+                text: "文件索引范围"
+                color: mutedColor
+                font.pixelSize: 12
+            }
+
+            RowLayout {
+                spacing: 8
+
+                Text {
+                    text: "种类过滤"
+                    color: textColor
+                    font.pixelSize: 12
+                    Layout.preferredWidth: 64
+                }
+
+                ComboBox {
+                    id: kindModeBox
+                    Layout.preferredWidth: 190
+                    model: [
+                        { "key": "all",       "label": "全部文件（不过滤）" },
+                        { "key": "whitelist", "label": "只保留选中的种类" },
+                        { "key": "blacklist", "label": "排除选中的种类" }
+                    ]
+                    textRole: "label"
+
+                    Component.onCompleted: {
+                        for (var i = 0; i < model.length; ++i) {
+                            if (model[i].key === config.fileKindFilterMode) {
+                                currentIndex = i
+                                break
+                            }
+                        }
+                    }
+                }
+            }
+
+            Grid {
+                columns: 4
+                columnSpacing: 4
+                rowSpacing: 0
+                visible: kindModeBox.currentIndex > 0
+
+                Repeater {
+                    model: [
+                        { "token": "doc",   "label": "文档" },
+                        { "token": "sheet", "label": "表格" },
+                        { "token": "slide", "label": "演示" },
+                        { "token": "pdf",   "label": "PDF" },
+                        { "token": "img",   "label": "图片" },
+                        { "token": "vid",   "label": "视频" },
+                        { "token": "aud",   "label": "音频" },
+                        { "token": "zip",   "label": "压缩包" },
+                        { "token": "exe",   "label": "安装包" },
+                        { "token": "code",  "label": "代码" },
+                        { "token": "font",  "label": "字体" },
+                        { "token": "data",  "label": "数据" },
+                        { "token": "ebook", "label": "电子书" },
+                        { "token": "lnk",   "label": "快捷方式" },
+                        { "token": "disk",  "label": "磁盘镜像" },
+                        { "token": "other", "label": "其他" }
+                    ]
+
+                    delegate: CheckBox {
+                        text: modelData.label
+                        font.pixelSize: 12
+
+                        Component.onCompleted:
+                            checked = settingsPage.kindSelection.indexOf(modelData.token) >= 0
+
+                        onToggled: settingsPage.toggleKind(modelData.token, checked)
+                    }
+                }
+            }
+
+            RowLayout {
+                spacing: 10
+
+                Button {
+                    text: "应用白名单"
+
+                    onClicked: {
+                        var mode = kindModeBox.model[kindModeBox.currentIndex].key
+                        config.setFileKindFilter(mode, settingsPage.kindSelection)
+                        settingsPage.fileStatus = mode === "all"
+                            ? "已恢复：显示全部文件（立即生效）"
+                            : "已应用：立即生效，无需重新扫描索引"
+                    }
+                }
+
+                Text {
+                    text: settingsPage.fileStatus
+                    color: mutedColor
+                    font.pixelSize: Style.captionSize
+                    Layout.fillWidth: true
+                    elide: Text.ElideRight
+                }
+            }
+
+            Text {
+                text: "白名单只影响搜索结果，不会删除索引；切换无需重扫。"
+                color: mutedColor
+                font.pixelSize: Style.captionSize
+            }
+
+            RowLayout {
+                spacing: 8
+                Layout.topMargin: 4
+
+                Text {
+                    text: "工程目录"
+                    color: textColor
+                    font.pixelSize: 12
+                    Layout.preferredWidth: 64
+                }
+
+                ComboBox {
+                    id: projectPolicyBox
+                    Layout.preferredWidth: 190
+                    model: [
+                        { "key": "skip",   "label": "跳过（默认，推荐）" },
+                        { "key": "demote", "label": "入库但降权 30%" },
+                        { "key": "index",  "label": "如实入库" }
+                    ]
+                    textRole: "label"
+
+                    Component.onCompleted: {
+                        for (var i = 0; i < model.length; ++i) {
+                            if (model[i].key === config.fileProjectPolicy) {
+                                currentIndex = i
+                                break
+                            }
+                        }
+                    }
+
+                    onActivated: {
+                        config.setFileProjectPolicy(model[currentIndex].key)
+                        settingsPage.fileStatus = "已保存；正在后台重新建立索引…"
+                    }
+                }
+            }
+
+            Text {
+                text: "工程目录 = 含 .git / CMakeLists.txt / package.json 等哨兵的目录。改这项会重新扫描索引。"
+                color: mutedColor
+                font.pixelSize: Style.captionSize
+                wrapMode: Text.WordWrap
+                Layout.maximumWidth: 460
             }
         }
 
@@ -234,6 +417,7 @@ Rectangle {
             font.pixelSize: Style.captionSize
             Layout.fillWidth: true
         }
+    }
     }
 
     // ---- 隐藏的按键捕获器（放在布局之外，避免影响 ColumnLayout）----

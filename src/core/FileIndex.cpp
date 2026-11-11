@@ -33,36 +33,6 @@ namespace {
 constexpr int kSoftBudgetEntries = 300000;
 constexpr int kHardLimitEntries  = 1000000;
 
-/// `to` 的接受集合是不是 `from` 的子集？
-/// 是的话可以直接在现有快照上“再筛一遍”（毫秒级），不必回 DB 重读。
-bool kindFilterNarrows(const KindFilter &from, const KindFilter &to)
-{
-    if (from == to || to.mode == KindFilter::Mode::All)
-        return false;
-
-    if (from.mode == KindFilter::Mode::All)
-        return true;   // All → 任意白/黑名单，一定是收窄
-
-    if (from.mode == KindFilter::Mode::Whitelist
-        && to.mode == KindFilter::Mode::Whitelist) {
-        if ((to.kinds & static_cast<uint16_t>(~from.kinds)) != 0)
-            return false;
-        for (const QString &ext : to.extraExtensions) {
-            if (!from.extraExtensions.contains(ext))
-                return false;
-        }
-        return true;
-    }
-
-    if (from.mode == KindFilter::Mode::Blacklist
-        && to.mode == KindFilter::Mode::Blacklist) {
-        // 黑名单变大 = 接受集合变小
-        return (from.kinds & static_cast<uint16_t>(~to.kinds)) == 0;
-    }
-
-    return false;
-}
-
 } // namespace
 
 /// 扫描工作线程：采集（`FileScanner`）+ 差量写库（`FileIndexDatabase`）+ 建快照。
@@ -75,7 +45,7 @@ class ScanWorker : public QThread
 {
 public:
     ScanWorker(int entryLimit, QString databasePath, QStringList roots,
-               FileClassifier classifier, ExcludeRuleSet rules, KindFilter kindFilter,
+               FileClassifier classifier, ExcludeRuleSet rules,
                QObject *parent = nullptr)
         : QThread(parent)
         , m_entryLimit(entryLimit > 0 ? entryLimit : kHardLimitEntries)
@@ -83,7 +53,6 @@ public:
         , m_roots(std::move(roots))
         , m_classifier(std::move(classifier))
         , m_rules(std::move(rules))
-        , m_kindFilter(std::move(kindFilter))
     {
     }
 
@@ -171,24 +140,15 @@ protected:
         }
 
         // ---- 3. 建快照（不可变；发布由 GUI 线程做） ----
-        // DB 存**全量**（只受采集规则约束），快照按 kindFilter 白名单筛选构建 ——
-        // 这样切换“只要文档 / 全都要”只需从 DB 重建，不必重扫磁盘（治理文档 §1.1）。
+        // 快照存**采集面全量**（只受排除规则约束）；检索白名单在 QueryEngine 里
+        // 逐行判定 —— 切换白名单因此是 0 重建、0 扫盘（Phase B 验收 <50 ms）。
         FileSnapshot::Builder builder;
         builder.reserve(entries.size());
-        for (const FileScanner::Entry &e : entries) {
-            if (!m_kindFilter.accepts(e.catMask, e.name))
-                continue;
+        for (const FileScanner::Entry &e : entries)
             builder.add(e.name, e.path(), e.size, e.mtime, e.catMask, e.flags, e.rootId);
-        }
 
         snapshot  = builder.finish();
         elapsedMs = timer.elapsed();
-
-        if (snapshot->size() != entries.size()) {
-            Logger::get().info("FileIndex: kindFilter 过滤掉 {} 条（{}/{} 进快照）",
-                               entries.size() - snapshot->size(),
-                               snapshot->size(), entries.size());
-        }
 
         if (scan.hitHardLimit)
             Logger::get().warn("FileIndex: 已达硬保护上限 {} 条，停止索引（**不驱逐**已有条目）；"
@@ -205,7 +165,6 @@ private:
     const QStringList m_roots;   ///< 空 = FileScanner::defaultRoots()
     FileClassifier    m_classifier;
     ExcludeRuleSet    m_rules;
-    KindFilter        m_kindFilter;
 };
 
 // ---------------------------------------------------------------------------
@@ -275,9 +234,8 @@ void FileIndex::startColdLoad()
             builder.reserve(rows);
             for (const auto &row : all) {
                 // 归类始终以当前分类器为准：v1→v2 旧行是 0，用户改 override 也不用等重扫。
+                // 白名单不在这里筛 —— 检索期由 QueryEngine 判，切换白名单不重建快照。
                 const uint16_t mask = m_classifier->classify(row.name);
-                if (!m_kindFilter.accepts(mask, row.name))
-                    continue;
                 builder.add(row.name, row.path, row.size, row.mtime,
                             mask, row.flags, row.rootId);
             }
@@ -317,7 +275,7 @@ void FileIndex::startScan()
     }
 
     m_worker = std::make_unique<ScanWorker>(m_entryLimit, m_databasePath, m_roots,
-                                            *m_classifier, m_rules, m_kindFilter);
+                                            *m_classifier, m_rules);
     connect(m_worker.get(), &QThread::finished, this, &FileIndex::onScanFinished);
 
     m_scanning = true;
@@ -372,14 +330,11 @@ void FileIndex::setClassifier(const FileClassifier &classifier)
 {
     *m_classifier = classifier;
 
-    // 归类变了 → 已有的 cat_mask 可能过时。扫描中不另起快照，交给这轮扫描后的重扫；
-    // 否则直接从 DB 重建（每行重新归类一次，不扫盘）。
-    if (m_scanning) {
+    // 分类器只用在下一次“建快照/归类”时。典型调用点是 main.cpp 在 startAsync()
+    // 之前注入；运行期改分类器（目前没有 UI）不会自动重扫 —— 需要调用方 refresh()。
+    // 这里刻意不读 DB：白名单已改为查询期过滤，没有“重建快照”的热路径了。
+    if (m_scanning)
         m_pendingRefresh = true;
-        return;
-    }
-    if (m_snapshots->current())
-        reloadFromDatabase();
 }
 
 const FileClassifier &FileIndex::classifier() const
@@ -404,22 +359,10 @@ void FileIndex::setKindFilter(const KindFilter &filter)
     if (m_kindFilter == filter)
         return;
 
-    const KindFilter previous = m_kindFilter;
+    // 白名单是**检索期**过滤：只换一个值，下一次查询立即生效。
+    // 不重建快照、不读 DB、更不扫盘 —— 这是 Phase B 验收 “切换 <50 ms” 的实现。
     m_kindFilter = filter;
-
-    if (m_scanning) {
-        m_pendingRefresh = true;
-        return;
-    }
-    if (!m_snapshots->current())
-        return;
-
-    // 收窄可以在当前快照上再筛（33k 条 <10 ms）；放宽必须回 DB —— 被筛掉的
-    // 条目已经不在快照里了。这是治理文档 §9 “切换白名单 <50 ms” 的落点。
-    if (kindFilterNarrows(previous, filter))
-        rebuildSnapshotFromCurrent();
-    else
-        reloadFromDatabase();
+    emit indexStateChanged();
 }
 
 const KindFilter &FileIndex::kindFilter() const
@@ -427,91 +370,17 @@ const KindFilter &FileIndex::kindFilter() const
     return m_kindFilter;
 }
 
-void FileIndex::rebuildSnapshotFromCurrent()
-{
-    const std::shared_ptr<const FileSnapshot> current = m_snapshots->current();
-    if (!current)
-        return;
-
-    QElapsedTimer timer;
-    timer.start();
-
-    FileSnapshot::Builder builder;
-    builder.reserve(current->size());
-    for (int i = 0; i < current->size(); ++i) {
-        const QString name = current->nameAt(i);
-        uint16_t mask = current->catMaskAt(i);
-        if (mask == 0)
-            mask = m_classifier->classify(name);
-        if (!m_kindFilter.accepts(mask, name))
-            continue;
-        builder.add(name, current->pathAt(i), current->sizeAt(i), current->mtimeAt(i),
-                    mask, current->flagsAt(i), current->rootIdAt(i));
-    }
-
-    auto snapshot = builder.finish();
-    const int entries = snapshot->size();
-    m_snapshots->publish(std::move(snapshot));
-
-    Logger::get().info("FileIndex: 收窄 kindFilter — {} 条（{} ms，kindFilter={}）",
-                       entries, timer.elapsed(),
-                       KindFilter::modeToString(m_kindFilter.mode).toStdString());
-    emit indexStateChanged();
-}
-
-qint64 FileIndex::reloadFromDatabase()
-{
-    if (m_databasePath.isEmpty() || !QFileInfo::exists(m_databasePath))
-        return -1;
-
-    QElapsedTimer timer;
-    timer.start();
-
-    FileSnapshot::Builder builder;
-    int rows = 0;
-    {
-        FileIndexDatabase db(QStringLiteral("file_index_filter"));
-        if (!db.open(m_databasePath))
-            return -1;
-
-        const auto all = db.loadAll();
-        rows = static_cast<int>(all.size());
-        builder.reserve(rows);
-        for (const auto &row : all) {
-            // 归类始终以当前分类器为准（用户 override 无需重扫即可生效）
-            const uint16_t mask = m_classifier->classify(row.name);
-            if (!m_kindFilter.accepts(mask, row.name))
-                continue;
-            builder.add(row.name, row.path, row.size, row.mtime,
-                        mask, row.flags, row.rootId);
-        }
-        db.close();
-    }
-
-    auto snapshot = builder.finish();
-    const int entries = snapshot->size();
-    m_dbRows = rows;
-    m_snapshots->publish(std::move(snapshot));
-
-    const qint64 ms = timer.elapsed();
-    Logger::get().info("FileIndex: 从 DB 重建快照 — {}/{} 条（{} ms，kindFilter={}）",
-                       entries, rows, ms,
-                       KindFilter::modeToString(m_kindFilter.mode).toStdString());
-    emit indexStateChanged();
-    return ms;
-}
-
 QList<SearchResult> FileIndex::query(const QString &text, int limit)
 {
     QList<SearchResult> out;
 
-    // 门面在这里只剩"转发 + 格式转换"：查询逻辑全在 QueryEngine（Parser → 打分 → top-K），
+    // 门面在这里只剩"转发 + 格式转换"：查询逻辑全在 QueryEngine（Parser → 过滤 → 打分 → top-K），
     // 快照的只读接口把物理表示挡在后面。A4 之后这个函数不该再长出别的分支。
     const std::shared_ptr<const FileSnapshot> snap = m_snapshots->current();
     if (!snap || limit <= 0)
         return out;
 
-    const QList<QueryEngine::Match> matches = m_query->query(text, limit);
+    const QList<QueryEngine::Match> matches = m_query->query(text, limit, m_kindFilter);
     out.reserve(matches.size());
     for (const QueryEngine::Match &m : matches) {
         const QString path = snap->pathAt(m.index);
@@ -718,12 +587,11 @@ void FileIndex::patchSnapshotInWorker(QVector<FileSystemEvent> batch)
         const qint64 size = info.size();
         const qint64 mtime = info.lastModified().toSecsSinceEpoch();
 
-        // DB 是“采集面全量”：即使被 kindFilter 挡在快照外，也要更新库里这一行。
+        // 快照存全量；白名单在查询期判，所以这里直接加进去。
         if (it->type == FileSystemEvent::Modified)
             diff.changed.append(rowFor(path, flags));
 
-        if (m_kindFilter.accepts(mask, name))
-            builder.add(name, path, size, mtime, mask, flags, current->rootIdAt(i));
+        builder.add(name, path, size, mtime, mask, flags, current->rootIdAt(i));
     }
 
     for (auto it = changes.constBegin(); it != changes.constEnd(); ++it) {
@@ -741,11 +609,9 @@ void FileIndex::patchSnapshotInWorker(QVector<FileSystemEvent> batch)
         const uint16_t mask = m_classifier->classify(name);
         diff.added.append(rowFor(it->path, FileFlags::None));
 
-        if (m_kindFilter.accepts(mask, name)) {
-            builder.add(name, it->path, info.size(),
-                        info.lastModified().toSecsSinceEpoch(),
-                        mask, FileFlags::None, rootIdFor(it->path));
-        }
+        builder.add(name, it->path, info.size(),
+                    info.lastModified().toSecsSinceEpoch(),
+                    mask, FileFlags::None, rootIdFor(it->path));
     }
 
     std::shared_ptr<const FileSnapshot> patched = builder.finish();

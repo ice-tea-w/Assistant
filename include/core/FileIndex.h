@@ -107,14 +107,10 @@ public:
     void setExcludeRules(const ExcludeRuleSet &rules);
     const ExcludeRuleSet &excludeRules() const;
 
-    /// 检索过滤（白名单/黑名单）。运行期调用会**从 DB 重建快照**（不重扫磁盘）；
-    /// 数据库不可用时退化为“等下一次扫描生效”。
+    /// 检索过滤（白名单/黑名单）。**查询期生效**：只换一个值，下一次查询立即应用，
+    /// 不重建快照、不读 DB、不扫盘（Phase B 验收：切换 <50 ms）。
     void setKindFilter(const KindFilter &filter);
     const KindFilter &kindFilter() const;
-
-    /// 只用 `file_index.db` 重建当前快照（不扫盘）。返回重建耗时（ms）。
-    /// 公开出来是因为“种类白名单切换”是它的主要用户，测试也用它验证“改过滤不重扫”。
-    qint64 reloadFromDatabase();
 
 signals:
     /// 第一份快照（或重扫后的新快照）发布完成，在 **GUI 线程**发出。
@@ -136,9 +132,6 @@ private:
     /// 工作线程里执行：旧快照 + 事件 → 新快照 + 库差量。
     void patchSnapshotInWorker(QVector<FileSystemEvent> batch);
     void publishPatchedSnapshot(std::shared_ptr<const FileSnapshot> snapshot, int changedEvents);
-
-    /// 收窄白名单：在现有快照上再筛一遍（不读 DB、不扫盘）。
-    void rebuildSnapshotFromCurrent();
 
     std::unique_ptr<SnapshotManager> m_snapshots;
     std::unique_ptr<QueryEngine>     m_query;

@@ -369,6 +369,62 @@ const FileClassifier &ConfigManager::fileClassifier() const { return m_fileClass
 const ExcludeRuleSet &ConfigManager::excludeRules() const  { return m_excludeRules; }
 const KindFilter     &ConfigManager::kindFilter() const    { return m_kindFilter; }
 
+QString ConfigManager::fileKindFilterMode() const
+{
+    return KindFilter::modeToString(m_kindFilter.mode);
+}
+
+QStringList ConfigManager::fileKindFilterKinds() const
+{
+    QStringList out;
+    for (const QString &token : FileKind::allTokens()) {
+        const uint16_t mask = FileKind::fromToken(QStringView(token));
+        if (mask != 0 && (m_kindFilter.kinds & mask) != 0)
+            out.append(token);
+    }
+    return out;
+}
+
+QString ConfigManager::fileProjectPolicy() const
+{
+    return ExcludeRuleSet::projectPolicyToString(m_excludeRules.projectPolicy());
+}
+
+void ConfigManager::setFileKindFilter(const QString &mode, const QStringList &kinds)
+{
+    KindFilter next = m_kindFilter;
+    next.mode = KindFilter::modeFromString(mode);
+    next.kinds = 0;
+    for (const QString &token : kinds) {
+        const uint16_t mask = FileKind::fromToken(QStringView(token));
+        next.kinds = static_cast<uint16_t>(next.kinds | mask);
+    }
+
+    if (next == m_kindFilter)
+        return;
+
+    m_kindFilter = next;
+    save();
+    Logger::get().info("ConfigManager: 文件白名单 = {} / {} 类",
+                       KindFilter::modeToString(m_kindFilter.mode).toStdString(),
+                       kinds.join(QLatin1Char(',')).toStdString());
+    emit fileKindFilterChanged();
+}
+
+void ConfigManager::setFileProjectPolicy(const QString &policy)
+{
+    const ExcludeRuleSet::ProjectPolicy next =
+        ExcludeRuleSet::projectPolicyFromString(policy);
+    if (next == m_excludeRules.projectPolicy())
+        return;
+
+    m_excludeRules.setProjectPolicy(next);
+    save();
+    Logger::get().info("ConfigManager: 工程目录策略 = {}",
+                       ExcludeRuleSet::projectPolicyToString(next).toStdString());
+    emit fileProjectPolicyChanged();
+}
+
 QString ConfigManager::syncLocalRoot() const  { return m_syncLocalRoot; }
 QVariantList ConfigManager::syncRoots() const { return m_syncRoots; }
 QString ConfigManager::syncSharedDir() const  { return m_syncSharedDir; }

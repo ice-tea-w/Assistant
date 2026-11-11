@@ -67,7 +67,8 @@ QueryEngine::QueryEngine(const SnapshotManager &snapshots)
 {
 }
 
-QList<QueryEngine::Match> QueryEngine::query(const QString &raw, int limit) const
+QList<QueryEngine::Match> QueryEngine::query(const QString &raw, int limit,
+                                             const KindFilter &kindFilter) const
 {
     QList<Match> out;
     if (limit <= 0)
@@ -114,13 +115,16 @@ QList<QueryEngine::Match> QueryEngine::query(const QString &raw, int limit) cons
 
     // 过滤谓词先判（一条 `&` / 一次比较），避免为将被过滤掉的条目做打分。
     auto passesFilters = [&](int i) -> bool {
-        if (parsed.hasKind) {
-            uint16_t mask = snapshot->catMaskAt(i);
-            if (mask == 0)
-                mask = FileKind::Other;   // 迁移前的旧行：按“未归类”对待
-            if ((mask & parsed.kindMask) == 0)
-                return false;
-        }
+        uint16_t mask = snapshot->catMaskAt(i);
+        if (mask == 0)
+            mask = FileKind::Other;   // 迁移前的旧行：按“未归类”对待
+
+        // L3.5 检索白名单：**查询期**判（切换白名单不重建快照、不扫盘）
+        if (!kindFilter.acceptsLower(mask, QStringView(snapshot->lowerAt(i))))
+            return false;
+
+        if (parsed.hasKind && (mask & parsed.kindMask) == 0)
+            return false;
 
         if (!extensionViews.isEmpty()) {
             const QStringView name = snapshot->lowerAt(i);

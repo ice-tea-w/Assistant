@@ -324,11 +324,15 @@ set_tests_properties(search_providers PROPERTIES
 add_executable(assistant_governance_tests
     tests/test_file_governance.cpp
     ${ASSISTANT_INDEX_TEST_SOURCES}
+    # 设置页读写的配置层（含 Phase B 治理配置的往返）
+    src/core/ConfigManager.cpp
+    src/core/AutoStart.cpp
+    include/core/ConfigManager.h
 )
 target_include_directories(assistant_governance_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
 target_compile_definitions(assistant_governance_tests PRIVATE APP_VERSION="${PROJECT_VERSION}")
 target_link_libraries(assistant_governance_tests PRIVATE
-    Qt6::Core Qt6::Sql Qt6::Test spdlog::spdlog)
+    Qt6::Core Qt6::Sql Qt6::Test spdlog::spdlog nlohmann_json::nlohmann_json)
 
 add_test(NAME file_governance COMMAND assistant_governance_tests)
 set_tests_properties(file_governance PROPERTIES

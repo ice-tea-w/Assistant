@@ -132,10 +132,12 @@ Phase 3 剩余（收尾中，写在这里便于续接）：
       不额外 stat）；`QueryParser` 扩展 `:doc` / `ext:` / `in:` / `size:` / `date:` / 短语；
       `QueryEngine` **过滤先于打分** + 只带过滤 token 时按 mtime 列最近文件 + demote 降权 30%；
       快照加 `catMask/flags/rootId`，`file_index.db` 的 v2 治理列开始真正写入并参与差量比较；
-      QML 搜索框下 9 个过滤 Chip（与输入文本双向同步）。19 个用例，`ctest` 8/8。
+      QML 搜索框下 9 个过滤 Chip（与输入文本双向同步）。20 个用例，`ctest` 8/8。
       详见 `docs/devlog/2026-11-12.md`
-- [ ] **B2 设置页白名单 UI**（现在只能改 `config.json`）：收窄白名单走快路径（33k <10 ms），
-      放宽需从 DB 重建（33k ≈250 ms，未达 §9 的 <50 ms，等 A6b 列式载入）
+- [x] **B2 设置页白名单 UI + 查询期过滤**（2026-11-12）：白名单从“建快照时筛”改为
+      **查询期过滤**（`QueryEngine::query(..., KindFilter)`）—— 切换只赋值 + 发信号，实测 <1 ms、
+      0 重建 0 读盘；设置页新增「文件索引范围」（全部/只保留/排除 + 16 类复选 + 工程目录策略），
+      设置页包 `Flickable` 可滚动。代价是白名单不再节省快照内存（等 A6b）
 - [ ] **B3「待整理」Chip / 下载 box** → Phase C；`dirGlobs` 目前只按目录名匹配，相对路径 glob 未做
 
 > ✅ **P0-3 已修掉**：不再套 2 万条任意截断，真机索引 20000 → **31845** 条，
@@ -183,7 +185,7 @@ Phase 3 剩余（收尾中，写在这里便于续接）：
 | FuzzyMatcher | `include/core/FuzzyMatcher.h`, `src/core/FuzzyMatcher.cpp` | 五级模糊匹配打分 (精确>前缀>词边界>包含>编辑距离)。**A4 起只剩 `legacy` 退路与"跨模块分数尺度"的参照**，文件查询走 `ScoreEngine` |
 | ScoreEngine | `include/core/ScoreEngine.h`, `src/core/ScoreEngine.cpp` | 打分内核：tier 判定（四档数值与 `FuzzyMatcher` **逐位相同**）+ **贪心 O(m) 子序列**（351–399 空档）+ 有界编辑距离；全程零分配 |
 | QueryParser | `include/core/QueryParser.h`, `src/core/QueryParser.cpp` | 查询语法：自由词 **AND**、`-词` 否定、`"短语"`；Phase B 起 `:doc/:img/...`、`ext:`、`in:`、`size:`、`date:`（非法 token 降级自由词）；整串只 `toLower` 一次 |
-| QueryEngine | `include/core/QueryEngine.h`, `src/core/QueryEngine.cpp` | 查询引擎：**过滤先于打分**（kind/ext/in/size/date）→ 逐条打分 → **top-K min-heap**；只带过滤 token 时按 mtime 列最近文件；demote 工程文件降权 30%；只依赖快照只读接口 |
+| QueryEngine | `include/core/QueryEngine.h`, `src/core/QueryEngine.cpp` | 查询引擎：**过滤先于打分**（白名单 + kind/ext/in/size/date）→ 逐条打分 → **top-K min-heap**；白名单查询期生效（切换不重建快照）；只带过滤 token 时按 mtime 列最近文件；demote 工程文件降权 30% |
 | FileKind | `include/core/FileKind.h`, `src/core/FileKind.cpp` | 16 位种类掩码（doc/sheet/slide/pdf/img/vid/aud/zip/exe/code/font/data/ebook/lnk/disk/other）+ token 别名；位值写进 DB |
 | FileClassifier | `include/core/FileClassifier.h`, `src/core/FileClassifier.cpp` | 扩展名 → 种类查表（多段后缀最长优先、名称表、用户 `kindOverrides`/`extraExtensions`）；O(1)、不做内容嗅探 |
 | FileRules | `include/core/FileRules.h`, `src/core/FileRules.cpp` | `KindFilter`（检索白名单/黑名单）+ `ExcludeRuleSet`（目录名/通配/大小/工程哨兵/构建目录）+ 通配匹配；采集规则与检索规则的分界就在这两个类型 |
@@ -191,7 +193,7 @@ Phase 3 剩余（收尾中，写在这里便于续接）：
 | FileSearcher | `include/core/FileSearcher.h`, `src/core/FileSearcher.cpp` | 自控前序 DFS（`walkDir`，不跟随 junction、目录级剪枝）+ FuzzyMatcher 打分 top-N, 索引上限 2 万。**A7 起产品路径零调用，仅剩 golden 的对照实现**（删除需先重写该用例） |
 | FileSnapshot | `include/core/FileSnapshot.h` | 不可变只读快照（`Builder` 写入 → `nameAt/lowerAt/pathAt/sizeAt/mtimeAt` 读出）；Phase B 加 `catMaskAt/flagsAt/rootIdAt`（查询期过滤零分配）；物理表示藏在这层之后，查询层不摸容器 |
 | SnapshotManager | `include/core/SnapshotManager.h`, `src/core/SnapshotManager.cpp` | 快照的 COW 发布（`std::atomic<std::shared_ptr<const T>>`）；读侧取一份即用，无需加锁 |
-| FileIndex | `include/core/FileIndex.h`, `src/core/FileIndex.cpp` | 文件索引**门面**（薄）：`startAsync` 后台扫描 + `query` + `stats` + A5b 的 `setEventSource` / `setRoots` + Phase B 的 `setClassifier` / `setExcludeRules` / `setKindFilter`（收窄走快路径、放宽 `reloadFromDatabase`）。扫描/写库都在 worker 线程（`QSqlDatabase` 线程亲和） |
+| FileIndex | `include/core/FileIndex.h`, `src/core/FileIndex.cpp` | 文件索引**门面**（薄）：`startAsync` 后台扫描 + `query` + `stats` + A5b 的 `setEventSource` / `setRoots` + Phase B 的 `setClassifier` / `setExcludeRules` / `setKindFilter`（白名单查询期生效，切换 <1 ms）。扫描/写库都在 worker 线程（`QSqlDatabase` 线程亲和） |
 | FileScanner | `include/core/FileScanner.h`, `src/core/FileScanner.cpp` | 采集层：Win32 **句柄栈 DFS**（`FindFirstFileExW` + `FindExInfoBasic` + `LARGE_FETCH`）；目录级剪枝、不跟随 reparse point、长路径 `\\?\`、权限拒绝计数、可取消；Phase B 加**工程哨兵前瞻 256 条**（skip/demote，保持 DFS 顺序）与文件级规则。剪枝名单只有这一份 |
 | FileIndexDatabase | `include/database/FileIndexDatabase.h`, `src/database/FileIndexDatabase.cpp` | `file_index.db`（独立连接 `file_index`）：dirs/files/roots 三表、三方差集、UPSERT 批量事务；Phase B 起真正读写 `cat_mask/flags/root_id/origin_id`，且这些字段参与差量比较。**派生数据**，可删库重扫 |
 | DatabaseMigrator | `include/database/DatabaseMigrator.h`, `src/database/DatabaseMigrator.cpp` | `PRAGMA user_version` **前向**迁移，每步一事务；高版本库拒绝；禁止 DROP+重建 |

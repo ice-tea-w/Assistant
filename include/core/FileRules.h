@@ -13,7 +13,8 @@
 
 /// 检索过滤（L3/L4）：白名单 / 黑名单 / 全都要。
 ///
-/// **它不是采集规则**：切换它只需要从 DB 重建快照，不重扫磁盘（治理文档 §1.1 的分界线）。
+/// **它不是采集规则**：切换它在查询期直接生效 —— 不重建快照、不读 DB、不扫盘
+/// （快照始终保存采集面全量；`QueryEngine` 逐行判一条 `&`）。
 struct KindFilter
 {
     enum class Mode
@@ -30,6 +31,10 @@ struct KindFilter
     /// @param catMask  文件种类位
     /// @param fileName 用于 `extraExtensions` 判定（只看最后一段）
     bool accepts(uint16_t catMask, const QString &fileName) const;
+
+    /// 查询热路径版本：`lowerName` 是**已折叠小写**的文件名（快照里现成的那份）。
+    /// 白名单的 `extraExtensions` 用 QStringView 比较，不复制字符串。
+    bool acceptsLower(uint16_t catMask, QStringView lowerName) const;
 
     bool operator==(const KindFilter &other) const
     {

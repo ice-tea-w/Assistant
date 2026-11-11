@@ -2,6 +2,7 @@
 
 #include <QObject>
 #include <QString>
+#include <QStringList>
 #include <QVariant>
 #include <QVariantList>
 
@@ -19,6 +20,9 @@ class ConfigManager : public QObject
     Q_PROPERTY(QString logLevel READ logLevel NOTIFY logLevelChanged)
     Q_PROPERTY(bool autoStart READ autoStart NOTIFY autoStartChanged)
     Q_PROPERTY(int fileIndexHardLimitEntries READ fileIndexHardLimitEntries NOTIFY fileIndexHardLimitChanged)
+    Q_PROPERTY(QString fileKindFilterMode READ fileKindFilterMode NOTIFY fileKindFilterChanged)
+    Q_PROPERTY(QStringList fileKindFilterKinds READ fileKindFilterKinds NOTIFY fileKindFilterChanged)
+    Q_PROPERTY(QString fileProjectPolicy READ fileProjectPolicy NOTIFY fileProjectPolicyChanged)
     Q_PROPERTY(QString syncLocalRoot READ syncLocalRoot NOTIFY syncChanged)
     Q_PROPERTY(QVariantList syncRoots READ syncRoots NOTIFY syncChanged)
     Q_PROPERTY(QString syncSharedDir READ syncSharedDir NOTIFY syncChanged)
@@ -63,6 +67,11 @@ public:
     const ExcludeRuleSet &excludeRules() const;
     /// 检索过滤白名单（改它只需重建快照，不需重扫）。
     const KindFilter &kindFilter() const;
+    /// QML 用的白名单视图（设置页）：模式 + 选中的种类 token。
+    QString fileKindFilterMode() const;
+    QStringList fileKindFilterKinds() const;
+    /// 工程目录策略（skip / demote / index）。改它需要重扫索引。
+    QString fileProjectPolicy() const;
     // ---- 设备同步（Phase: 联网功能）----
     QString syncLocalRoot() const;             // 本地共享根（单根时代的旧字段，保留兼容）
     /// 要同步的本地文件夹列表，每项 {localPath, alias}。为空时回退到 syncLocalRoot。
@@ -82,6 +91,11 @@ public:
     Q_INVOKABLE void setLogLevel(const QString &level);
     Q_INVOKABLE void setAutoStart(bool enabled);
     Q_INVOKABLE void setFileIndexHardLimitEntries(int entries);
+
+    /// 设置页：白名单模式 + 选中的种类的 token（如 "doc"/"img"）。
+    Q_INVOKABLE void setFileKindFilter(const QString &mode, const QStringList &kinds);
+    /// 设置页：工程目录策略。保存后由 main.cpp 触发 `FileIndex::refresh()`。
+    Q_INVOKABLE void setFileProjectPolicy(const QString &policy);
 
     Q_INVOKABLE void setSyncLocalRoot(const QString &path);
     Q_INVOKABLE void setSyncRoots(const QVariantList &roots);
@@ -103,6 +117,8 @@ signals:
     void logLevelChanged();
     void autoStartChanged();
     void fileIndexHardLimitChanged();
+    void fileKindFilterChanged();
+    void fileProjectPolicyChanged();
     void syncChanged();
     void configLoaded();
 

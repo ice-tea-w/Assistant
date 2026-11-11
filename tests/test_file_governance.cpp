@@ -10,11 +10,13 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QtTest>
 
 #include <memory>
 
+#include "core/ConfigManager.h"
 #include "core/FileClassifier.h"
 #include "core/FileIndex.h"
 #include "core/FileKind.h"
@@ -51,7 +53,8 @@ private slots:
     void scannerIndexesProjectWhenPolicyIsIndex();
 
     void databaseRoundTripsGovernanceFields();
-    void kindFilterRebuildsSnapshotWithoutRescan();
+    void kindFilterAppliesAtQueryTime();
+    void configPersistsGovernanceSettings();
 
 private:
     static bool writeFile(const QString &path, const QByteArray &content = "x")
@@ -435,7 +438,7 @@ void TestFileGovernance::databaseRoundTripsGovernanceFields()
     QCOMPARE(delta.unchanged, 0);
 }
 
-void TestFileGovernance::kindFilterRebuildsSnapshotWithoutRescan()
+void TestFileGovernance::kindFilterAppliesAtQueryTime()
 {
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
@@ -452,22 +455,66 @@ void TestFileGovernance::kindFilterRebuildsSnapshotWithoutRescan()
     QTRY_VERIFY_WITH_TIMEOUT(index.isReady(), 15000);
     QTRY_VERIFY_WITH_TIMEOUT(!index.stats().scanning, 15000);
     QCOMPARE(index.stats().entries, 3);
+    QCOMPARE(index.query(QStringLiteral(":doc"), 10).size(), 1);
 
-    // 切换白名单：只重建快照（不重扫）——完成后立即可查
+    // 切换白名单：快照**不变**（不重建、不读 DB、不扫盘），只是下一次查询过滤
     KindFilter onlyImages;
     onlyImages.mode  = KindFilter::Mode::Whitelist;
     onlyImages.kinds = FileKind::Image;
     index.setKindFilter(onlyImages);
 
-    QCOMPARE(index.stats().entries, 1);
-    QVERIFY(index.query(QStringLiteral(":img"), 10).size() == 1);
-    QVERIFY(index.query(QStringLiteral(":doc"), 10).isEmpty());
-    QCOMPARE(index.stats().dbRows, 3);   // 库里仍是全量
-
-    // 切回 all：同样只重建
-    index.setKindFilter(KindFilter());
     QCOMPARE(index.stats().entries, 3);
+    QCOMPARE(index.stats().dbRows, 3);
+    QCOMPARE(index.query(QStringLiteral(":img"), 10).size(), 1);
+    QVERIFY(index.query(QStringLiteral(":doc"), 10).isEmpty());
+    QVERIFY(index.query(QStringLiteral(":all"), 10).size() == 1);   // 只带过滤 token 的最近列表也受限
+
+    // extraExtensions 放行：白名单一个种类都不选，只额外放行 txt
+    KindFilter extrasOnly;
+    extrasOnly.mode = KindFilter::Mode::Whitelist;
+    extrasOnly.extraExtensions.insert(QStringLiteral("txt"));
+    index.setKindFilter(extrasOnly);
+    QCOMPARE(index.query(QStringLiteral(":all"), 10).size(), 1);
     QCOMPARE(index.query(QStringLiteral(":doc"), 10).size(), 1);
+
+    // 切回 all：同样立即生效
+    index.setKindFilter(KindFilter());
+    QCOMPARE(index.query(QStringLiteral(":doc"), 10).size(), 1);
+    QCOMPARE(index.query(QStringLiteral(":img"), 10).size(), 1);
+}
+
+void TestFileGovernance::configPersistsGovernanceSettings()
+{
+    // QStandardPaths test mode 把 AppConfigLocation 指到测试目录，避免污染真实配置
+    QStandardPaths::setTestModeEnabled(true);
+
+    {
+        ConfigManager config;
+        config.load();
+        config.setFileKindFilter(QStringLiteral("whitelist"),
+                                 { QStringLiteral("doc"), QStringLiteral("img") });
+        config.setFileProjectPolicy(QStringLiteral("demote"));
+
+        QCOMPARE(config.fileKindFilterMode(), QStringLiteral("whitelist"));
+        QCOMPARE(config.fileKindFilterKinds(),
+                 QStringList({ QStringLiteral("doc"), QStringLiteral("img") }));
+        QCOMPARE(config.fileProjectPolicy(), QStringLiteral("demote"));
+    }
+
+    {
+        // 重新从磁盘读一遍：设置页写入的值必须能回来
+        ConfigManager reloaded;
+        reloaded.load();
+        QCOMPARE(reloaded.fileKindFilterMode(), QStringLiteral("whitelist"));
+        QCOMPARE(reloaded.fileKindFilterKinds(),
+                 QStringList({ QStringLiteral("doc"), QStringLiteral("img") }));
+        QCOMPARE(reloaded.fileProjectPolicy(), QStringLiteral("demote"));
+        QCOMPARE(int(reloaded.kindFilter().mode), int(KindFilter::Mode::Whitelist));
+        QCOMPARE(int(reloaded.excludeRules().projectPolicy()),
+                 int(ExcludeRuleSet::ProjectPolicy::Demote));
+    }
+
+    QStandardPaths::setTestModeEnabled(false);
 }
 
 QTEST_GUILESS_MAIN(TestFileGovernance)

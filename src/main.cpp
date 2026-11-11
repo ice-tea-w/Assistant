@@ -111,6 +111,16 @@ int main(int argc, char *argv[])
     fileIndex.setKindFilter(config.kindFilter());
     backend.setFileIndex(&fileIndex);
 
+    // 设置页改白名单 → 立即生效（查询期过滤，不重建快照、不扫盘）
+    QObject::connect(&config, &ConfigManager::fileKindFilterChanged, &app, [&] {
+        fileIndex.setKindFilter(config.kindFilter());
+    });
+    // 工程策略是采集规则，必须重扫；refresh() 在后台线程完成，不卡界面
+    QObject::connect(&config, &ConfigManager::fileProjectPolicyChanged, &app, [&] {
+        fileIndex.setExcludeRules(config.excludeRules());
+        fileIndex.refresh();
+    });
+
     // A5b：扫描完之后接上增量事件源。
     FileEventDispatcher fileEvents;
     FileWatcher         fileWatcher;
@@ -261,16 +271,18 @@ int main(int argc, char *argv[])
     QObject::connect(&tray, &TrayManager::mainPanelRequested, &app, showMainPanel);
 
     // 调试开关：带 --show-panel 启动时立即弹主面板（界面检查/截图用）；
-    // 附加 --page=N 可直接打开指定页（0 待办 / 1 记事本 / 2 剪贴板 / 3 设备同步 / 4 设置）
+    // 附加 --page=N 可直接打开指定页（0 待办 / 1 记事本 / 2 剪贴板 / 3 设备同步 /
+    // 4 设置 / 5 插件市场）。主面板导航用 key，不再用索引。
     if (qApp->arguments().contains(QStringLiteral("--show-panel"))) {
         QTimer::singleShot(400, &app, [&]() {
+            static const char *kPageKeys[] = { "todo", "notes", "clip", "sync", "settings", "plugins" };
             for (const QString &arg : qApp->arguments()) {
                 if (!arg.startsWith(QStringLiteral("--page=")))
                     continue;
                 bool ok = false;
                 const int page = arg.mid(7).toInt(&ok);
-                if (ok && page >= 0 && panelWindow)
-                    panelWindow->setProperty("selectedIndex", page);
+                if (ok && page >= 0 && page < int(sizeof(kPageKeys) / sizeof(kPageKeys[0])) && panelWindow)
+                    panelWindow->setProperty("selectedKey", QString::fromLatin1(kPageKeys[page]));
             }
             showMainPanel();
         });
