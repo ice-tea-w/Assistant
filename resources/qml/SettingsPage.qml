@@ -348,6 +348,198 @@ Rectangle {
             }
         }
 
+        // ---- 下载归档规则（S11：可编辑 + dry-run）----
+        ColumnLayout {
+            id: rulesSection
+            Layout.fillWidth: true
+            spacing: 8
+
+            Text {
+                text: "下载归档规则"
+                color: mutedColor
+                font.pixelSize: 12
+            }
+
+            RowLayout {
+                spacing: 8
+
+                Switch {
+                    checked: config.inboxAutoOrganize
+                    onToggled: config.setInboxAutoOrganize(checked)
+                }
+
+                Text {
+                    text: config.inboxAutoOrganize
+                          ? "自动执行 move 规则（默认关闭）"
+                          : "只给建议，不移动文件"
+                    color: mutedColor
+                    font.pixelSize: 12
+                }
+            }
+
+            Text {
+                text: "按 priority 从小到大首个命中；action = suggest / move / skip / notify。"
+                      + " 未开启自动归档时，move 也只显示在「最近下载」的建议里。"
+                color: mutedColor
+                font.pixelSize: Style.captionSize
+                wrapMode: Text.WordWrap
+                Layout.maximumWidth: 460
+            }
+
+            ListModel { id: ruleModel }
+
+            Component.onCompleted: rulesSection.loadRules()
+
+            function loadRules() {
+                ruleModel.clear()
+                var rules = config.inboxRules
+                for (var i = 0; i < rules.length; ++i) {
+                    var r = rules[i]
+                    ruleModel.append({
+                        name: r.name || "",
+                        kind: r.kind || "",
+                        size: r.size || "",
+                        action: r.action || "suggest",
+                        dest: r.dest || ""
+                    })
+                }
+            }
+
+            function ruleArray() {
+                var arr = []
+                for (var i = 0; i < ruleModel.count; ++i) {
+                    var r = ruleModel.get(i)
+                    arr.push({
+                        name: r.name,
+                        kind: r.kind,
+                        size: r.size,
+                        action: r.action,
+                        dest: r.dest,
+                        priority: 100,
+                        enabled: true
+                    })
+                }
+                return arr
+            }
+
+            function preview() {
+                var result = inbox.previewRules(ruleArray())
+                if (result.length === 0) {
+                    previewLabel.text = "当前收件箱没有待整理文件。"
+                    return
+                }
+                var lines = []
+                for (var i = 0; i < result.length; ++i) {
+                    var item = result[i]
+                    if (item.matched)
+                        lines.push(item.name + " → " + item.rule + " / "
+                                   + item.action + " / " + item.dest)
+                    else
+                        lines.push(item.name + " → 未命中")
+                }
+                previewLabel.text = lines.join("\n")
+            }
+
+            function saveRules() {
+                config.setInboxRules(ruleArray())
+                rulesStatus.text = "已保存（" + ruleModel.count + " 条）"
+            }
+
+            Repeater {
+                model: ruleModel
+
+                delegate: ColumnLayout {
+                    id: ruleDelegate
+                    property int rowIndex: index
+                    Layout.fillWidth: true
+                    spacing: 2
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 4
+
+                        TextField {
+                            text: model.name
+                            placeholderText: "名称"
+                            Layout.preferredWidth: 120
+                            onTextEdited: ruleModel.setProperty(index, "name", text)
+                        }
+                        TextField {
+                            text: model.kind
+                            placeholderText: "种类 doc,pdf"
+                            Layout.preferredWidth: 110
+                            onTextEdited: ruleModel.setProperty(index, "kind", text)
+                        }
+                        TextField {
+                            text: model.size
+                            placeholderText: "大小 >10mb"
+                            Layout.preferredWidth: 95
+                            onTextEdited: ruleModel.setProperty(index, "size", text)
+                        }
+                        Button {
+                            text: "×"
+                            onClicked: ruleModel.remove(index)
+                        }
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 4
+
+                        ComboBox {
+                            model: [ "suggest", "move", "skip", "notify" ]
+                            Component.onCompleted: {
+                                var actions = [ "suggest", "move", "skip", "notify" ]
+                                var at = actions.indexOf(action)
+                                currentIndex = at >= 0 ? at : 0
+                            }
+                            onActivated: ruleModel.setProperty(ruleDelegate.rowIndex,
+                                                               "action", currentText)
+                        }
+                        TextField {
+                            text: model.dest
+                            placeholderText: "去向 {inbox}/Docs/{yyyy}"
+                            Layout.fillWidth: true
+                            onTextEdited: ruleModel.setProperty(index, "dest", text)
+                        }
+                    }
+                }
+            }
+
+            RowLayout {
+                spacing: 8
+
+                Button {
+                    text: "添加规则"
+                    onClicked: ruleModel.append({ name: "", kind: "", size: "",
+                                                  action: "suggest", dest: "" })
+                }
+                Button {
+                    text: "预览（dry-run）"
+                    onClicked: rulesSection.preview()
+                }
+                Button {
+                    text: "保存规则"
+                    onClicked: rulesSection.saveRules()
+                }
+                Text {
+                    id: rulesStatus
+                    color: accentColor
+                    font.pixelSize: Style.captionSize
+                }
+            }
+
+            Text {
+                id: previewLabel
+                visible: text.length > 0
+                color: mutedColor
+                font.pixelSize: Style.captionSize
+                wrapMode: Text.WordWrap
+                Layout.fillWidth: true
+                Layout.maximumWidth: 460
+            }
+        }
+
         // ---- 全局热键（可自定义，Phase 3 收尾）----
         ColumnLayout {
             spacing: 8

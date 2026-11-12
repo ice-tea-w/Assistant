@@ -47,6 +47,8 @@ public:
     /// S11 查重裁决：保留两份（清除 dup 标记）/ 打开更早的那份。
     Q_INVOKABLE bool keepBoth(int id);
     Q_INVOKABLE void revealDuplicate(int id);
+    /// 规则 dry-run：不入库、不移动，只返回“当前待整理会命中哪条规则、去哪里”。
+    Q_INVOKABLE QVariantList previewRules(const QVariantList &rules) const;
     /// S11：把当前路径加入待办。
     Q_INVOKABLE bool addToTodo(int id);
     /// S11：读取文本内容到系统剪贴板 + 剪贴板历史（>1 MB 或二进制拒绝）。

@@ -3,6 +3,7 @@
 #include "core/FileKind.h"
 #include "core/Logger.h"
 #include "core/inbox/IngestEngine.h"
+#include "core/inbox/DownloadRules.h"
 #include "core/inbox/TrackingEngine.h"
 #include "database/ClipboardDatabase.h"
 #include "database/DownloadsDatabase.h"
@@ -253,6 +254,31 @@ void InboxBridge::revealDuplicate(int id)
         return;
     QProcess::startDetached(QStringLiteral("explorer.exe"),
                             { QStringLiteral("/select,") + QDir::toNativeSeparators(path) });
+}
+
+QVariantList InboxBridge::previewRules(const QVariantList &rules) const
+{
+    QVariantList out;
+    if (!m_db)
+        return out;
+
+    DownloadRules engineRules;
+    engineRules.load(rules);
+    const QString boxPath = m_engine ? m_engine->boxPath()
+                                     : QStringLiteral("%LOCALAPPDATA%/AssistantTeam/Assistant/Inbox");
+
+    const QVector<DownloadRow> rows = m_db->listInBox();
+    for (const DownloadRow &row : rows) {
+        const DownloadRules::Decision decision = engineRules.evaluate(row, boxPath);
+        QVariantMap item;
+        item.insert(QStringLiteral("name"), row.name);
+        item.insert(QStringLiteral("matched"), decision.matched());
+        item.insert(QStringLiteral("rule"), decision.ruleName);
+        item.insert(QStringLiteral("action"), decision.action);
+        item.insert(QStringLiteral("dest"), decision.dest);
+        out.append(item);
+    }
+    return out;
 }
 
 bool InboxBridge::addToTodo(int id)

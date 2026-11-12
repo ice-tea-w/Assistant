@@ -655,6 +655,24 @@ void ConfigManager::setFileIndexHardLimitEntries(int entries)
 
 // ---- 设备同步 setters ----
 
+void ConfigManager::setInboxAutoOrganize(bool enabled)
+{
+    if (m_inboxAutoOrganize == enabled)
+        return;
+    m_inboxAutoOrganize = enabled;
+    save();
+    Logger::get().info("ConfigManager: 自动归档 = {}", enabled ? "on" : "off");
+    emit inboxChanged();
+}
+
+void ConfigManager::setInboxRules(const QVariantList &rules)
+{
+    m_inboxRules = rules;
+    save();
+    Logger::get().info("ConfigManager: 归档规则已更新（{} 条）", rules.size());
+    emit inboxRulesChanged();
+}
+
 void ConfigManager::setSyncLocalRoot(const QString &path)
 {
     if (m_syncLocalRoot == path)

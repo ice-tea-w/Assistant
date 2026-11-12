@@ -194,6 +194,13 @@ int main(int argc, char *argv[])
         ingest.setEnabled(config.inboxEnabled());
         ingest.setBoxPath(config.inboxPath());
         ingest.setSettleMs(config.inboxSettleMs());
+        ingest.setAutoOrganize(config.inboxAutoOrganize());
+    });
+    QObject::connect(&config, &ConfigManager::inboxRulesChanged, &app, [&] {
+        DownloadRules rules;
+        rules.load(config.inboxRules());
+        ingest.setRules(rules);
+        ingest.setAutoOrganize(config.inboxAutoOrganize());
     });
 
     Logger::get().info("FileIndex: engine = v2（硬上限 {} 条）",

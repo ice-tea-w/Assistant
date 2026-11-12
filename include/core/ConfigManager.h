@@ -26,6 +26,8 @@ class ConfigManager : public QObject
     Q_PROPERTY(bool inboxEnabled READ inboxEnabled NOTIFY inboxChanged)
     Q_PROPERTY(QString inboxPath READ inboxPath NOTIFY inboxChanged)
     Q_PROPERTY(int inboxSettleMs READ inboxSettleMs NOTIFY inboxChanged)
+Q_PROPERTY(bool inboxAutoOrganize READ inboxAutoOrganize WRITE setInboxAutoOrganize NOTIFY inboxChanged)
+Q_PROPERTY(QVariantList inboxRules READ inboxRules NOTIFY inboxRulesChanged)
     Q_PROPERTY(QString syncLocalRoot READ syncLocalRoot NOTIFY syncChanged)
     Q_PROPERTY(QVariantList syncRoots READ syncRoots NOTIFY syncChanged)
     Q_PROPERTY(QString syncSharedDir READ syncSharedDir NOTIFY syncChanged)
@@ -112,6 +114,8 @@ public:
     /// 设置页：是否接管浏览器下载（只接管开启之后的新文件）。
     Q_INVOKABLE void setInboxEnabled(bool enabled);
     Q_INVOKABLE void setInboxPath(const QString &path);
+    Q_INVOKABLE void setInboxAutoOrganize(bool enabled);
+    Q_INVOKABLE void setInboxRules(const QVariantList &rules);
 
     Q_INVOKABLE void setSyncLocalRoot(const QString &path);
     Q_INVOKABLE void setSyncRoots(const QVariantList &roots);
@@ -136,6 +140,7 @@ signals:
     void fileKindFilterChanged();
     void fileProjectPolicyChanged();
     void inboxChanged();
+    void inboxRulesChanged();
     void syncChanged();
     void configLoaded();
 
