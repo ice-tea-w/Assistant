@@ -72,7 +72,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
 
 # AppIndexer uses the Windows Shell Link COM interface (IShellLink, SHGetKnownFolderPath)
 if(WIN32)
-    target_link_libraries(${PROJECT_NAME} PRIVATE shell32 ole32)
+    target_link_libraries(${PROJECT_NAME} PRIVATE shell32 ole32 crypt32 advapi32)
 endif()
 
 # ---- Qt 部署 ----
@@ -221,6 +221,7 @@ add_executable(assistant_tests
     src/core/sync/FolderTransport.cpp
     src/core/sync/SyncEngine.cpp
     src/core/sync/DeliveryNaming.cpp
+    src/core/sync/SyncCommands.cpp
     src/database/SyncDatabase.cpp
     # 配置层往返也要测（同步根列表靠它持久化）
     src/core/ConfigManager.cpp
@@ -238,6 +239,8 @@ target_include_directories(assistant_tests PRIVATE
 target_link_libraries(assistant_tests PRIVATE
     Qt6::Core
     Qt6::Sql
+    # 直连通道前提自检要 QSslSocket（TLS 后端是否可用）
+    Qt6::Network
     Qt6::Test
     spdlog::spdlog
     nlohmann_json::nlohmann_json
@@ -368,4 +371,125 @@ endif()
 
 add_test(NAME download_box COMMAND assistant_inbox_tests)
 set_tests_properties(download_box PROPERTIES
+    ENVIRONMENT "PATH=${VCPKG_BIN_DIR};${VCPKG_DBG_BIN_DIR};$ENV{PATH}")
+
+# ---- N0：公网直连的帧编解码与地址解析（纯函数，零 IO）----
+add_executable(assistant_net_tests
+    tests/test_net_protocol.cpp
+    src/core/net/SyncFrame.cpp
+    src/core/net/PeerAddress.cpp
+)
+target_include_directories(assistant_net_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(assistant_net_tests PRIVATE Qt6::Core Qt6::Network Qt6::Test)
+
+add_test(NAME net_protocol COMMAND assistant_net_tests)
+set_tests_properties(net_protocol PROPERTIES
+    ENVIRONMENT "PATH=${VCPKG_BIN_DIR};${VCPKG_DBG_BIN_DIR};$ENV{PATH}")
+
+# ---- N1：设备身份（自签 RSA-2048，CryptoAPI）----
+add_executable(assistant_net_identity_tests
+    tests/test_net_identity.cpp
+    src/core/net/Identity.cpp
+)
+target_include_directories(assistant_net_identity_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(assistant_net_identity_tests PRIVATE
+    Qt6::Core Qt6::Network Qt6::Test
+    bcrypt crypt32)
+
+add_test(NAME net_identity COMMAND assistant_net_identity_tests)
+set_tests_properties(net_identity PROPERTIES
+    ENVIRONMENT "PATH=${VCPKG_BIN_DIR};${VCPKG_DBG_BIN_DIR};$ENV{PATH}")
+
+# ---- N1：回环 TLS（服务端 + 双向 mTLS，验 Schannel 能否用内存私钥）----
+add_executable(assistant_net_tls_tests
+    tests/test_net_tls.cpp
+    src/core/net/Identity.cpp
+    src/core/net/SyncFrame.cpp
+    src/core/net/DeviceAuth.cpp
+)
+target_include_directories(assistant_net_tls_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(assistant_net_tls_tests PRIVATE
+    Qt6::Core Qt6::Network Qt6::Test
+    bcrypt crypt32)
+
+add_test(NAME net_tls COMMAND assistant_net_tls_tests)
+set_tests_properties(net_tls PROPERTIES
+    ENVIRONMENT "PATH=${VCPKG_BIN_DIR};${VCPKG_DBG_BIN_DIR};$ENV{PATH}")
+# ---- N1：客户端认证（单向 TLS 之后的挑战应答，Schannel 不支持双向 mTLS）----
+add_executable(assistant_net_auth_tests
+    tests/test_net_auth.cpp
+    src/core/net/DeviceAuth.cpp
+)
+target_include_directories(assistant_net_auth_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(assistant_net_auth_tests PRIVATE Qt6::Core Qt6::Test)
+
+add_test(NAME net_auth COMMAND assistant_net_auth_tests)
+set_tests_properties(net_auth PROPERTIES
+    ENVIRONMENT "PATH=${VCPKG_BIN_DIR};${VCPKG_DBG_BIN_DIR};$ENV{PATH}")
+
+# ---- N2：SyncServer（认证 + List 分页，回环客户端驱动）----
+add_executable(assistant_net_server_tests
+    tests/test_net_server.cpp
+    # Q_OBJECT 头必须列进目标源，否则 AUTOMOC 不会为它生成 moc
+    include/core/net/SyncServer.h
+    src/core/net/SyncServer.cpp
+    src/core/net/SyncFrame.cpp
+    src/core/net/Identity.cpp
+    src/core/net/DeviceAuth.cpp
+    src/core/sync/PathGuard.cpp
+)
+target_include_directories(assistant_net_server_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(assistant_net_server_tests PRIVATE
+    Qt6::Core Qt6::Network Qt6::Test
+    bcrypt crypt32)
+
+add_test(NAME net_server COMMAND assistant_net_server_tests)
+set_tests_properties(net_server PROPERTIES
+    ENVIRONMENT "PATH=${VCPKG_BIN_DIR};${VCPKG_DBG_BIN_DIR};$ENV{PATH}")
+
+# ---- N2：NetTransport（阻塞式客户端 + 独立线程里的 SyncServer）----
+add_executable(assistant_net_transport_tests
+    tests/test_net_transport.cpp
+    include/core/net/SyncServer.h
+    src/core/net/SyncServer.cpp
+    src/core/net/NetTransport.cpp
+    src/core/net/PairingClient.cpp
+    src/core/net/SyncFrame.cpp
+    src/core/net/Identity.cpp
+    src/core/net/DeviceAuth.cpp
+    src/core/sync/PathGuard.cpp
+)
+target_include_directories(assistant_net_transport_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(assistant_net_transport_tests PRIVATE
+    Qt6::Core Qt6::Network Qt6::Test
+    bcrypt crypt32)
+
+add_test(NAME net_transport COMMAND assistant_net_transport_tests)
+set_tests_properties(net_transport PROPERTIES
+    ENVIRONMENT "PATH=${VCPKG_BIN_DIR};${VCPKG_DBG_BIN_DIR};$ENV{PATH}")
+# ---- N2：SyncEngine + NetTransport 回环真同步（引擎一行不改）----
+add_executable(assistant_net_engine_tests
+    tests/test_net_engine.cpp
+    src/core/Logger.cpp
+    include/core/sync/SyncEngine.h
+    src/core/sync/SyncEngine.cpp
+    src/core/sync/ConflictResolver.cpp
+    src/core/sync/DeliveryNaming.cpp
+    src/core/sync/PathGuard.cpp
+    src/database/SyncDatabase.cpp
+    include/core/net/SyncServer.h
+    src/core/net/SyncServer.cpp
+    src/core/net/NetTransport.cpp
+    src/core/net/SyncFrame.cpp
+    src/core/net/Identity.cpp
+    src/core/net/DeviceAuth.cpp
+)
+target_include_directories(assistant_net_engine_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(assistant_net_engine_tests PRIVATE
+    Qt6::Core Qt6::Network Qt6::Sql Qt6::Test
+    bcrypt crypt32
+    spdlog::spdlog nlohmann_json::nlohmann_json)
+
+add_test(NAME net_engine COMMAND assistant_net_engine_tests)
+set_tests_properties(net_engine PROPERTIES
     ENVIRONMENT "PATH=${VCPKG_BIN_DIR};${VCPKG_DBG_BIN_DIR};$ENV{PATH}")

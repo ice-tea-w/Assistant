@@ -12,6 +12,7 @@
 #include <QFileInfo>
 #include <QStandardPaths>
 #include <QTemporaryDir>
+#include <QSslSocket>
 
 #include "core/ConfigManager.h"
 #include "core/Logger.h"
@@ -19,6 +20,7 @@
 #include "core/sync/DeliveryNaming.h"
 #include "core/sync/FolderTransport.h"
 #include "core/sync/PathGuard.h"
+#include "core/sync/SyncCommands.h"
 #include "core/sync/SyncEngine.h"
 #include "database/SyncDatabase.h"
 
@@ -75,9 +77,12 @@ private slots:
     void pathGuard_data();
     void pathGuard();
     void resolveUnderStaysInsideRoot();
+    void ensureDirUnderCreatesSegments();
 
     void databaseBaseline();
     void databaseConflicts();
+    void databaseDevices();
+    void databaseOutbox();
 
     void folderTransportRoundTrip();
     void folderTransportRejectsTraversal();
@@ -94,9 +99,24 @@ private slots:
 
     void deliveryNameRoundTrip();
     void deliveryOwnCheck();
+    void deliveryReservedPaths();
     void deliveryPlaceIncoming();
     void databaseReceived();
     void configWatchInboxRoundTrip();
+
+    // 一键共享 / 连接的命令拼装（纯函数，不碰 Windows API）
+    void shareBat_data();
+    void shareBat();
+    void shareNameValidation();
+    void suggestShareNameRules();
+    void connectArgsBuild();
+    void explainExitCodes();
+
+    // probe() 失败必须能说清是哪一关（否则界面只有一句"不可访问或不可写"）
+    void probeErrorDistinguishesFailures();
+
+    // 网络通道前提：TLS 后端在打包/部署后是否还在
+    void tlsBackendSelfCheck();
 };
 
 void TestSync::initTestCase()
@@ -271,6 +291,26 @@ void TestSync::resolveUnderStaysInsideRoot()
     QVERIFY(PathGuard::resolveUnder(root.path(), "nodir/a.txt").isEmpty());
 }
 
+void TestSync::ensureDirUnderCreatesSegments()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+
+    // 逐段创建：目录本来不存在也要能建出来（收文件时的常态）
+    const QString created = PathGuard::ensureDirUnder(root.path(), "work/sub");
+    QVERIFY(!created.isEmpty());
+    QCOMPARE(QFileInfo(created).canonicalFilePath(),
+             QFileInfo(root.path() + "/work/sub").canonicalFilePath());
+
+    // 幂等：再调一次拿回同一个目录
+    QCOMPARE(PathGuard::ensureDirUnder(root.path(), "work/sub"), created);
+
+    // 不安全路径不建任何东西
+    QVERIFY(PathGuard::ensureDirUnder(root.path(), "../escape").isEmpty());
+    QVERIFY(!QFile::exists(root.path() + "/../escape"));
+    QVERIFY(PathGuard::ensureDirUnder(root.path(), "C:/Windows/x").isEmpty());
+}
+
 // ---------------------------------------------------------------- 基线存储
 
 void TestSync::databaseBaseline()
@@ -338,6 +378,50 @@ void TestSync::databaseConflicts()
     QCOMPARE(list.first().resolved, true);
 
     db.close();
+}
+
+void TestSync::databaseDevices()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    SyncDatabase db(QStringLiteral("test_devices"));
+    QVERIFY(db.open(dir.path() + "/sync.db"));
+    QVERIFY(db.allDevices().isEmpty());
+
+    DeviceRecord rec;
+    rec.deviceId    = QStringLiteral("dev-a1b2c3");
+    rec.fingerprint = QStringLiteral("9f2c");
+    rec.secret      = QByteArray(32, '\x2a');
+    rec.pairedAt    = 1760000000;
+    QVERIFY(db.upsertDevice(rec));
+
+    const auto got = db.device(QStringLiteral("dev-a1b2c3"));
+    QVERIFY(got.has_value());
+    QCOMPARE(got->fingerprint, QStringLiteral("9f2c"));
+    QCOMPARE(got->secret, QByteArray(32, '\x2a'));   // BLOB 原样往返，不被截断
+    QCOMPARE(got->pairedAt, qint64(1760000000));
+    QCOMPARE(got->lastSeenAt, qint64(0));
+    QVERIFY(!db.device(QStringLiteral("dev-missing")).has_value());
+
+    // 再配对同一台设备 → 覆盖，不新增
+    rec.secret = QByteArray(32, '\x7f');
+    QVERIFY(db.upsertDevice(rec));
+    QCOMPARE(db.allDevices().size(), 1);
+    QCOMPARE(db.device(QStringLiteral("dev-a1b2c3"))->secret, QByteArray(32, '\x7f'));
+
+    QVERIFY(db.touchDevice(QStringLiteral("dev-a1b2c3"), 1760000999));
+    QCOMPARE(db.device(QStringLiteral("dev-a1b2c3"))->lastSeenAt, qint64(1760000999));
+
+    QVERIFY(db.removeDevice(QStringLiteral("dev-a1b2c3")));
+    QVERIFY(db.allDevices().isEmpty());
+
+    // 重开同一份库：建表是幂等的，旧库升级也不会丢已有表
+    db.close();
+    SyncDatabase again(QStringLiteral("test_devices_reopen"));
+    QVERIFY(again.open(dir.path() + "/sync.db"));
+    QVERIFY(again.allDevices().isEmpty());
+    again.close();
 }
 
 // ---------------------------------------------------------------- 共享目录通道
@@ -686,6 +770,28 @@ void TestSync::deliveryNameRoundTrip()
     QCOMPARE(Sync::stripDeliveryPrefix(newFmt), QStringLiteral("季度 报告_v2.txt"));
 }
 
+void TestSync::deliveryReservedPaths()
+{
+    struct Case { QString path; bool reserved; };
+    const QList<Case> cases = {
+        {QStringLiteral("_inbox/laptop/1_a.txt"), true},
+        {QStringLiteral("_inbox"), true},
+        {QStringLiteral("_投递/laptop/1_a.txt"), true},
+        {QStringLiteral("work/_inbox/1_a.txt"), true},          // 任意层级
+        {QStringLiteral("work/sub/_投递/1_a.txt"), true},
+        {QStringLiteral("_INBOX/laptop/1_a.txt"), true},        // 大小写不敏感（SMB 侧大小写也可能变）
+        {QStringLiteral("work/a.txt"), false},
+        {QStringLiteral("my_inbox/a.txt"), false},              // 前缀像但不是整段
+        {QStringLiteral("work/_inbox2/a.txt"), false},
+        {QString(), false},
+    };
+
+    for (const Case &c : cases) {
+        QVERIFY2(isReservedDeliveryPath(c.path) == c.reserved,
+                 qPrintable(QStringLiteral("路径 %1 判定错了").arg(c.path)));
+    }
+}
+
 void TestSync::deliveryOwnCheck()
 {
     const QString name = Sync::makeDeliveryName(QStringLiteral("我的电脑"), QStringLiteral("a.txt"),
@@ -815,6 +921,196 @@ void TestSync::configRootsRoundTrip()
     }
 
     QStandardPaths::setTestModeEnabled(false);
+}
+
+// ------------------------------------------------------------ 一键共享/连接
+
+void TestSync::shareBat_data()
+{
+    QTest::addColumn<QString>("path");
+    QTest::addColumn<QString>("name");
+    QTest::addColumn<QString>("user");
+    QTest::addColumn<QString>("expected");
+
+    QTest::newRow("plain")
+        << QStringLiteral("E:\\SyncHub") << QStringLiteral("SyncHub") << QStringLiteral("alice")
+        << QStringLiteral("@echo off\r\n"
+                          "chcp 65001 >nul\r\n"
+                          "net share SyncHub=\"E:\\SyncHub\" /grant:alice,change\r\n"
+                          "if errorlevel 1 exit /b 1\r\n"
+                          "icacls \"E:\\SyncHub\" /grant \"alice:(OI)(CI)M\"\r\n"
+                          "exit /b %errorlevel%\r\n");
+
+    QTest::newRow("with space")
+        << QStringLiteral("E:\\My Sync") << QStringLiteral("MySync") << QStringLiteral("alice")
+        << QStringLiteral("@echo off\r\n"
+                          "chcp 65001 >nul\r\n"
+                          "net share MySync=\"E:\\My Sync\" /grant:alice,change\r\n"
+                          "if errorlevel 1 exit /b 1\r\n"
+                          "icacls \"E:\\My Sync\" /grant \"alice:(OI)(CI)M\"\r\n"
+                          "exit /b %errorlevel%\r\n");
+}
+
+void TestSync::shareBat()
+{
+    QFETCH(QString, path);
+    QFETCH(QString, name);
+    QFETCH(QString, user);
+    QFETCH(QString, expected);
+    QCOMPARE(Sync::shareScript(path, name, user), expected);
+}
+
+void TestSync::shareNameValidation()
+{
+    QVERIFY(Sync::isValidShareName(QStringLiteral("SyncHub")));
+    QVERIFY(Sync::isValidShareName(QStringLiteral("共享")));
+    QVERIFY(!Sync::isValidShareName(QString()));
+    QVERIFY(!Sync::isValidShareName(QStringLiteral("a\\b")));
+    QVERIFY(!Sync::isValidShareName(QStringLiteral("a:b")));
+    QVERIFY(!Sync::isValidShareName(QStringLiteral(" SyncHub")));
+    QVERIFY(!Sync::isValidShareName(QString(81, QLatin1Char('x'))));
+}
+
+void TestSync::suggestShareNameRules()
+{
+    QCOMPARE(Sync::suggestShareName(QStringLiteral("E:\\SyncHub")), QStringLiteral("SyncHub"));
+    QCOMPARE(Sync::suggestShareName(QStringLiteral("E:\\Sync Hub")), QStringLiteral("Sync Hub"));
+    QCOMPARE(Sync::suggestShareName(QStringLiteral("E:\\")), QStringLiteral("SyncHub"));
+}
+
+void TestSync::connectArgsBuild()
+{
+    QCOMPARE(Sync::connectArgs(QStringLiteral("\\\\host\\SyncHub"), QString(), QString()),
+             QStringList({QStringLiteral("use"), QStringLiteral("\\\\host\\SyncHub"),
+                          QStringLiteral("/persistent:yes")}));
+    QCOMPARE(Sync::connectArgs(QStringLiteral("\\\\host\\SyncHub"),
+                               QStringLiteral("host\\alice"), QStringLiteral("p w")),
+             QStringList({QStringLiteral("use"), QStringLiteral("\\\\host\\SyncHub"),
+                          QStringLiteral("/persistent:yes"),
+                          QStringLiteral("/user:host\\alice"), QStringLiteral("p w")}));
+}
+
+void TestSync::explainExitCodes()
+{
+    QVERIFY(Sync::explainExitCode(53, QStringLiteral("\\\\h\\s")).contains(QStringLiteral("445")));
+    QVERIFY(Sync::explainExitCode(1326, QStringLiteral("\\\\h\\s")).contains(QStringLiteral("用户名")));
+    QVERIFY(Sync::explainExitCode(9999, QStringLiteral("x")).contains(QStringLiteral("9999")));
+}
+
+void TestSync::probeErrorDistinguishesFailures()
+{
+    {
+        FolderTransport t{QString()};
+        QVERIFY(!t.probe());
+        QVERIFY(t.probeError().contains(QStringLiteral("未设置")));
+    }
+    {
+        QTemporaryDir root;
+        QVERIFY(root.isValid());
+        FolderTransport t(root.filePath(QStringLiteral("不存在的目录")));
+        QVERIFY(!t.probe());
+        QVERIFY(t.probeError().contains(QStringLiteral("不存在")));
+    }
+    {
+        QTemporaryDir root;
+        const QString file = root.filePath(QStringLiteral("plain.txt"));
+        QFile f(file);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write("x");
+        f.close();
+
+        FolderTransport t(file);
+        QVERIFY(!t.probe());
+        QVERIFY(t.probeError().contains(QStringLiteral("不是文件夹")));
+    }
+    {
+        QTemporaryDir root;
+        FolderTransport t(root.path());
+        QVERIFY(t.probe());
+        QVERIFY(t.probeError().isEmpty());
+    }
+}
+
+void TestSync::tlsBackendSelfCheck()
+{
+    const QStringList backends = QSslSocket::availableBackends();
+    qInfo("TLS 支持: %s | 当前后端: [%s] | 可用后端: [%s] | 版本: %s",
+          QSslSocket::supportsSsl() ? "是" : "否",
+          qUtf8Printable(QSslSocket::activeBackend()),
+          qUtf8Printable(backends.join(QStringLiteral(", "))),
+          qUtf8Printable(QSslSocket::sslLibraryVersionString()));
+
+    QVERIFY2(QSslSocket::supportsSsl(), "没有可用的 TLS 后端：直连通道无法启用");
+    QVERIFY(!backends.isEmpty());
+}
+
+void TestSync::databaseOutbox()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString dbPath = dir.path() + "/sync.db";
+
+    SyncDatabase db(QStringLiteral("test_outbox"));
+    QVERIFY(db.open(dbPath));
+    QCOMPARE(db.outboxCount(), 0);
+    QVERIFY(db.outboxItems().isEmpty());
+
+    OutboxItem a;
+    a.localPath = QStringLiteral("E:/tmp/report.pdf");
+    a.relPath   = QStringLiteral("_inbox/dev-a1b2-laptop/1760000000_report.pdf");
+    a.size      = 1024;
+    a.createdAt = 1760000000;
+    QVERIFY(db.enqueueOutbox(a));
+    QVERIFY(a.id > 0);
+
+    OutboxItem b;
+    b.localPath = QStringLiteral("E:/tmp/照片.jpg");
+    b.relPath   = QStringLiteral("_inbox/dev-a1b2-laptop/1760000001_照片.jpg");
+    b.size      = 2048;
+    b.createdAt = 1760000001;
+    QVERIFY(db.enqueueOutbox(b));
+    QCOMPARE(db.outboxCount(), 2);
+
+    // 同一 relPath 再入队 → 覆盖，不新增，且失败计数清零
+    QVERIFY(db.markOutboxFailed(a.id, QStringLiteral("连不上主机"), 1760009999));
+    QList<OutboxItem> all = db.outboxItems();
+    QCOMPARE(all.size(), 2);
+    QCOMPARE(all.at(0).attempts, 1);
+    QCOMPARE(all.at(0).lastError, QStringLiteral("连不上主机"));
+
+    OutboxItem again = a;
+    again.id            = -1;
+    again.attempts      = 0;
+    again.nextAttemptAt = 0;
+    again.size          = 4096;
+    QVERIFY(db.enqueueOutbox(again));
+    QCOMPARE(db.outboxCount(), 2);
+    QCOMPARE(again.id, a.id);                       // 覆盖后 id 稳定
+    all = db.outboxItems();
+    QCOMPARE(all.at(0).size, qint64(4096));
+    QCOMPARE(all.at(0).attempts, 0);
+    QVERIFY(all.at(0).lastError.isEmpty());
+
+    // 到点才重试：next_attempt_at 在未来的不算 due
+    QVERIFY(db.markOutboxFailed(a.id, QStringLiteral("主机未监听"), 1760000500));
+    QList<OutboxItem> due = db.dueOutbox(1760000400);
+    QCOMPARE(due.size(), 1);                        // 只剩 b
+    QCOMPARE(due.at(0).relPath, b.relPath);
+    due = db.dueOutbox(1760000600);
+    QCOMPARE(due.size(), 2);
+
+    // 发送成功即删行；手动移除同样生效
+    QVERIFY(db.markOutboxSent(a.id));
+    QCOMPARE(db.outboxCount(), 1);
+    QVERIFY(db.removeOutbox(b.id));
+    QCOMPARE(db.outboxCount(), 0);
+
+    // 重开同一份库：outbox 表存在且为空（建表幂等）
+    db.close();
+    SyncDatabase reopen(QStringLiteral("test_outbox_reopen"));
+    QVERIFY(reopen.open(dbPath));
+    QCOMPARE(reopen.outboxCount(), 0);
+    reopen.close();
 }
 
 QTEST_MAIN(TestSync)

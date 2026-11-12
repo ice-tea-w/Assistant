@@ -1,4 +1,5 @@
 #include "core/sync/SyncEngine.h"
+#include "core/sync/DeliveryNaming.h"
 #include "core/sync/PathGuard.h"
 #include "database/SyncDatabase.h"
 #include "core/Logger.h"
@@ -150,8 +151,12 @@ QHash<QString, FileState> SyncEngine::scanLocal() const
         scanDirInto(r.localPath, r.localPath, 0, one);
 
         const QString prefix = r.alias + QLatin1Char('/');
-        for (auto it = one.constBegin(); it != one.constEnd(); ++it)
-            out.insert(prefix + it.key(), it.value());
+        for (auto it = one.constBegin(); it != one.constEnd(); ++it) {
+            const QString rel = prefix + it.key();
+            if (isReservedDeliveryPath(rel))
+                continue;                  // 投递箱不是同步内容，别把它卷进三方比较
+            out.insert(rel, it.value());
+        }
     }
     return out;
 }
@@ -315,6 +320,11 @@ SyncResult SyncEngine::sync()
         // 本机没有对应的本地文件夹自然无处落地，直接略过、不计入 failed。
         const QString aliasOfPath = relPath.left(relPath.indexOf(QLatin1Char('/')));
         if (relPath.indexOf(QLatin1Char('/')) <= 0 || rootOfAlias(aliasOfPath).isEmpty())
+            continue;
+
+        // 投递箱（`_inbox/…`）走的是同一条通道但不受同步管辖：既不下回本地，
+        // 也不从本地推上去。少这一条会两台机器互相把投递文件传来传去。
+        if (isReservedDeliveryPath(relPath))
             continue;
 
         const FileState L = local.value(relPath, FileState{});

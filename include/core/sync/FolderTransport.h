@@ -26,6 +26,9 @@ public:
     QString name() const override;        // "共享目录"
     int     priority() const override;    // 10（低于直连）
     bool    probe() override;
+    /// 最近一次 probe() 失败的原因（空串 = 上次成功或还没探过）。
+    /// probe() 本身仍只返回 bool，语义不变。
+    QString probeError() const;
     QList<RemoteFileInfo> listRemote() override;
     bool    fetch(const QString &relPath, const QString &destPath) override;
     bool    push(const QString &localPath, const QString &relPath) override;
@@ -69,6 +72,7 @@ private:
 
     QString m_sharedDir;
     QString m_deviceName;
+    mutable QString m_probeError;
     mutable QString m_remoteDevice;
     mutable qint64  m_manifestUpdatedAt = 0;
     bool    m_locked = false;

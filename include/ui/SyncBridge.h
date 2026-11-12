@@ -4,14 +4,21 @@
 #include <QVariantList>
 #include <QVariantMap>
 #include <QString>
+#include <QHash>
+#include <QMutex>
 
 #include "database/SyncDatabase.h"
 #include "core/sync/SyncEngine.h"
 
 class QThread;
 class QTimer;
+class QEventLoop;
 class QFileSystemWatcher;
 class ConfigManager;
+
+namespace Sync::Net {
+struct NetPeer;
+}
 
 /// 主面板「设备同步」页的 QML↔C++ 桥梁。
 ///
@@ -35,6 +42,21 @@ class SyncBridge : public QObject
     Q_PROPERTY(QString      inboxDir      READ inboxDir      NOTIFY inboxDirChanged)
     Q_PROPERTY(bool         sending       READ sending       NOTIFY sendingChanged)
     Q_PROPERTY(QString      sendStatus    READ sendStatus    NOTIFY sendStatusChanged)
+    Q_PROPERTY(QString      shareStatus   READ shareStatus   NOTIFY shareStatusChanged)
+    Q_PROPERTY(bool         shareBusy     READ shareBusy     NOTIFY shareBusyChanged)
+    Q_PROPERTY(QString      shareAddress  READ shareAddress  NOTIFY shareAddressChanged)
+    // ---- 直连（ASYN v2）----
+    Q_PROPERTY(bool         netRunning    READ netRunning    NOTIFY netChanged)
+    Q_PROPERTY(QString      netAddress    READ netAddress    NOTIFY netChanged)
+    Q_PROPERTY(QVariantList netAddresses  READ netAddresses  NOTIFY netChanged)
+    Q_PROPERTY(QString      netStatus     READ netStatus     NOTIFY netChanged)
+    Q_PROPERTY(QString      pairCode      READ pairCode      NOTIFY pairChanged)
+    Q_PROPERTY(bool         pairActive    READ pairActive    NOTIFY pairChanged)
+    Q_PROPERTY(QVariantList pairedDevices READ pairedDevices NOTIFY pairedDevicesChanged)
+    Q_PROPERTY(bool         peerPaired    READ peerPaired    NOTIFY netChanged)
+    // ---- 投递（单文件直发 + 待发队列）----
+    Q_PROPERTY(int          outboxCount   READ outboxCount   NOTIFY outboxChanged)
+    Q_PROPERTY(QVariantList outboxList    READ outboxList    NOTIFY outboxChanged)
 
 public:
     explicit SyncBridge(QObject *parent = nullptr);
@@ -59,6 +81,20 @@ public:
     QString      inboxDir() const;
     bool         sending() const;
     QString      sendStatus() const;
+    QString      shareStatus() const;
+    bool         shareBusy() const;
+    QString      shareAddress() const;
+
+    bool         netRunning() const;
+    QString      netAddress() const;
+    QVariantList netAddresses() const;
+    QString      netStatus() const;
+    QString      pairCode() const;
+    bool         pairActive() const;
+    QVariantList pairedDevices() const;
+    bool         peerPaired() const;
+    int          outboxCount() const;
+    QVariantList outboxList() const;
 
     Q_INVOKABLE void addSharedDir(const QString &path);
     Q_INVOKABLE void removeSharedDir(const QString &path);
@@ -93,6 +129,48 @@ public:
     /// 设置本机设备名（写进清单，也是投递文件名前缀）
     Q_INVOKABLE void setDeviceName(const QString &name);
 
+    /// 把本机目录开成共享：UAC 提权跑 net share + icacls，
+    /// 成功后 shareAddress 给出 \\主机名\共享名（复制给对方用）
+    Q_INVOKABLE void shareFolder(const QString &localPath, const QString &shareName,
+                                 const QString &user);
+    /// 连到对方的共享：net use，成功后把它设成本机共享目录
+    Q_INVOKABLE void connectShared(const QString &uncPath, const QString &user,
+                                   const QString &password);
+    /// 按目录名推断共享名（前端预填）
+    Q_INVOKABLE QString shareNameSuggestion(const QString &localPath) const;
+
+    /// 在本机同步端口上启动 ASYN 服务端，对外提供当前共享目录
+    Q_INVOKABLE void startNetServer();
+    /// 放行直连端口的入站防火墙规则（会弹 UAC）
+    Q_INVOKABLE void openFirewallPort();
+    /// 直连前置条件自检：监听/地址/防火墙/IPv6/配对状态，返回多行文本
+    Q_INVOKABLE QString selfCheck();
+    Q_INVOKABLE void stopNetServer();
+    /// 打开配对窗口（5 分钟、一次性），码通过 pairCode 属性给出
+    Q_INVOKABLE void startPairing();
+    Q_INVOKABLE void stopPairing();
+    /// 连接方：用主机地址（host:port）与 6 位码配对，成功后落盘凭据
+    Q_INVOKABLE void pairWithPeer(const QString &address, const QString &code);
+    /// 连接方：忘掉已配对的主机
+    Q_INVOKABLE void unpairPeer();
+    /// 主机：解除某台已配对设备的授权
+    Q_INVOKABLE void forgetDevice(const QString &deviceId);
+
+    /// 把文件放进待发队列（队友不在线也不丢），随后自动尝试发送
+    Q_INVOKABLE void queueSend(const QStringList &paths);
+    /// 立刻把队列里到点的条目发出去
+    Q_INVOKABLE void sendQueuedNow();
+    /// 从队列里删掉一条（放弃发送）
+    Q_INVOKABLE void removeQueuedItem(qint64 id);
+    /// 从主机的 `_inbox/` 领取投递到本机收件箱
+    Q_INVOKABLE void fetchIncoming();
+    /// 重新读一遍队列（供 QML 手动刷新）
+    Q_INVOKABLE void refreshOutbox();
+    /// 换收件箱目录（空串 = 恢复默认「文档/Assistant 收件箱」）
+    Q_INVOKABLE void setInboxDir(const QString &path);
+    /// 恢复默认收件箱
+    Q_INVOKABLE void resetInboxDir();
+
 signals:
     void statusTextChanged();
     void busyChanged();
@@ -107,10 +185,23 @@ signals:
     void inboxDirChanged();
     void sendingChanged();
     void sendStatusChanged();
+    void shareStatusChanged();
+    void shareBusyChanged();
+    void shareAddressChanged();
+    void netChanged();
+    void pairChanged();
+    void pairedDevicesChanged();
+    /// 连接方配对结果（QML 用来弹提示）
+    void pairingFinished(bool ok, const QString &message);
     void fileHandled(const QString &relPath, const QString &action);
     void syncFinished(int uploaded, int downloaded, int conflicts);
     /// 从投递区领取了文件（count 个，落在 inboxDir）
     void filesReceived(int count, const QString &inboxDir);
+    /// 一键共享/一键连接的结果（QML 用来弹提示）
+    void shareOpFinished(bool ok, const QString &message);
+    void outboxChanged();
+    /// 一轮发送的结果：成功几个、失败几个
+    void deliveryFinished(int sent, int failed);
 
 private:
     void onEngineProgress(int percent, const QString &file);
@@ -127,11 +218,26 @@ private:
     QString inboxPath() const;
     QString deliveryDir() const;
     void setSendStatus(const QString &text);
+    void setSending(bool b);
+    void setShareStatus(const QString &text);
     /// "<别名>/相对路径" → 本地绝对路径；别名不认识时返回空串
     QString absForRel(const QString &relPath) const;
     void setStatus(const QString &text);
     void setBusy(bool b);
     void setProgress(int p);
+    void setNetStatus(const QString &text);
+    /// 所有可用 IPv4 监听地址（含网卡名），每项 {name, address}
+    QVariantList addressCandidates(quint16 port) const;
+    void refreshPairedDevices();
+    /// 身份目录：sync.db 同级的 identity/
+    QString identityDir() const;
+    /// 本机稳定标识，首次调用时生成并写进配置
+    QString ensureDeviceId();
+    bool    hasPeerCredentials() const;
+    /// 按配置拼出直连对端；凭据不全时返回 false
+    bool    peerForDelivery(Sync::Net::NetPeer *peer) const;
+    /// 投递落点：`_inbox/<设备名>-<deviceId 前 8 位>/<时间戳>_<原名>`
+    QString deliveryRelPath(const QString &localPath) const;
 
     QString       m_dbPath;
     ConfigManager *m_config = nullptr;
@@ -157,6 +263,28 @@ private:
     QString      m_inboxDir;
     bool         m_sending = false;
     QString      m_sendStatus;
+    QString      m_shareStatus;
+    bool         m_shareBusy = false;
+    QString      m_shareAddress;
+
+    // ---- 直连 ----
+    QThread     *m_netThread = nullptr;
+    QObject     *m_netServer = nullptr;   // Sync::Net::SyncServer*，仅当跨线程 context 用
+    QEventLoop  *m_netLoop = nullptr;
+    QMutex       m_netMutex;              // 保护 m_netSecrets / m_netLoop
+    QHash<QString, QByteArray> m_netSecrets;
+    bool         m_netRunning = false;
+    QString      m_netAddress;
+    QVariantList m_netAddresses;
+    QString      m_netStatus;
+    QString      m_pairCode;
+    bool         m_pairActive = false;
+    QVariantList m_pairedDevices;
+
+    // ---- 投递 ----
+    QVariantList m_outboxList;
+    bool         m_flushBusy = false;
+    bool         m_fetchBusy = false;
 
     QFileSystemWatcher *m_watcher = nullptr;
     QTimer *m_inboxTimer = nullptr;

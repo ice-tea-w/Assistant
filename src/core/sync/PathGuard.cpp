@@ -106,4 +106,41 @@ QString resolveUnder(const QString &root, const QString &relPath)
     return canonicalFull;
 }
 
+QString ensureDirUnder(const QString &root, const QString &relDir)
+{
+    if (!isSafeRelativePath(relDir))
+        return QString();
+
+    const QString canonicalRoot = QFileInfo(QDir(root).absolutePath()).canonicalFilePath();
+    if (canonicalRoot.isEmpty())
+        return QString();
+
+    const QString normalized = QString(relDir).replace(QLatin1Char('\\'), QLatin1Char('/'));
+    const QString rootWithSep = canonicalRoot.endsWith(QLatin1Char('/'))
+                                    ? canonicalRoot
+                                    : canonicalRoot + QLatin1Char('/');
+
+    QString current = canonicalRoot;
+    for (const QString &seg : normalized.split(QLatin1Char('/'), Qt::SkipEmptyParts)) {
+        const QString next = QDir(current).absoluteFilePath(seg);
+        const QFileInfo info(next);
+
+        if (info.exists() && !info.isDir())
+            return QString();
+
+        if (!info.exists() && !QDir().mkpath(next))
+            return QString();
+
+        const QString canonicalNext = QFileInfo(next).canonicalFilePath();
+        if (canonicalNext.isEmpty())
+            return QString();
+        if (canonicalNext != canonicalRoot && !canonicalNext.startsWith(rootWithSep, Qt::CaseInsensitive))
+            return QString();
+
+        current = canonicalNext;
+    }
+
+    return current;
+}
+
 } // namespace Sync::PathGuard

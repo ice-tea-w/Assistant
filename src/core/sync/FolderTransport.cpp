@@ -71,22 +71,52 @@ bool FolderTransport::hasManifest() const
 
 bool FolderTransport::probe()
 {
-    if (m_sharedDir.isEmpty())
+    m_probeError.clear();
+
+    if (m_sharedDir.isEmpty()) {
+        m_probeError = QStringLiteral("未设置共享目录");
         return false;
-    if (!QDir(m_sharedDir).exists())
+    }
+
+    const QFileInfo dirInfo(m_sharedDir);
+    if (!dirInfo.exists()) {
+        m_probeError = QStringLiteral(
+                           "共享目录不存在或访问不到：%1。"
+                           "网络路径请确认对方已开机、主机名拼写正确、防火墙放行 TCP 445，"
+                           "并且两台机器在同一网段（或已 VPN 组网）")
+                           .arg(QDir::toNativeSeparators(m_sharedDir));
         return false;
-    if (!QDir().mkpath(metaDir()))
+    }
+    if (!dirInfo.isDir()) {
+        m_probeError = QStringLiteral("填的不是文件夹：%1")
+                           .arg(QDir::toNativeSeparators(m_sharedDir));
         return false;
+    }
+
+    if (!QDir().mkpath(metaDir())) {
+        m_probeError = QStringLiteral("能访问 %1，但无法在其中创建 .sync 子目录（只读或权限不足）")
+                           .arg(QDir::toNativeSeparators(m_sharedDir));
+        return false;
+    }
 
     // 真的写一次：网盘/只读目录可能"存在但不可写"
     const QString probeFile = metaDir() + QStringLiteral("/.write-probe");
     QFile f(probeFile);
-    if (!f.open(QIODevice::WriteOnly))
+    if (!f.open(QIODevice::WriteOnly)) {
+        m_probeError = QStringLiteral("能进入 %1，但写不进 .sync（%2）。"
+                                      "共享权限与 NTFS 权限都要给到「修改」，任一拒绝就等于拒绝")
+                           .arg(QDir::toNativeSeparators(metaDir()), f.errorString());
         return false;
+    }
     f.write("ok");
     f.close();
     QFile::remove(probeFile);
     return true;
+}
+
+QString FolderTransport::probeError() const
+{
+    return m_probeError;
 }
 
 QString FolderTransport::sharedPathFor(const QString &relPath) const

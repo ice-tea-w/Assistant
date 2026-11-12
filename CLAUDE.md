@@ -78,13 +78,32 @@ cmake --build build --config Debug
 **设备同步（M2）· 渠道目录通道**（`docs/architecture/设备同步功能-设计文档.md`）：
 - [x] `ITransport` 抽象 + `FolderTransport`（投递区 = 共享文件夹，**新增第三方依赖 0**）
 - [x] `SyncEngine` 三方差集（本地现状 / 上次基线 / 对端清单 → 唯一动作）+ `ConflictResolver` 冲突副本
-- [x] `PathGuard`（穿越 / 保留名 / junction 解引用后复核）+ `SyncDatabase`（`sync.db`：devices / sync_state / conflicts / received）
+- [x] `PathGuard`（穿越 / 保留名 / junction 解引用后复核）+ `SyncDatabase`（`sync.db`：sync_state / conflicts / received / devices）
 - [x] 主面板「设备同步」页 + `SyncBridge`（工作线程跑引擎，独立 DB 连接）
 - [x] 快捷同步与投递区：拖拽 → 共享目录 `_投递/` → 对端轮询领取到收件箱 + 托盘通知
 - [x] 多本地文件夹（`SyncRoot{localPath, alias}`）、同步锁、UNC 共享目录
 - [x] QTest 用例（`tests/test_sync.cpp`，2026-10 时为 51 个）
 - [ ] 冲突列表 UI、多文件夹版界面未真机走查
-- [ ] 直连通道 `LanTransport` + 帧协议：**只有设计，没有代码**（分支内 `grep QTcpSocket` 零命中）
+- [x] 直连通道（`设备同步-公网直连设计.md`，N0–N2）：`SyncFrame`（ASYN v2 编解码）+ `PeerAddress`、
+      `Identity`（CAPI RSA-2048 自签）+ `DeviceAuth`（挑战应答 HMAC）、`SyncServer`（List 分页 / Get / Put / Delete）
+      + `NetTransport`（实现 `ITransport`，阻塞式；`SyncEngine` 一行未改）；回环 mTLS 与引擎真同步均有用例
+- [x] 直连 N2 尾巴前两项：按 IP 5 次失败锁 60 s（`SyncServer::setAuthLockPolicy` 可调，测试钩子）、
+      `.assistant-sync/index.json`（size+mtime 失效、2 秒合并写盘、`close()` 兜底刷）
+- [x] 6 位码配对接进应用：`SyncBridge` 起 `SyncServer`（独立线程 + 事件循环）、口令落 `devices` 表、
+      同步页「直连」卡片（监听 / 生成配对码 / 本机地址 / 设备列表 / 对端配对）；有凭据时 `syncNow()` 挂 `NetTransport`
+- [x] 直连是主路径（2026-11-09，方案 A）：`SyncServer` 支持**多根**（`ServedRoot{localPath, alias}`，
+      单根空别名兼容旧形态；relPath = `<别名>/<相对路径>`），`startNetServer()` 直接把「同步范围」的文件夹开放出去；
+      `syncNow()` 不再挂 `FolderTransport`（只剩 `NetTransport`），`refreshChannel()` 改为「直连/未配对」；
+      同步页删掉整张共享目录卡片（`net share` / `net use` / UNC 输入 / 检查共享 / 别名对齐），直连卡片移到页面最上方，
+      收件箱行暂时隐藏（仍绑共享目录的 `_投递/`，等 B 阶段直连投递）
+- [x] 单文件直发（2026-11-12，B 阶段前半）：`sync.db` 加 `outbox` 表（离线排队 + 退避重试）；
+      投递路径固定 `_inbox/<设备名>-<deviceId 前 8 位>/<时间戳>_<原名>`；服务端 `splitRel()` 把首段
+      `_inbox` 映射到第一个根（不要求别名）；`Sync::isReservedDeliveryPath()` 让引擎两侧跳过投递箱
+      （否则投递文件会被当同步内容来回传）；桥新增 `queueSend` / `sendQueuedNow` / `fetchIncoming` /
+      `removeQueuedItem`，页面「发送文件」卡从隐藏改常显（选择文件 / 立即发送 / 收取投递 / 收件箱）
+- [ ] 直连剩余：`LocalDirTransport`（host 本地根与共享根对称）、直连卡片真机肉眼走查、两台机器真跑、
+      双实例投递走查（停主机后发送 → 队列保留 → 重开主机自动补发）、C 阶段删 `FolderTransport` /
+      `DeliveryNaming`（仅剩 `isReservedDeliveryPath` 在用时不要一起删）/ SMB 命令与用例
 
 Phase 3 剩余（收尾中，写在这里便于续接）：
 - [x] 热键自定义（设置页捕获组合键 → `PanelBridge::applyHotkey` → `HotkeyManager::reRegister`，失败自动回滚原热键）
@@ -263,7 +282,7 @@ Phase 3 剩余（收尾中，写在这里便于续接）：
 | FolderTransport | `include/core/sync/FolderTransport.h`, `src/core/sync/FolderTransport.cpp` | 共享目录通道（异地靠网盘搬运） |
 | ConflictResolver | `include/core/sync/ConflictResolver.h` | `decide(L,S,R)` 纯函数判定表 + 冲突副本命名 |
 | PathGuard | `include/core/sync/PathGuard.h` | 相对路径安全校验 + junction 解引用后复核前缀 |
-| SyncDatabase | `include/database/SyncDatabase.h` | `sync.db`（独立连接 `sync`）：devices / sync_state / conflicts / received |
+| SyncDatabase | `include/database/SyncDatabase.h` | `sync.db`（独立连接 `sync`）：sync_state / conflicts / received / devices |
 | FileSystemEvent | `include/contract/FileSystemEvent.h` | C2 契约：Added/Removed/Renamed/Modified/Overflow |
 | FileWatcher | `include/core/FileWatcher.h`, `src/core/FileWatcher.cpp` | 每根一个 OVERLAPPED 句柄；`start()` 即生效；按路径合并去重；溢出显式上报 |
 | FileEventDispatcher | `include/core/FileEventDispatcher.h` | 极轻量订阅表（不是全局 EventBus）；`publish` 在调用线程执行回调 |
@@ -298,8 +317,11 @@ Phase 3 剩余（收尾中，写在这里便于续接）：
   **排期未变**，实现前须先验证 Qt TLS 后端可用性；
   `四模块完整架构.md` 是**架构基线 v1.0**：分工、契约 C1–C4、线程与存储、启动顺序、四条端到端时序、
   依赖矩阵与不变量清单（决策仍以提案为准，本文只答"是什么/谁负责/怎么接/现状到哪"）；
-  `设备同步-公网直连设计.md` 是**直连通道**的设计（ASYN v2 + TLS（1.2+，优先 1.3）+ 指纹配对；
-  公网 IPv4 端口映射 / IPv6 直连；**不做中继**，CGNAT 环境明确不支持）；
+  `设备同步-公网直连设计.md` 是**直连通道**的设计（状态：**N0/N1 完成、N2 回环打通**，ASYN v2 帧编解码、
+  身份模块已落地；TLS 1.2+（优先 1.3）走 Windows Schannel，**不需要 OpenSSL**；认证是**单向 TLS
+  按指纹固定 host + 应用层挑战应答 HMAC**（Schannel 不支持客户端证书，故不做双向 mTLS），
+  证书为 CAPI 生成的 RSA-2048；首配 SAS 短窗配对；公网 IPv4 端口映射 / IPv6 直连；
+  **不做中继**，CGNAT 环境明确不支持；§13 列了实施前必须先定的 P0 缺口）；
   `四分支整合方案.md` 是三条支线（plugin-market / qianju / file_guard）合并进 main 的顺序与裁剪清单；
   `分支整合流程.md` 是**长期整合规则**（有分支更新时先跑 `tools/branch-status.ps1` 对表，再按
   已合并 / 可合并 / 冲突 / 历史被改写四种状态分派；已推送分支禁止 rebase/force-push）
