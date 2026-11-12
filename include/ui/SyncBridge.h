@@ -5,6 +5,8 @@
 #include <QVariantMap>
 #include <QString>
 #include <QHash>
+#include <QPair>
+#include <QList>
 #include <QMutex>
 
 #include "database/SyncDatabase.h"
@@ -215,6 +217,12 @@ private:
     void queueSync();
     /// 按当前同步根重建 watcher（递归注册目录，上限 1000 个）
     void startWatchers();
+    /// legacy 共享目录通道的扫描：UNC 的 stat 在共享不可达时能挂 40 秒以上，
+    /// 所以整段（manifest + `_投递/` 目录遍历）都跑在工作线程，**不在 GUI 线程**
+    void scanSharedDirAsync();
+    /// 扫描结果回到 GUI 线程：清单变化 → 去抖同步；新文件 → 领取到收件箱
+    void onSharedDirScanDone(qint64 manifestMtime, qint64 manifestSize,
+                             const QList<QPair<QString, QString>> &fresh);
     QString inboxPath() const;
     QString deliveryDir() const;
     void setSendStatus(const QString &text);
@@ -233,6 +241,10 @@ private:
     QString identityDir() const;
     /// 本机稳定标识，首次调用时生成并写进配置
     QString ensureDeviceId();
+    /// 停止服务端的实现；waitForThread=true 只给析构用（GUI 交互路径一律不等）
+    void stopNetServerImpl(bool waitForThread);
+    /// 析构专用：同步等线程退出
+    void stopNetServerBlocking();
     bool    hasPeerCredentials() const;
     /// 按配置拼出直连对端；凭据不全时返回 false
     bool    peerForDelivery(Sync::Net::NetPeer *peer) const;
@@ -291,6 +303,8 @@ private:
     QTimer *m_debounce = nullptr;
     QThread *m_receiveThread = nullptr;
     bool     m_pendingSync = false;
+    /// 共享目录扫描正在进行；上一次还没回来就不再派新的（不可达时它会挂很久）
+    bool     m_shareScanRunning = false;
     qint64   m_manifestMtime = 0;
     qint64   m_manifestSize = 0;
 };

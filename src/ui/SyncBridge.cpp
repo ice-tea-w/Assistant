@@ -57,8 +57,9 @@ SyncBridge::SyncBridge(QObject *parent)
 
 SyncBridge::~SyncBridge()
 {
+    // 析构必须同步收掉服务端线程：这里不是 GUI 交互路径，等几秒可以接受
     if (m_netThread)
-        stopNetServer();
+        stopNetServerBlocking();
     if (m_timer)
         m_timer->stop();
     if (m_inboxTimer)
@@ -854,6 +855,20 @@ QString SyncBridge::selfCheck()
 
 void SyncBridge::stopNetServer()
 {
+    // QML「停止监听」走这里：**不能等线程**。原来 wait(5000) 会把 GUI 冻最多 5 秒，
+    // 收尾改由线程自己的 finished 信号完成（见 startNetServer 里的 connect）。
+    if (m_netThread && m_netThread->isRunning())
+        Logger::get().info("SyncBridge/直连: 请求停止监听（不阻塞 GUI）");
+    stopNetServerImpl(/*waitForThread=*/false);
+}
+
+void SyncBridge::stopNetServerBlocking()
+{
+    stopNetServerImpl(/*waitForThread=*/true);
+}
+
+void SyncBridge::stopNetServerImpl(bool waitForThread)
+{
     QObject *context = nullptr;
     {
         QMutexLocker locker(&m_netMutex);
@@ -867,7 +882,7 @@ void SyncBridge::stopNetServer()
                 m_netLoop->quit();
         }, Qt::QueuedConnection);
     }
-    if (m_netThread && !m_netThread->wait(5000))
+    if (waitForThread && m_netThread && !m_netThread->wait(5000))
         Logger::get().warn("SyncBridge: 直连服务端未在 5 秒内退出");
 
     m_netRunning = false;
@@ -1835,9 +1850,9 @@ void SyncBridge::startWatchers()
             break;
     }
 
-    const QString meta = QDir::cleanPath(m_sharedDir + QStringLiteral("/.sync"));
-    if (!m_sharedDir.isEmpty() && QDir(meta).exists())
-        m_watcher->addPath(meta);
+    // 共享目录（legacy 通道）不注册 watcher：QFileSystemWatcher::addPath 对 UNC
+    // 是同步的，共享不可达时会和下面的轮询一样把 GUI 线程拖住几十秒。
+    // 对端清单的变化由 scanSharedDirAsync() 每 3 秒兜底检查（在工作线程里）。
 
     if (truncated)
         Logger::get().warn("SyncBridge: 监视目录超过 1000 个，超出的子目录只靠定时兜底");
@@ -1852,67 +1867,98 @@ void SyncBridge::pollInbox()
         sendQueuedNow();
     }
 
-    if (m_sharedDir.isEmpty())
+    // 1) legacy 共享目录通道：**这个函数里不允许出现任何 UNC 访问**。
+    //    2026-11-12 实测：对端不可达时一次 QFileInfo::exists() 要 42 秒，
+    //    而这里是 3 秒一次的 GUI 线程定时器 —— 界面就跟着整段冻住。
+    scanSharedDirAsync();
+}
+
+void SyncBridge::scanSharedDirAsync()
+{
+    if (m_sharedDir.isEmpty() || !m_db.isOpen() || m_receiveThread || m_sending)
+        return;
+    // 上一次扫描还没回来（对端不可达时它会挂几十秒）：不重复派活，更不去等它
+    if (m_shareScanRunning)
         return;
 
-    // 1) 对端清单变化 → 去抖同步（watcher 在 UNC 上不一定可靠，这里兜底）
-    const QString manifest = QDir::cleanPath(m_sharedDir + QStringLiteral("/.sync/manifest.json"));
-    const QFileInfo mf(manifest);
-    if (mf.exists()) {
-        const qint64 mtime = mf.lastModified().toMSecsSinceEpoch();
-        const qint64 size  = mf.size();
-        if (m_manifestMtime > 0 && (mtime != m_manifestMtime || size != m_manifestSize))
-            queueSync();
-        m_manifestMtime = mtime;
-        m_manifestSize  = size;
-    }
+    m_shareScanRunning = true;
 
-    // 2) 领取 _投递/ 里的新文件：按设备分子目录（<_投递>/<设备>/<时间戳>_<原名>），
-    //    根下平铺的旧格式文件也顺手兼容。
-    if (!m_db.isOpen() || m_receiveThread || m_sending)
-        return;
-
-    const QString root = deliveryDir();
-    if (root.isEmpty() || !QDir(root).exists())
-        return;
-
+    const QString shared  = m_sharedDir;
+    const QString root    = deliveryDir();
     const QSet<QString> known = m_db.receivedPaths();
-    const qint64 now = QDateTime::currentSecsSinceEpoch();
     const QString selfDir = Sync::sanitizeDeviceName(m_deviceName);
+    const qint64 now = QDateTime::currentSecsSinceEpoch();
 
-    struct Incoming { QString key; QString path; };
-    QList<Incoming> fresh;
-    const auto consider = [&](const QString &key, const QFileInfo &fi) {
-        if (fresh.size() >= 20)
-            return;
-        if (fi.fileName().endsWith(QStringLiteral(".part"), Qt::CaseInsensitive))
-            return;
-        if (known.contains(key))
-            return;
-        // 太新的文件可能对方还在写，下一轮再来
-        if (fi.lastModified().toSecsSinceEpoch() > now - 2)
-            return;
-        fresh.append({key, fi.absoluteFilePath()});
-    };
+    auto *worker = QThread::create([this, shared, root, known, selfDir, now] {
+        qint64 mtime = 0;
+        qint64 size  = 0;
+        QList<QPair<QString, QString>> fresh;   // {key, 绝对路径}
 
-    const QFileInfoList senders = QDir(root).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot,
-                                                          QDir::Name);
-    for (const QFileInfo &sender : senders) {
-        if (sender.fileName() == selfDir)
-            continue;   // 自己投的目录，不领回本地
-        const QFileInfoList files = QDir(sender.filePath()).entryInfoList(QDir::Files, QDir::Name);
-        for (const QFileInfo &fi : files)
-            consider(sender.fileName() + QLatin1Char('/') + fi.fileName(), fi);
+        // 对端清单：变了就回主线程去抖同步
+        const QFileInfo mf(QDir::cleanPath(shared + QStringLiteral("/.sync/manifest.json")));
+        if (mf.exists()) {
+            mtime = mf.lastModified().toMSecsSinceEpoch();
+            size  = mf.size();
+        }
+
+        // 领取 `_投递/` 里的新文件：按设备分子目录（<_投递>/<设备>/<时间戳>_<原名>），
+        // 根下平铺的旧格式也顺手兼容。
+        if (QDir(root).exists()) {
+            const auto consider = [&](const QString &key, const QFileInfo &fi) {
+                if (fresh.size() >= 20)
+                    return;
+                if (fi.fileName().endsWith(QStringLiteral(".part"), Qt::CaseInsensitive))
+                    return;
+                if (known.contains(key))
+                    return;
+                // 太新的文件可能对方还在写，下一轮再来
+                if (fi.lastModified().toSecsSinceEpoch() > now - 2)
+                    return;
+                fresh.append({key, fi.absoluteFilePath()});
+            };
+
+            const QFileInfoList senders =
+                QDir(root).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
+            for (const QFileInfo &sender : senders) {
+                if (sender.fileName() == selfDir)
+                    continue;   // 自己投的目录，不领回本地
+                const QFileInfoList files =
+                    QDir(sender.filePath()).entryInfoList(QDir::Files, QDir::Name);
+                for (const QFileInfo &fi : files)
+                    consider(sender.fileName() + QLatin1Char('/') + fi.fileName(), fi);
+            }
+
+            // 旧格式：文件直接平铺在 `_投递/` 根下，靠文件名前缀区分发送者
+            const QFileInfoList legacy = QDir(root).entryInfoList(QDir::Files, QDir::Name);
+            for (const QFileInfo &fi : legacy) {
+                if (Sync::isOwnDelivery(fi.fileName(), m_deviceName))
+                    continue;
+                consider(fi.fileName(), fi);
+            }
+        }
+
+        QMetaObject::invokeMethod(this, [this, mtime, size, fresh] {
+            m_shareScanRunning = false;
+            onSharedDirScanDone(mtime, size, fresh);
+        }, Qt::QueuedConnection);
+    });
+
+    connect(worker, &QThread::finished, this, [worker] { worker->deleteLater(); });
+    worker->start();
+}
+
+void SyncBridge::onSharedDirScanDone(qint64 manifestMtime, qint64 manifestSize,
+                                     const QList<QPair<QString, QString>> &fresh)
+{
+    if (manifestMtime > 0) {
+        if (m_manifestMtime > 0
+            && (manifestMtime != m_manifestMtime || manifestSize != m_manifestSize))
+            queueSync();
+        m_manifestMtime = manifestMtime;
+        m_manifestSize  = manifestSize;
     }
 
-    // 旧格式：文件直接平铺在 _投递/ 根下，靠文件名前缀区分发送者
-    const QFileInfoList legacy = QDir(root).entryInfoList(QDir::Files, QDir::Name);
-    for (const QFileInfo &fi : legacy) {
-        if (Sync::isOwnDelivery(fi.fileName(), m_deviceName))
-            continue;
-        consider(fi.fileName(), fi);
-    }
-    if (fresh.isEmpty())
+    if (fresh.isEmpty() || m_receiveThread || m_sending)
         return;
 
     const QString inbox  = inboxPath();
@@ -1923,11 +1969,11 @@ void SyncBridge::pollInbox()
         int got = 0;
         if (db.open(dbPath)) {
             QDir().mkpath(inbox);
-            for (const Incoming &it : fresh) {
-                const QString landed = Sync::placeIncoming(it.path, inbox);
+            for (const auto &it : fresh) {
+                const QString landed = Sync::placeIncoming(it.second, inbox);
                 if (landed.isEmpty())
                     continue;
-                db.markReceived(it.key, hashFile(landed));
+                db.markReceived(it.first, hashFile(landed));
                 ++got;
             }
             db.close();
