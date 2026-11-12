@@ -308,6 +308,10 @@ Phase 3 剩余（收尾中，写在这里便于续接）：
 - `qt-headers-大小写错误.md`
 - `vs2022-build-tools-安装.md`
 - `qt-nosymlinks-挡不住junction.md`（`QDir::NoSymLinks` 挡不住 Windows junction；修复点选错层次会安静地什么都不做）
+- **UNC / 网络路径的 `stat` 绝不能留在 GUI 线程**：对端不可达时一次
+  `QFileInfo::exists()` 实测 **42 秒**（2026-11-12 主界面随机卡死的根因，见
+  `docs/devlog/2026-11-12.md` 的「修主界面卡顿」一节）。共享目录轮询、watcher 注册
+  一律走工作线程；`QFileSystemWatcher::addPath` 对 UNC 同样是同步的。
 
 ## 文档结构
 
