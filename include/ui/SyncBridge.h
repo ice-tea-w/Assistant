@@ -44,6 +44,7 @@ class SyncBridge : public QObject
     // ---- 直连（ASYN v2）----
     Q_PROPERTY(bool         netRunning    READ netRunning    NOTIFY netChanged)
     Q_PROPERTY(QString      netAddress    READ netAddress    NOTIFY netChanged)
+    Q_PROPERTY(QVariantList netAddresses  READ netAddresses  NOTIFY netChanged)
     Q_PROPERTY(QString      netStatus     READ netStatus     NOTIFY netChanged)
     Q_PROPERTY(QString      pairCode      READ pairCode      NOTIFY pairChanged)
     Q_PROPERTY(bool         pairActive    READ pairActive    NOTIFY pairChanged)
@@ -79,6 +80,7 @@ public:
 
     bool         netRunning() const;
     QString      netAddress() const;
+    QVariantList netAddresses() const;
     QString      netStatus() const;
     QString      pairCode() const;
     bool         pairActive() const;
@@ -192,6 +194,8 @@ private:
     void setBusy(bool b);
     void setProgress(int p);
     void setNetStatus(const QString &text);
+    /// 所有可用 IPv4 监听地址（含网卡名），每项 {name, address}
+    QVariantList addressCandidates(quint16 port) const;
     void refreshPairedDevices();
     /// 身份目录：sync.db 同级的 identity/
     QString identityDir() const;
@@ -235,6 +239,7 @@ private:
     QHash<QString, QByteArray> m_netSecrets;
     bool         m_netRunning = false;
     QString      m_netAddress;
+    QVariantList m_netAddresses;
     QString      m_netStatus;
     QString      m_pairCode;
     bool         m_pairActive = false;

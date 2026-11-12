@@ -225,6 +225,40 @@ QString SyncBridge::localIpv4() const
     return QString();
 }
 
+QVariantList SyncBridge::addressCandidates(quint16 port) const
+{
+    QVariantList out;
+    const auto interfaces = QNetworkInterface::allInterfaces();
+    for (const QNetworkInterface &iface : interfaces) {
+        const auto flags = iface.flags();
+        if (!(flags & QNetworkInterface::IsUp) || !(flags & QNetworkInterface::IsRunning)
+            || (flags & QNetworkInterface::IsLoopBack))
+            continue;
+        for (const QNetworkAddressEntry &entry : iface.addressEntries()) {
+            const QHostAddress addr = entry.ip();
+            if (addr.protocol() != QAbstractSocket::IPv4Protocol)
+                continue;
+            if (addr.isLoopback() || addr.isLinkLocal())
+                continue;
+            const QString address = QStringLiteral("%1:%2").arg(addr.toString()).arg(port);
+            bool duplicate = false;
+            for (const QVariant &existing : out) {
+                if (existing.toMap().value(QStringLiteral("address")).toString() == address) {
+                    duplicate = true;
+                    break;
+                }
+            }
+            if (duplicate)
+                continue;
+            QVariantMap row;
+            row.insert(QStringLiteral("name"), iface.humanReadableName());
+            row.insert(QStringLiteral("address"), address);
+            out.append(row);
+        }
+    }
+    return out;
+}
+
 void SyncBridge::copyToClipboard(const QString &text)
 {
     QGuiApplication::clipboard()->setText(text);
@@ -475,6 +509,7 @@ void SyncBridge::openConflictFolder(int index)
 
 bool SyncBridge::netRunning() const { return m_netRunning; }
 QString SyncBridge::netAddress() const { return m_netAddress; }
+QVariantList SyncBridge::netAddresses() const { return m_netAddresses; }
 QString SyncBridge::netStatus() const { return m_netStatus; }
 QString SyncBridge::pairCode() const { return m_pairCode; }
 bool SyncBridge::pairActive() const { return m_pairActive; }
@@ -629,6 +664,7 @@ void SyncBridge::startNetServer()
         const quint16 actualPort = server->port();
         const QString fingerprint = identity.fingerprint;
         QMetaObject::invokeMethod(this, [this, actualPort, fingerprint] {
+            m_netAddresses = addressCandidates(actualPort);
             const QString host = localIpv4().isEmpty() ? m_deviceName : localIpv4();
             m_netAddress = QStringLiteral("%1:%2").arg(host).arg(actualPort);
             setNetStatus(QStringLiteral("正在监听 %1 · 本机指纹 %2")
@@ -653,6 +689,7 @@ void SyncBridge::startNetServer()
             m_netThread = nullptr;
             m_netRunning = false;
             m_netAddress.clear();
+            m_netAddresses.clear();
             emit netChanged();
         }
         thread->deleteLater();

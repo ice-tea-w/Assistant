@@ -116,29 +116,46 @@ Rectangle {
                               + "只传差异、双向生效，文件直接走这条 TLS 连接，不经过任何中转。"
                     }
 
-                    RowLayout {
+                    ColumnLayout {
                         Layout.fillWidth: true
-                        spacing: 8
+                        spacing: 2
 
                         Text {
-                            text: "本机地址"
+                            text: sync.netRunning
+                                  ? "本机地址（对方填哪个都行，选两边都通的那个）"
+                                  : "本机地址：未监听（点「开始监听」）"
                             color: syncPage.mutedColor
                             font.pixelSize: Style.captionSize
-                            Layout.preferredWidth: 90
-                        }
-                        Text {
+                            wrapMode: Text.WordWrap
                             Layout.fillWidth: true
-                            elide: Text.ElideRight
-                            color: sync.netRunning ? syncPage.textColor : syncPage.mutedColor
-                            font.pixelSize: Style.bodySize
-                            text: sync.netRunning
-                                  ? String(sync.netAddress)
-                                  : "未监听（点「开始监听」）"
                         }
-                        Button {
-                            text: "复制"
-                            enabled: sync.netRunning && String(sync.netAddress).length > 0
-                            onClicked: sync.copyToClipboard(String(sync.netAddress))
+
+                        Repeater {
+                            model: sync.netAddresses
+
+                            delegate: RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 8
+
+                                Text {
+                                    text: modelData.name
+                                    color: syncPage.mutedColor
+                                    font.pixelSize: Style.captionSize
+                                    Layout.preferredWidth: 90
+                                    elide: Text.ElideRight
+                                }
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: modelData.address
+                                    color: syncPage.textColor
+                                    font.pixelSize: Style.bodySize
+                                    elide: Text.ElideRight
+                                }
+                                Button {
+                                    text: "复制"
+                                    onClicked: sync.copyToClipboard(modelData.address)
+                                }
+                            }
                         }
                     }
 
