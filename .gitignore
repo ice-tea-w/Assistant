@@ -80,3 +80,6 @@ docs/slides/check_deck_*.py
 # 本地演示/打包产物（tools/plugin-pack.ps1、tools/demo-market.ps1）
 dist/
 build-tests/
+
+# 测试用的收件箱（同步页里把收件箱指到项目内时会产生）
+/receive/
