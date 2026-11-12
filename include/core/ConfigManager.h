@@ -82,6 +82,8 @@ public:
     int     inboxSettleMs() const;     ///< 稳定静默期
     int     inboxTrackingWindowSec() const;          ///< 去向追踪窗口（默认 60 s）
     QStringList inboxExtraWatchDirs() const;         ///< 只监听、不索引的归档目录
+    bool    inboxAutoOrganize() const;               ///< 规则 move 是否真正执行（默认 false）
+    QVariantList inboxRules() const;                 ///< 归档规则（S11，原始配置形态）
     // ---- 设备同步（Phase: 联网功能）----
     QString syncLocalRoot() const;             // 本地共享根（单根时代的旧字段，保留兼容）
     /// 要同步的本地文件夹列表，每项 {localPath, alias}。为空时回退到 syncLocalRoot。
@@ -160,6 +162,8 @@ private:
     int            m_inboxSettleMs = 1200;
     int            m_inboxTrackingWindowSec = 60;
     QStringList    m_inboxExtraWatchDirs;
+    bool           m_inboxAutoOrganize = false;
+    QVariantList   m_inboxRules;
     QString m_filePath;
 
     QString m_syncLocalRoot;

@@ -166,6 +166,12 @@ Rectangle {
                                 color: downloadsPage.stateColor(modelData)
                                 font.pixelSize: 11
                             }
+                            Text {
+                                visible: modelData.suggestDest.length > 0
+                                text: "建议归档"
+                                color: accentColor
+                                font.pixelSize: 10
+                            }
                         }
 
                         Text {
@@ -208,6 +214,34 @@ Rectangle {
                             font.pixelSize: 11
                             onClicked: inbox.undoItem(modelData.id)
                         }
+
+                        Button {
+                            text: "⋯"
+                            font.pixelSize: 11
+                            onClicked: rowMenu.popup()
+                        }
+                    }
+                }
+
+                Menu {
+                    id: rowMenu
+
+                    MenuItem {
+                        text: "归档到建议位置"
+                        enabled: modelData.inBox && modelData.suggestDest.length > 0
+                        onTriggered: inbox.archiveItem(modelData.id)
+                    }
+                    MenuItem {
+                        text: "加入待办"
+                        onTriggered: inbox.addToTodo(modelData.id)
+                    }
+                    MenuItem {
+                        text: "复制内容"
+                        onTriggered: inbox.copyContent(modelData.id)
+                    }
+                    MenuItem {
+                        text: "复制路径"
+                        onTriggered: inbox.copyPath(modelData.id)
                     }
                 }
             }

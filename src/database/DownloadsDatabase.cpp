@@ -15,8 +15,8 @@ namespace {
 const char *kDownloadColumns =
     "id, source_id, src_path, box_path, cur_path, in_box, name, ext, cat_mask, size, mtime,"
     " vol_serial, file_id, sig_quick, sig_full, url, referrer, pipe_state, track_state,"
-    " detected_by, dup_of, error_code, tags, created_at, completed_at, fetched_at, filed_at,"
-    " last_verified";
+    " detected_by, dup_of, error_code, tags, suggest_dest, rule_name, created_at,"
+    " completed_at, fetched_at, filed_at, last_verified";
 
 QString nowIso()
 {
@@ -50,6 +50,8 @@ DownloadRow rowFromQuery(const QSqlQuery &q)
     r.dupOf         = q.value(i++).toInt();
     r.errorCode     = q.value(i++).toInt();
     r.tags          = q.value(i++).toString();
+    r.suggestDest   = q.value(i++).toString();
+    r.ruleName      = q.value(i++).toString();
     r.createdAt     = q.value(i++).toString();
     r.completedAt   = q.value(i++).toString();
     r.fetchedAt     = q.value(i++).toString();
@@ -173,6 +175,21 @@ bool createSchemaV1(QSqlDatabase &db)
     return true;
 }
 
+/// v1 → v2：归档建议（S11）。只加列，不重建。
+bool migrateToV2(QSqlDatabase &db)
+{
+    auto exec = [&db](const char *sql) {
+        QSqlQuery q(db);
+        if (q.exec(QString::fromLatin1(sql)))
+            return true;
+        Logger::get().error("DownloadsDatabase: 迁移 v2 失败 — {}",
+                            q.lastError().text().toStdString());
+        return false;
+    };
+    return exec("ALTER TABLE downloads ADD COLUMN suggest_dest TEXT")
+        && exec("ALTER TABLE downloads ADD COLUMN rule_name TEXT");
+}
+
 } // namespace
 
 DownloadsDatabase::DownloadsDatabase(QString connectionName)
@@ -249,6 +266,7 @@ bool DownloadsDatabase::ensureSchema()
     DatabaseMigrator migrator(QStringLiteral("downloads"), {
         { 1, QStringLiteral("建 downloads / move_journal / tracking_events / rules / sources / meta"),
           &createSchemaV1 },
+        { 2, QStringLiteral("加 suggest_dest / rule_name（S11 归档建议）"), &migrateToV2 },
     });
 
     if (migrator.run(*m_db))
@@ -269,14 +287,14 @@ int DownloadsDatabase::insert(const DownloadRow &row)
 
     QSqlQuery q(*m_db);
     q.prepare(QStringLiteral(
-        "INSERT INTO downloads (source_id, src_path, box_path, cur_path, in_box, name, ext,"
+        " INSERT INTO downloads (source_id, src_path, box_path, cur_path, in_box, name, ext,"
         " cat_mask, size, mtime, vol_serial, file_id, sig_quick, sig_full, url, referrer,"
-        " pipe_state, track_state, detected_by, dup_of, error_code, tags, created_at,"
-        " completed_at, fetched_at, filed_at, last_verified)"
+        " pipe_state, track_state, detected_by, dup_of, error_code, tags, suggest_dest,"
+        " rule_name, created_at, completed_at, fetched_at, filed_at, last_verified)"
         " VALUES (:source_id, :src_path, :box_path, :cur_path, :in_box, :name, :ext,"
         " :cat_mask, :size, :mtime, :vol_serial, :file_id, :sig_quick, :sig_full, :url, :referrer,"
-        " :pipe_state, :track_state, :detected_by, :dup_of, :error_code, :tags, :created_at,"
-        " :completed_at, :fetched_at, :filed_at, :last_verified)"));
+        " :pipe_state, :track_state, :detected_by, :dup_of, :error_code, :tags, :suggest_dest,"
+        " :rule_name, :created_at, :completed_at, :fetched_at, :filed_at, :last_verified)"));
 
     q.bindValue(QStringLiteral(":source_id"), row.sourceId);
     q.bindValue(QStringLiteral(":src_path"), row.srcPath);
@@ -300,6 +318,8 @@ int DownloadsDatabase::insert(const DownloadRow &row)
     q.bindValue(QStringLiteral(":dup_of"), row.dupOf);
     q.bindValue(QStringLiteral(":error_code"), row.errorCode);
     q.bindValue(QStringLiteral(":tags"), row.tags);
+    q.bindValue(QStringLiteral(":suggest_dest"), row.suggestDest);
+    q.bindValue(QStringLiteral(":rule_name"), row.ruleName);
     q.bindValue(QStringLiteral(":created_at"),
                 row.createdAt.isEmpty() ? nowIso() : row.createdAt);
     q.bindValue(QStringLiteral(":completed_at"), row.completedAt);
@@ -450,6 +470,73 @@ std::optional<DownloadRow> DownloadsDatabase::byBoxPath(const QString &boxPath) 
     q.prepare(QStringLiteral("SELECT %1 FROM downloads WHERE box_path=:p")
                   .arg(QString::fromLatin1(kDownloadColumns)));
     q.bindValue(QStringLiteral(":p"), boxPath);
+    if (!q.exec() || !q.next())
+        return std::nullopt;
+    return rowFromQuery(q);
+}
+
+bool DownloadsDatabase::updateAfterArchive(int id, const QString &curPath)
+{
+    if (!isOpen())
+        return false;
+    const QString now = nowIso();
+    QSqlQuery q(*m_db);
+    q.prepare(QStringLiteral(
+        "UPDATE downloads SET cur_path=:p, in_box=0, track_state='FiledAway',"
+        " filed_at=:now, last_verified=:now, suggest_dest='' WHERE id=:id"));
+    q.bindValue(QStringLiteral(":p"), curPath);
+    q.bindValue(QStringLiteral(":now"), now);
+    q.bindValue(QStringLiteral(":id"), id);
+    if (!q.exec()) {
+        m_lastError = q.lastError().text();
+        return false;
+    }
+    return true;
+}
+
+bool DownloadsDatabase::setSuggestion(int id, const QString &dest, const QString &ruleName)
+{
+    if (!isOpen())
+        return false;
+    QSqlQuery q(*m_db);
+    q.prepare(QStringLiteral(
+        "UPDATE downloads SET suggest_dest=:d, rule_name=:r WHERE id=:id"));
+    q.bindValue(QStringLiteral(":d"), dest);
+    q.bindValue(QStringLiteral(":r"), ruleName);
+    q.bindValue(QStringLiteral(":id"), id);
+    if (!q.exec()) {
+        m_lastError = q.lastError().text();
+        return false;
+    }
+    return true;
+}
+
+bool DownloadsDatabase::setDupOf(int id, int dupOf)
+{
+    if (!isOpen())
+        return false;
+    QSqlQuery q(*m_db);
+    q.prepare(QStringLiteral("UPDATE downloads SET dup_of=:d WHERE id=:id"));
+    q.bindValue(QStringLiteral(":d"), dupOf);
+    q.bindValue(QStringLiteral(":id"), id);
+    if (!q.exec()) {
+        m_lastError = q.lastError().text();
+        return false;
+    }
+    return true;
+}
+
+std::optional<DownloadRow> DownloadsDatabase::bySigQuick(const QString &sigQuick,
+                                                         int excludeId) const
+{
+    if (!isOpen() || sigQuick.isEmpty())
+        return std::nullopt;
+    QSqlQuery q(*m_db);
+    q.prepare(QStringLiteral(
+        "SELECT %1 FROM downloads WHERE sig_quick=:s AND id!=:id ORDER BY id ASC LIMIT 1")
+                  .arg(QString::fromLatin1(kDownloadColumns)));
+    q.bindValue(QStringLiteral(":s"), sigQuick);
+    q.bindValue(QStringLiteral(":id"), excludeId);
     if (!q.exec() || !q.next())
         return std::nullopt;
     return rowFromQuery(q);

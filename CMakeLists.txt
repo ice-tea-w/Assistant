@@ -346,6 +346,7 @@ add_executable(assistant_inbox_tests
     src/core/FileIdentity.cpp
     src/core/FileWatcher.cpp
     src/core/inbox/BrowserSource.cpp
+    src/core/inbox/DownloadRules.cpp
     src/core/inbox/IngestEngine.cpp
     src/core/inbox/TrackingEngine.cpp
     src/database/DownloadsDatabase.cpp

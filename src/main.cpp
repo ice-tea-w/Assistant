@@ -112,6 +112,12 @@ int main(int argc, char *argv[])
     ingest.setBoxPath(config.inboxPath());
     ingest.setEnabled(config.inboxEnabled());
     ingest.setSettleMs(config.inboxSettleMs());
+    {
+        DownloadRules rules;
+        rules.load(config.inboxRules());
+        ingest.setRules(rules);
+        ingest.setAutoOrganize(config.inboxAutoOrganize());
+    }
 
     // ---- app indexer (Step 5): register launchable Start Menu apps ----
     for (const AppIndexer::Entry &app : AppIndexer::scan())
@@ -299,6 +305,8 @@ int main(int argc, char *argv[])
     pluginCatalog.setMarketUrl(qEnvironmentVariable("ASSISTANT_MARKET_URL"));
 
     InboxBridge inboxBridge(&downloadsDb, &ingest);
+    inboxBridge.setTodoDatabase(&todoDb);
+    inboxBridge.setClipboardDatabase(&clipDb);
     QObject::connect(&tracking, &TrackingEngine::changed, &inboxBridge, &InboxBridge::refresh);
 
     // ---- main panel window (Phase 3 Step 1) ----

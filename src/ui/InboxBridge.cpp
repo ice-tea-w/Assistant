@@ -3,11 +3,16 @@
 #include "core/FileKind.h"
 #include "core/Logger.h"
 #include "core/inbox/IngestEngine.h"
+#include "database/ClipboardDatabase.h"
 #include "database/DownloadsDatabase.h"
+#include "database/TodoDatabase.h"
 
+#include <QApplication>
+#include <QClipboard>
 #include <QDateTime>
 #include <QDesktopServices>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QProcess>
 #include <QUrl>
@@ -33,8 +38,11 @@ QString stateText(const DownloadRow &row)
         return QStringLiteral("失败");
     if (row.pipeState == QLatin1String("Undone"))
         return QStringLiteral("已撤销");
-    if (row.inBox)
+    if (row.inBox) {
+        if (row.dupOf > 0)
+            return QStringLiteral("待整理（重复）");
         return QStringLiteral("待整理");
+    }
     if (row.trackState == QLatin1String("FiledAway"))
         return QStringLiteral("已归档");
     if (row.trackState == QLatin1String("Unknown"))
@@ -102,6 +110,10 @@ QVariantList InboxBridge::buildItems(const QString &filter) const
         item.insert(QStringLiteral("stateText"), stateText(row));
         item.insert(QStringLiteral("inBox"), row.inBox);
         item.insert(QStringLiteral("failed"), row.pipeState == QLatin1String("Failed"));
+        item.insert(QStringLiteral("dupOf"), row.dupOf);
+        item.insert(QStringLiteral("duplicate"), row.dupOf > 0);
+        item.insert(QStringLiteral("suggestDest"), row.suggestDest);
+        item.insert(QStringLiteral("ruleName"), row.ruleName);
         item.insert(QStringLiteral("curPath"), row.curPath);
         item.insert(QStringLiteral("boxPath"), row.boxPath);
         item.insert(QStringLiteral("srcPath"), row.srcPath);
@@ -172,5 +184,91 @@ bool InboxBridge::undoItem(int id)
     m_lastError.clear();
     emit lastErrorChanged();
     refresh();
+    return true;
+}
+
+bool InboxBridge::archiveItem(int id)
+{
+    if (!m_engine || !m_db)
+        return false;
+    const auto row = m_db->byId(id);
+    if (!row || row->suggestDest.isEmpty()) {
+        m_lastError = QStringLiteral("这条记录没有可用的建议去向");
+        emit lastErrorChanged();
+        return false;
+    }
+
+    QString error;
+    if (!m_engine->archive(id, row->suggestDest, &error)) {
+        m_lastError = error;
+        emit lastErrorChanged();
+        return false;
+    }
+    m_lastError.clear();
+    emit lastErrorChanged();
+    refresh();
+    return true;
+}
+
+bool InboxBridge::addToTodo(int id)
+{
+    if (!m_todoDb || !m_db)
+        return false;
+    const auto row = m_db->byId(id);
+    if (!row)
+        return false;
+
+    const QString path = row->curPath.isEmpty() ? row->boxPath : row->curPath;
+    if (m_todoDb->addTodo(path) < 0) {
+        m_lastError = QStringLiteral("加入待办失败");
+        emit lastErrorChanged();
+        return false;
+    }
+    m_lastError.clear();
+    emit lastErrorChanged();
+    return true;
+}
+
+bool InboxBridge::copyContent(int id)
+{
+    if (!m_db)
+        return false;
+    const QString path = pathOf(id, nullptr);
+    if (path.isEmpty())
+        return false;
+
+    constexpr qint64 kMaxTextBytes = 1024 * 1024;
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly) || file.size() > kMaxTextBytes) {
+        m_lastError = QStringLiteral("文件过大或无法读取（只支持 ≤1MB 文本）");
+        emit lastErrorChanged();
+        return false;
+    }
+    const QByteArray raw = file.readAll();
+    file.close();
+    if (raw.contains('\0')) {
+        m_lastError = QStringLiteral("二进制文件不复制内容");
+        emit lastErrorChanged();
+        return false;
+    }
+
+    const QString text = QString::fromUtf8(raw);
+    if (QClipboard *clipboard = QApplication::clipboard())
+        clipboard->setText(text);
+    if (m_clipDb)
+        m_clipDb->addClip(text, QStringLiteral("text/plain"));
+
+    m_lastError.clear();
+    emit lastErrorChanged();
+    return true;
+}
+
+bool InboxBridge::copyPath(int id)
+{
+    const QString path = pathOf(id, nullptr);
+    if (path.isEmpty())
+        return false;
+    if (QClipboard *clipboard = QApplication::clipboard())
+        clipboard->setText(QDir::toNativeSeparators(path));
     return true;
 }

@@ -6,6 +6,7 @@
 #include <QStringList>
 
 #include "contract/FileSystemEvent.h"
+#include "core/inbox/DownloadRules.h"
 
 class DownloadsDatabase;
 class FileEventDispatcher;
@@ -49,6 +50,13 @@ public:
     /// box 幽灵条目是否由本引擎直接标 `Unknown`。
     /// 装了 `TrackingEngine` 时置 false —— 它要先尝试离线反查再下结论。
     void setAutoReconcileBox(bool enabled) { m_autoReconcileBox = enabled; }
+
+    /// 存档规则（S11）。默认只给建议；`autoOrganize` 开启后 `move` 才执行。
+    void setRules(const DownloadRules &rules) { m_rules = rules; }
+    void setAutoOrganize(bool enabled) { m_autoOrganize = enabled; }
+
+    /// 按建议/指定目录归档（把文件从 box 移到 dest 目录，走 journal）。
+    bool archive(int downloadId, const QString &destDir, QString *error = nullptr);
 
     /// 撤销一次接管：把文件从 box 移回原下载目录（同名冲突自动加 (n)）。
     bool undo(int downloadId, QString *error = nullptr);
@@ -103,6 +111,8 @@ private:
     bool                 m_enabled = false;
     bool                 m_running = false;
     bool                 m_autoReconcileBox = true;
+    DownloadRules        m_rules;
+    bool                 m_autoOrganize = false;
     int                  m_settleOverrideMs = 0;
     QString              m_lastNotice;
 

@@ -40,6 +40,8 @@ struct DownloadRow
     int      dupOf = 0;
     int      errorCode = 0;
     QString  tags;
+    QString  suggestDest;   ///< 规则建议去向（v2）
+    QString  ruleName;      ///< 命中的规则名（v2）
     QString  createdAt;
     QString  completedAt;
     QString  fetchedAt;
@@ -86,12 +88,17 @@ public:
                           bool inBox, const QString &filedAt = QString());
     bool updatePaths(int id, const QString &srcPath, const QString &curPath);
     bool updateBoxPath(int id, const QString &boxPath);
+    bool updateAfterArchive(int id, const QString &curPath);   ///< 我方归档（规则 move/手动）
+    bool setSuggestion(int id, const QString &dest, const QString &ruleName);
+    bool setDupOf(int id, int dupOf);
 
     std::optional<DownloadRow> byId(int id) const;
     std::optional<DownloadRow> bySrcPath(const QString &srcPath) const;
     std::optional<DownloadRow> byBoxPath(const QString &boxPath) const;
     /// 多级移动链：当前路径被移走时用它找回记录。
     std::optional<DownloadRow> byCurPath(const QString &curPath) const;
+    /// 查重：同 quickSig 的**更早**一条记录（排除自身）。
+    std::optional<DownloadRow> bySigQuick(const QString &sigQuick, int excludeId) const;
     QVector<DownloadRow> list(int limit = 200) const;
     QVector<DownloadRow> listInBox() const;
     int countInBox() const;

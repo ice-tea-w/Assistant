@@ -23,6 +23,7 @@
 #include "core/FileWatcher.h"
 #include "core/FileEventDispatcher.h"
 #include "core/QueryParser.h"
+#include "core/inbox/DownloadRules.h"
 #include "core/inbox/IDownloadSource.h"
 #include "core/inbox/IngestEngine.h"
 #include "core/inbox/TrackingEngine.h"
@@ -49,6 +50,11 @@ private slots:
     void trackingFollowsSecondMove();
     void offlineReconcileFindsMovedFile();
     void offlineReconcileDetectsBoxRename();
+    void rulesMatchKindSizeAndPriority();
+    void ingestSuggestsThenArchives();
+    void autoOrganizeMovesImmediately();
+    void ingestMarksDuplicate();
+    void skipRuleLeavesFileInDownloads();
 
 private:
     /// 模拟一条"已在收件箱"的记录：文件真实存在，身份/签名按真实文件采集。
@@ -704,6 +710,282 @@ void TestDownloads::offlineReconcileDetectsBoxRename()
     QCOMPARE(fixed->boxPath, renamed);
     QCOMPARE(fixed->curPath, renamed);
 
+    db.close();
+}
+
+void TestDownloads::rulesMatchKindSizeAndPriority()
+{
+    QVariantList config;
+    auto addRule = [&config](const QString &name, int priority, const QString &kind,
+                             const QString &size, const QString &action, const QString &dest) {
+        QVariantMap rule;
+        rule.insert(QStringLiteral("name"), name);
+        rule.insert(QStringLiteral("priority"), priority);
+        rule.insert(QStringLiteral("kind"), kind);
+        rule.insert(QStringLiteral("size"), size);
+        rule.insert(QStringLiteral("action"), action);
+        rule.insert(QStringLiteral("dest"), dest);
+        config.append(rule);
+    };
+
+    addRule(QStringLiteral("pdf-first"), 10, QStringLiteral("pdf"), QString(),
+            QStringLiteral("move"), QStringLiteral("/dest/PDF/{yyyy}"));
+    addRule(QStringLiteral("docs"), 20, QStringLiteral("document,sheet"), QString(),
+            QStringLiteral("suggest"), QStringLiteral("/dest/Docs/{name}"));
+    addRule(QStringLiteral("big"), 5, QString(), QStringLiteral(">100mb"),
+            QStringLiteral("notify"), QString());
+
+    DownloadRules rules;
+    rules.load(config);
+    QCOMPARE(rules.count(), 3);
+
+    DownloadRow pdf;
+    pdf.name = QStringLiteral("report.pdf");
+    pdf.ext = QStringLiteral("pdf");
+    pdf.catMask = FileKind::Pdf;
+    pdf.size = 1024;
+    const auto pdfDecision = rules.evaluate(pdf, QStringLiteral("/inbox"));
+    QCOMPARE(pdfDecision.action, QStringLiteral("move"));
+    QCOMPARE(pdfDecision.ruleName, QStringLiteral("pdf-first"));
+    QVERIFY(pdfDecision.dest.endsWith(QStringLiteral("/dest/PDF/")
+                                      + QString::number(QDate::currentDate().year())));
+
+    DownloadRow doc;
+    doc.name = QStringLiteral("notes.txt");
+    doc.ext = QStringLiteral("txt");
+    doc.catMask = FileKind::Document;
+    doc.size = 100;
+    const auto docDecision = rules.evaluate(doc, QStringLiteral("/inbox"));
+    QCOMPARE(docDecision.action, QStringLiteral("suggest"));
+    QCOMPARE(docDecision.ruleName, QStringLiteral("docs"));
+    QCOMPARE(docDecision.dest, QStringLiteral("/dest/Docs/notes.txt"));
+
+    doc.size = 200LL * 1024 * 1024;   // 命中优先级最高的 big (>100mb)
+    const auto bigDecision = rules.evaluate(doc, QStringLiteral("/inbox"));
+    QCOMPARE(bigDecision.ruleName, QStringLiteral("big"));
+    QCOMPARE(bigDecision.action, QStringLiteral("notify"));
+}
+
+void TestDownloads::ingestSuggestsThenArchives()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString downloadsDir = dir.path() + "/Downloads";
+    const QString boxDir = dir.path() + "/Inbox";
+    const QString archiveDir = dir.path() + "/ArchivePDF";
+    QVERIFY(QDir().mkpath(downloadsDir));
+
+    DownloadsDatabase db(QStringLiteral("downloads_test_rules1"));
+    QVERIFY(db.open(dir.path() + "/downloads.db"));
+
+    BrowserSource source(downloadsDir);
+    IngestEngine engine(&db);
+    engine.setSource(&source);
+    engine.setBoxPath(boxDir);
+    engine.setSettleMs(120);
+    engine.setEnabled(true);
+
+    QVariantList config;
+    QVariantMap rule;
+    rule.insert(QStringLiteral("name"), QStringLiteral("pdf"));
+    rule.insert(QStringLiteral("kind"), QStringLiteral("pdf"));
+    rule.insert(QStringLiteral("action"), QStringLiteral("suggest"));
+    rule.insert(QStringLiteral("dest"), archiveDir);
+    config.append(rule);
+    DownloadRules rules;
+    rules.load(config);
+    engine.setRules(rules);
+
+    FileEventDispatcher dispatcher;
+    FileWatcher watcher;
+    watcher.setCoalesceMs(50);
+    engine.setEventSource(&dispatcher);
+    connect(&watcher, &FileWatcher::batchReady, this,
+            [&dispatcher](const QVector<FileSystemEvent> &batch) { dispatcher.publish(batch); });
+
+    QSignalSpy captured(&engine, &IngestEngine::captured);
+    QVERIFY(engine.start());
+    QVERIFY(watcher.start({ downloadsDir }));
+
+    QVERIFY(writeFile(downloadsDir + "/paper.pdf", "suggest me"));
+    QTRY_VERIFY_WITH_TIMEOUT(captured.count() > 0, 10000);
+
+    const int id = captured.first().at(0).toInt();
+    auto row = db.byId(id);
+    QVERIFY(row.has_value());
+    QVERIFY(row->inBox);
+    QCOMPARE(row->suggestDest, archiveDir);
+    QVERIFY(QFileInfo::exists(boxDir + "/paper.pdf"));
+
+    QVERIFY(engine.archive(id, row->suggestDest, nullptr));
+    QVERIFY(QFileInfo::exists(archiveDir + "/paper.pdf"));
+    QVERIFY(!QFileInfo::exists(boxDir + "/paper.pdf"));
+    row = db.byId(id);
+    QVERIFY(!row->inBox);
+    QCOMPARE(row->trackState, QStringLiteral("FiledAway"));
+
+    watcher.stop();
+    engine.setEventSource(nullptr);
+    engine.stop();
+    db.close();
+}
+
+void TestDownloads::autoOrganizeMovesImmediately()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString downloadsDir = dir.path() + "/Downloads";
+    const QString boxDir = dir.path() + "/Inbox";
+    const QString archiveDir = dir.path() + "/AutoArchive";
+    QVERIFY(QDir().mkpath(downloadsDir));
+
+    DownloadsDatabase db(QStringLiteral("downloads_test_auto"));
+    QVERIFY(db.open(dir.path() + "/downloads.db"));
+
+    BrowserSource source(downloadsDir);
+    IngestEngine engine(&db);
+    engine.setSource(&source);
+    engine.setBoxPath(boxDir);
+    engine.setSettleMs(120);
+    engine.setEnabled(true);
+    engine.setAutoOrganize(true);
+
+    QVariantList config;
+    QVariantMap rule;
+    rule.insert(QStringLiteral("name"), QStringLiteral("auto-images"));
+    rule.insert(QStringLiteral("kind"), QStringLiteral("img"));
+    rule.insert(QStringLiteral("action"), QStringLiteral("move"));
+    rule.insert(QStringLiteral("dest"), archiveDir);
+    config.append(rule);
+    DownloadRules rules;
+    rules.load(config);
+    engine.setRules(rules);
+
+    FileEventDispatcher dispatcher;
+    FileWatcher watcher;
+    watcher.setCoalesceMs(50);
+    engine.setEventSource(&dispatcher);
+    connect(&watcher, &FileWatcher::batchReady, this,
+            [&dispatcher](const QVector<FileSystemEvent> &batch) { dispatcher.publish(batch); });
+
+    QSignalSpy captured(&engine, &IngestEngine::captured);
+    QVERIFY(engine.start());
+    QVERIFY(watcher.start({ downloadsDir }));
+
+    QVERIFY(writeFile(downloadsDir + "/photo.png", "image bytes"));
+    QTRY_VERIFY_WITH_TIMEOUT(captured.count() > 0, 10000);
+
+    const int id = captured.first().at(0).toInt();
+    QTRY_VERIFY_WITH_TIMEOUT(QFileInfo::exists(archiveDir + "/photo.png"), 5000);
+    QVERIFY(!QFileInfo::exists(boxDir + "/photo.png"));
+    const auto row = db.byId(id);
+    QVERIFY(row.has_value());
+    QVERIFY(!row->inBox);
+    QCOMPARE(row->curPath, archiveDir + "/photo.png");
+
+    watcher.stop();
+    engine.setEventSource(nullptr);
+    engine.stop();
+    db.close();
+}
+
+void TestDownloads::ingestMarksDuplicate()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString downloadsDir = dir.path() + "/Downloads";
+    const QString boxDir = dir.path() + "/Inbox";
+    QVERIFY(QDir().mkpath(downloadsDir));
+
+    DownloadsDatabase db(QStringLiteral("downloads_test_dup2"));
+    QVERIFY(db.open(dir.path() + "/downloads.db"));
+
+    BrowserSource source(downloadsDir);
+    IngestEngine engine(&db);
+    engine.setSource(&source);
+    engine.setBoxPath(boxDir);
+    engine.setSettleMs(120);
+    engine.setEnabled(true);
+
+    FileEventDispatcher dispatcher;
+    FileWatcher watcher;
+    watcher.setCoalesceMs(50);
+    engine.setEventSource(&dispatcher);
+    connect(&watcher, &FileWatcher::batchReady, this,
+            [&dispatcher](const QVector<FileSystemEvent> &batch) { dispatcher.publish(batch); });
+
+    QSignalSpy captured(&engine, &IngestEngine::captured);
+    QVERIFY(engine.start());
+    QVERIFY(watcher.start({ downloadsDir }));
+
+    QVERIFY(writeFile(downloadsDir + "/same-a.txt", "identical content"));
+    QTRY_VERIFY_WITH_TIMEOUT(captured.count() >= 1, 10000);
+    const int firstId = captured.at(0).at(0).toInt();
+
+    QVERIFY(writeFile(downloadsDir + "/same-b.txt", "identical content"));
+    QTRY_VERIFY_WITH_TIMEOUT(captured.count() >= 2, 10000);
+    const int secondId = captured.at(1).at(0).toInt();
+
+    const auto second = db.byId(secondId);
+    QVERIFY(second.has_value());
+    QCOMPARE(second->dupOf, firstId);
+
+    watcher.stop();
+    engine.setEventSource(nullptr);
+    engine.stop();
+    db.close();
+}
+
+void TestDownloads::skipRuleLeavesFileInDownloads()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString downloadsDir = dir.path() + "/Downloads";
+    const QString boxDir = dir.path() + "/Inbox";
+    QVERIFY(QDir().mkpath(downloadsDir));
+
+    DownloadsDatabase db(QStringLiteral("downloads_test_skip"));
+    QVERIFY(db.open(dir.path() + "/downloads.db"));
+
+    BrowserSource source(downloadsDir);
+    IngestEngine engine(&db);
+    engine.setSource(&source);
+    engine.setBoxPath(boxDir);
+    engine.setSettleMs(120);
+    engine.setEnabled(true);
+
+    QVariantList config;
+    QVariantMap rule;
+    rule.insert(QStringLiteral("name"), QStringLiteral("no-installers"));
+    rule.insert(QStringLiteral("kind"), QStringLiteral("exe"));
+    rule.insert(QStringLiteral("action"), QStringLiteral("skip"));
+    config.append(rule);
+    DownloadRules rules;
+    rules.load(config);
+    engine.setRules(rules);
+
+    FileEventDispatcher dispatcher;
+    FileWatcher watcher;
+    watcher.setCoalesceMs(50);
+    engine.setEventSource(&dispatcher);
+    connect(&watcher, &FileWatcher::batchReady, this,
+            [&dispatcher](const QVector<FileSystemEvent> &batch) { dispatcher.publish(batch); });
+
+    QSignalSpy captured(&engine, &IngestEngine::captured);
+    QVERIFY(engine.start());
+    QVERIFY(watcher.start({ downloadsDir }));
+
+    const QString exe = downloadsDir + "/setup.exe";
+    QVERIFY(writeFile(exe, "installer payload"));
+    QTest::qWait(1500);
+
+    QCOMPARE(captured.count(), 0);
+    QVERIFY(QFileInfo::exists(exe));       // 源文件留在 Downloads
+    QVERIFY(!QFileInfo::exists(boxDir + "/setup.exe"));
+
+    watcher.stop();
+    engine.setEventSource(nullptr);
+    engine.stop();
     db.close();
 }
 

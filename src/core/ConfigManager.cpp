@@ -78,6 +78,8 @@ void ConfigManager::applyDefaults()
     m_inboxSettleMs = 1200;
     m_inboxTrackingWindowSec = 60;
     m_inboxExtraWatchDirs.clear();
+    m_inboxAutoOrganize = false;
+    m_inboxRules.clear();
 
     // 设备同步：路径留空由用户在设置页填；设备名默认取主机名
     m_syncLocalRoot.clear();
@@ -255,6 +257,37 @@ void ConfigManager::load()
                     }
                 }
             }
+            if (in.contains("autoOrganize"))
+                m_inboxAutoOrganize = in.value("autoOrganize", false);
+            if (in.contains("rules") && in["rules"].is_array()) {
+                m_inboxRules.clear();
+                for (const auto &item : in["rules"]) {
+                    if (!item.is_object())
+                        continue;
+                    QVariantMap rule;
+                    rule.insert(QStringLiteral("name"),
+                                QString::fromStdString(item.value("name", std::string())));
+                    rule.insert(QStringLiteral("priority"), item.value("priority", 100));
+                    rule.insert(QStringLiteral("enabled"), item.value("enabled", true));
+                    rule.insert(QStringLiteral("action"),
+                                QString::fromStdString(item.value("action", std::string("suggest"))));
+                    rule.insert(QStringLiteral("dest"),
+                                QString::fromStdString(item.value("dest", std::string())));
+                    if (item.contains("match") && item["match"].is_object()) {
+                        const auto &match = item["match"];
+                        rule.insert(QStringLiteral("kind"),
+                                    QString::fromStdString(match.value("kind", std::string())));
+                        rule.insert(QStringLiteral("size"),
+                                    QString::fromStdString(match.value("size", std::string())));
+                    } else {
+                        rule.insert(QStringLiteral("kind"),
+                                    QString::fromStdString(item.value("kind", std::string())));
+                        rule.insert(QStringLiteral("size"),
+                                    QString::fromStdString(item.value("size", std::string())));
+                    }
+                    m_inboxRules.append(rule);
+                }
+            }
         }
         // sync（设备同步）
         if (j.contains("sync")) {
@@ -371,6 +404,23 @@ void ConfigManager::save()
     };
     for (const QString &dir : m_inboxExtraWatchDirs)
         j["inbox"]["tracking"]["extraWatchDirs"].push_back(dir.toStdString());
+
+    j["inbox"]["autoOrganize"] = m_inboxAutoOrganize;
+    j["inbox"]["rules"] = json::array();
+    for (const QVariant &v : m_inboxRules) {
+        const QVariantMap rule = v.toMap();
+        j["inbox"]["rules"].push_back({
+            { "name", rule.value(QStringLiteral("name")).toString().toStdString() },
+            { "priority", rule.value(QStringLiteral("priority"), 100).toInt() },
+            { "enabled", rule.value(QStringLiteral("enabled"), true).toBool() },
+            { "action", rule.value(QStringLiteral("action"), QStringLiteral("suggest")).toString().toStdString() },
+            { "dest", rule.value(QStringLiteral("dest")).toString().toStdString() },
+            { "match", {
+                { "kind", rule.value(QStringLiteral("kind")).toString().toStdString() },
+                { "size", rule.value(QStringLiteral("size")).toString().toStdString() }
+            } }
+        });
+    }
     j["sync"] = {
         {"localRoot",  m_syncLocalRoot.toStdString()},
         {"sharedDir",  m_syncSharedDir.toStdString()},
@@ -464,6 +514,16 @@ int ConfigManager::inboxTrackingWindowSec() const
 QStringList ConfigManager::inboxExtraWatchDirs() const
 {
     return m_inboxExtraWatchDirs;
+}
+
+bool ConfigManager::inboxAutoOrganize() const
+{
+    return m_inboxAutoOrganize;
+}
+
+QVariantList ConfigManager::inboxRules() const
+{
+    return m_inboxRules;
 }
 
 void ConfigManager::setInboxEnabled(bool enabled)

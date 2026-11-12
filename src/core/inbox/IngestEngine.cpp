@@ -492,6 +492,16 @@ void IngestEngine::admit(const Candidate &candidate)
     row.detectedBy = QStringLiteral("watcher");
     row.createdAt = nowIso();
 
+    // 规则 can 让某个文件**完全不接管**（如“安装包别动”）
+    if (m_rules.count() > 0) {
+        const DownloadRules::Decision pre = m_rules.evaluate(row, m_boxPath);
+        if (pre.action == QLatin1String("skip")) {
+            Logger::get().info("IngestEngine: 规则「{}」跳过 {}",
+                               pre.ruleName.toStdString(), fileName.toStdString());
+            return;
+        }
+    }
+
     const int id = m_db->insert(row);
     if (id < 0) {
         setNotice(QStringLiteral("登记下载失败：") + m_db->lastError());
@@ -518,6 +528,24 @@ void IngestEngine::admit(const Candidate &candidate)
     if (journal > 0)
         m_db->finishJournal(journal, true);
 
+    // 归档规则：默认只写「建议去向」；autoOrganize 开启时 move 才执行
+    if (m_rules.count() > 0) {
+        const auto stored = m_db->byId(id);
+        if (stored) {
+            const DownloadRules::Decision decision = m_rules.evaluate(*stored, m_boxPath);
+            if (decision.matched()) {
+                m_db->setSuggestion(id, decision.dest, decision.ruleName);
+                if (decision.action == QLatin1String("move")
+                    && m_autoOrganize && !decision.dest.isEmpty()) {
+                    QString archiveError;
+                    if (!archive(id, decision.dest, &archiveError))
+                        Logger::get().warn("IngestEngine: 自动归档失败 — {}",
+                                           archiveError.toStdString());
+                }
+            }
+        }
+    }
+
     const qint64 size = QFileInfo(target).size();
     Logger::get().info("IngestEngine: 已接管 {} → {}（{} 字节）",
                        candidate.path.toStdString(), target.toStdString(), size);
@@ -539,6 +567,69 @@ void IngestEngine::registerCaptured(int id, const QString &path)
                            identityOk ? identity.volumeSerial : 0,
                            identityOk ? identity.fileId : QString(),
                            sig);
+
+    // 查重：同 quickSig 的更早记录 → dup_of（裁决仍由用户决定，这里只标记）
+    if (!sig.isEmpty()) {
+        const auto duplicate = m_db->bySigQuick(sig, id);
+        if (duplicate)
+            m_db->setDupOf(id, duplicate->id);
+    }
+}
+
+bool IngestEngine::archive(int downloadId, const QString &destDir, QString *error)
+{
+    if (!m_db || !m_db->isOpen()) {
+        if (error)
+            *error = QStringLiteral("下载数据库未打开");
+        return false;
+    }
+    const auto row = m_db->byId(downloadId);
+    if (!row || !row->inBox || row->boxPath.isEmpty()) {
+        if (error)
+            *error = QStringLiteral("该记录不在收件箱，无法归档");
+        return false;
+    }
+    if (destDir.trimmed().isEmpty()) {
+        if (error)
+            *error = QStringLiteral("归档目录为空");
+        return false;
+    }
+
+    const QString dir = QDir::fromNativeSeparators(destDir);
+    if (!QDir().mkpath(dir)) {
+        if (error)
+            *error = QStringLiteral("无法创建归档目录：") + dir;
+        return false;
+    }
+    const QString target = uniqueTarget(dir, row->name);
+
+    // 不覆盖已存在的目标：uniqueTarget 已保证；这里再防御一次
+    if (QFileInfo::exists(target)) {
+        if (error)
+            *error = QStringLiteral("目标已存在：") + target;
+        return false;
+    }
+
+    const qint64 journal = m_db->beginJournal(downloadId, QStringLiteral("organize"),
+                                              row->boxPath, target);
+    DWORD moveError = 0;
+    if (!moveFile(row->boxPath, target, &moveError)) {
+        if (journal > 0)
+            m_db->finishJournal(journal, false, static_cast<int>(moveError));
+        if (error)
+            *error = QStringLiteral("归档移动失败（Win32 %1）").arg(moveError);
+        return false;
+    }
+
+    if (journal > 0)
+        m_db->finishJournal(journal, true);
+    m_db->updateAfterArchive(downloadId, target);
+
+    Logger::get().info("IngestEngine: 已归档 {} → {}",
+                       row->boxPath.toStdString(), target.toStdString());
+    setNotice(QStringLiteral("已归档 %1 → %2").arg(row->name, QDir::toNativeSeparators(dir)));
+    emit changed();
+    return true;
 }
 
 bool IngestEngine::undo(int downloadId, QString *error)
