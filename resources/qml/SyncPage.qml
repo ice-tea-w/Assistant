@@ -16,6 +16,9 @@ Rectangle {
     readonly property color borderColor: Style.borderColor
     readonly property color panelColor: Style.panelColor
 
+    // 自检结果（点「自检」后填充，多行）
+    property string selfText: ""
+
     ScrollView {
         anchors.fill: parent
         clip: true
@@ -138,16 +141,17 @@ Rectangle {
                                 spacing: 8
 
                                 Text {
-                                    text: modelData.name
+                                    text: modelData.name + " · " + modelData.kind
                                     color: syncPage.mutedColor
                                     font.pixelSize: Style.captionSize
-                                    Layout.preferredWidth: 90
+                                    Layout.preferredWidth: 150
                                     elide: Text.ElideRight
                                 }
                                 Text {
                                     Layout.fillWidth: true
                                     text: modelData.address
-                                    color: syncPage.textColor
+                                          + (modelData.hint.length > 0 ? "  （" + modelData.hint + "）" : "")
+                                    color: modelData.hint.length > 0 ? syncPage.mutedColor : syncPage.textColor
                                     font.pixelSize: Style.bodySize
                                     elide: Text.ElideRight
                                 }
@@ -157,6 +161,39 @@ Rectangle {
                                 }
                             }
                         }
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+
+                        Button {
+                            text: "放行防火墙"
+                            onClicked: sync.openFirewallPort()
+                        }
+
+                        Button {
+                            text: "自检"
+                            onClicked: syncPage.selfText = sync.selfCheck()
+                        }
+
+                        Text {
+                            Layout.fillWidth: true
+                            text: "主机模式建议先放行；自检会检查监听 / 地址 / 防火墙 / IPv6 / 配对"
+                            color: syncPage.mutedColor
+                            font.pixelSize: Style.captionSize
+                            wrapMode: Text.WordWrap
+                        }
+                    }
+
+                    Text {
+                        visible: syncPage.selfText.length > 0
+                        Layout.fillWidth: true
+                        text: syncPage.selfText
+                        color: syncPage.textColor
+                        font.pixelSize: Style.captionSize
+                        lineHeight: 1.3
+                        wrapMode: Text.WordWrap
                     }
 
                     RowLayout {

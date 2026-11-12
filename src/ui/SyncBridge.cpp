@@ -33,6 +33,7 @@
 #include <QTimer>
 #include <QUrl>
 
+#include <algorithm>
 #include <memory>
 
 namespace {
@@ -225,6 +226,55 @@ QString SyncBridge::localIpv4() const
     return QString();
 }
 
+namespace {
+
+QString interfaceKind(QNetworkInterface::InterfaceType type)
+{
+    switch (type) {
+    case QNetworkInterface::Ethernet:  return QStringLiteral("有线");
+    case QNetworkInterface::Wifi:      return QStringLiteral("无线");
+    case QNetworkInterface::Virtual:   return QStringLiteral("虚拟");
+    case QNetworkInterface::Loopback:  return QStringLiteral("回环");
+    case QNetworkInterface::Ppp:       return QStringLiteral("拨号");
+    default:                           return QStringLiteral("其它");
+    }
+}
+
+/// 明显是虚拟机/容器网卡：能给对端填，但通常连不到
+bool looksLikeVmAdapter(const QString &name)
+{
+    static const QStringList markers = {
+        QStringLiteral("VMware"), QStringLiteral("VirtualBox"), QStringLiteral("vEthernet"),
+        QStringLiteral("Hyper-V"), QStringLiteral("Tailscale"),
+    };
+    for (const QString &m : markers) {
+        if (name.contains(m, Qt::CaseInsensitive))
+            return m != QStringLiteral("Tailscale");  // Tailscale 虽是虚拟网卡，但可用
+    }
+    return false;
+}
+
+/// 能拿去当直连地址的 IPv6 全局单播（排除链路本地/回环/ULA/Teredo/6to4/映射地址）
+bool isUsableGlobalIpv6(const QHostAddress &addr)
+{
+    if (addr.protocol() != QAbstractSocket::IPv6Protocol)
+        return false;
+    if (addr.isNull() || addr.isLoopback() || addr.isLinkLocal())
+        return false;
+    const QString text = addr.toString();
+    if (text.startsWith(QStringLiteral("fd")) || text.startsWith(QStringLiteral("fc")))
+        return false;  // ULA：只在 tailnet / 局域网内有效
+    if (text.startsWith(QStringLiteral("2001:0:")))
+        return false;  // Teredo
+    if (text.startsWith(QStringLiteral("2002:")))
+        return false;  // 6to4
+    if (text.startsWith(QStringLiteral("::ffff:")))
+        return false;  // IPv4 映射
+    return true;
+}
+
+} // namespace
+
 QVariantList SyncBridge::addressCandidates(quint16 port) const
 {
     QVariantList out;
@@ -252,10 +302,26 @@ QVariantList SyncBridge::addressCandidates(quint16 port) const
                 continue;
             QVariantMap row;
             row.insert(QStringLiteral("name"), iface.humanReadableName());
+            row.insert(QStringLiteral("kind"), interfaceKind(iface.type()));
             row.insert(QStringLiteral("address"), address);
+            row.insert(QStringLiteral("hint"),
+                       looksLikeVmAdapter(iface.humanReadableName())
+                           ? QStringLiteral("对方通常连不到")
+                           : QString());
+            row.insert(QStringLiteral("virtual"), looksLikeVmAdapter(iface.humanReadableName()));
             out.append(row);
         }
     }
+    std::sort(out.begin(), out.end(), [](const QVariant &a, const QVariant &b) {
+        const QVariantMap ma = a.toMap();
+        const QVariantMap mb = b.toMap();
+        const bool va = ma.value(QStringLiteral("virtual")).toBool();
+        const bool vb = mb.value(QStringLiteral("virtual")).toBool();
+        if (va != vb)
+            return !va;  // 可用网卡排前面
+        return ma.value(QStringLiteral("name")).toString()
+               < mb.value(QStringLiteral("name")).toString();
+    });
     return out;
 }
 
@@ -695,6 +761,86 @@ void SyncBridge::startNetServer()
         thread->deleteLater();
     });
     thread->start();
+}
+
+void SyncBridge::openFirewallPort()
+{
+    const int port = m_config ? m_config->syncPort() : 45871;
+    setNetStatus(QStringLiteral("正在申请管理员权限，放行 TCP %1…").arg(port));
+    auto *worker = QThread::create([this, port] {
+        const int code = Sync::Os::runElevated(
+            QStringLiteral("netsh"),
+            {QStringLiteral("advfirewall"), QStringLiteral("firewall"), QStringLiteral("add"),
+             QStringLiteral("rule"), QStringLiteral("name=Assistant Direct %1").arg(port),
+             QStringLiteral("dir=in"), QStringLiteral("action=allow"),
+             QStringLiteral("protocol=TCP"), QStringLiteral("localport=%1").arg(port),
+             QStringLiteral("profile=private,public")});
+        QMetaObject::invokeMethod(this, [this, code, port] {
+            if (code == 0) {
+                setNetStatus(QStringLiteral("已放行 TCP %1（专用 + 公用网络）").arg(port));
+            } else if (code == Sync::Os::kElevationCancelled) {
+                setNetStatus(QStringLiteral("已取消：没有放行防火墙，对端会被拦"));
+            } else {
+                setNetStatus(QStringLiteral("放行失败（退出码 %1）").arg(code));
+            }
+        }, Qt::QueuedConnection);
+    });
+    connect(worker, &QThread::finished, this, [worker] { worker->deleteLater(); });
+    worker->start();
+}
+
+QString SyncBridge::selfCheck()
+{
+    const int port = m_config ? m_config->syncPort() : 45871;
+    QStringList lines;
+
+    lines << (m_netRunning ? QStringLiteral("✓ 监听：正在监听 TCP %1").arg(port)
+                           : QStringLiteral("· 监听：未开启（主机要先点「开始监听」）"));
+
+    if (m_netAddresses.isEmpty()) {
+        lines << QStringLiteral("· 地址：还没有可用的 IPv4 地址");
+    } else {
+        QStringList addresses;
+        for (const QVariant &value : m_netAddresses) {
+            addresses << value.toMap().value(QStringLiteral("address")).toString();
+        }
+        lines << QStringLiteral("✓ 地址：%1").arg(addresses.join(QStringLiteral("  ")));
+    }
+
+    QString firewallError;
+    const int firewallCode = Sync::Os::runProgram(
+        QStringLiteral("netsh"),
+        {QStringLiteral("advfirewall"), QStringLiteral("firewall"), QStringLiteral("show"),
+         QStringLiteral("rule"), QStringLiteral("name=Assistant Direct %1").arg(port)},
+        &firewallError);
+    lines << (firewallCode == 0
+                  ? QStringLiteral("✓ 防火墙：已有放行规则")
+                  : QStringLiteral("✗ 防火墙：没有放行规则（公用网络下对端会被拦，点「放行防火墙」）"));
+
+    bool hasGlobalIpv6 = false;
+    const auto interfaces = QNetworkInterface::allInterfaces();
+    for (const QNetworkInterface &iface : interfaces) {
+        if (!(iface.flags() & QNetworkInterface::IsUp))
+            continue;
+        for (const QNetworkAddressEntry &entry : iface.addressEntries()) {
+            if (isUsableGlobalIpv6(entry.ip())) {
+                hasGlobalIpv6 = true;
+                break;
+            }
+        }
+        if (hasGlobalIpv6)
+            break;
+    }
+    lines << (hasGlobalIpv6
+                  ? QStringLiteral("· IPv6：有公网单播地址（能否直连还取决于运营商是否放行进站）")
+                  : QStringLiteral("· IPv6：只有链路本地（跨公网直连走 Tailscale 或端口映射）"));
+
+    lines << (hasPeerCredentials()
+                  ? QStringLiteral("✓ 配对：已记住主机 %1")
+                        .arg(m_config ? m_config->syncPeerAddress() : QString())
+                  : QStringLiteral("· 配对：未配对（连接方要填主机地址 + 6 位码）"));
+
+    return lines.join(QLatin1Char('\n'));
 }
 
 void SyncBridge::stopNetServer()

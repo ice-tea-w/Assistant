@@ -132,6 +132,10 @@ public:
 
     /// 在本机同步端口上启动 ASYN 服务端，对外提供当前共享目录
     Q_INVOKABLE void startNetServer();
+    /// 放行直连端口的入站防火墙规则（会弹 UAC）
+    Q_INVOKABLE void openFirewallPort();
+    /// 直连前置条件自检：监听/地址/防火墙/IPv6/配对状态，返回多行文本
+    Q_INVOKABLE QString selfCheck();
     Q_INVOKABLE void stopNetServer();
     /// 打开配对窗口（5 分钟、一次性），码通过 pairCode 属性给出
     Q_INVOKABLE void startPairing();
