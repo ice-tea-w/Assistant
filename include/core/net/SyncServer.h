@@ -67,6 +67,12 @@ public:
     QString sharedRoot() const;
     QList<ServedRoot> roots() const;
 
+    /// 投递箱（`_inbox/…`）的落地目录。设了就不落在任何同步根里 ——
+    /// 投递是「一对一送达」，跟同步目录是两回事，混在一起用户会在同步范围内看到异物。
+    /// 不设时退回「第一个同步根」，只为兼容旧用例。
+    void setDeliveryRoot(const QString &absPath);
+    QString deliveryRoot() const;
+
     /// 已认证成功的连接数（测试与界面用）。
     int readyConnections() const;
 
@@ -127,6 +133,9 @@ private:
     /// 把 relPath 拆成（根的绝对路径, 根内相对路径）。没有匹配的根返回 false。
     bool splitRel(const QString &relPath, QString *rootAbs, QString *subRel) const;
 
+    /// 实际生效的投递目录：设过就用设的，没设退回第一个根
+    QString effectiveDeliveryRoot() const;
+
     bool isPeerLocked(const QString &peer) const;
     void recordAuthFailure(const QString &peer);
     void clearAuthFailures(const QString &peer);
@@ -152,6 +161,8 @@ private:
     QList<ServedRoot>            m_roots;
     /// 第一个根的路径，仅用于兼容 `.sync/trash` 与 index.json 的落点。
     QString                      m_sharedRoot;
+    /// 投递箱落地目录（空 = 退回第一个根）
+    QString                      m_deliveryRoot;
     QString                      m_lastError;
     QHash<QSslSocket *, std::shared_ptr<Connection>> m_connections;
 

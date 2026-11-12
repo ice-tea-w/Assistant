@@ -183,13 +183,14 @@ bool SyncServer::splitRel(const QString &relPath, QString *rootAbs, QString *sub
     if (m_roots.isEmpty())
         return false;
 
-    // 投递箱不属于任何同步根：`_inbox/<发送者>/…` 一律落到第一个根下面。
-    // 多根模式要求路径带别名，而投递没有别名可带，少了这条特例就永远 BAD_PATH。
+    // 投递箱不属于任何同步根，也不带别名：`_inbox/<发送者>/…` 落到投递目录。
+    // 以前这里是「落到第一个根下面」，副作用是用户在自己的同步范围里看到一堆 _inbox 异物，
+    // 而且它既不进收件箱、又被引擎跳过，只能人工清理。
     const int headSlash = relPath.indexOf(QLatin1Char('/'));
     const QString head  = headSlash < 0 ? relPath : relPath.left(headSlash);
     if (QString::compare(head, QStringLiteral("_inbox"), Qt::CaseInsensitive) == 0) {
-        *rootAbs = m_roots.first().localPath;
-        *subRel  = relPath;
+        *rootAbs = effectiveDeliveryRoot();
+        *subRel  = headSlash < 0 ? QString() : relPath.mid(headSlash + 1);
         return true;
     }
 
@@ -249,6 +250,29 @@ QString SyncServer::sharedRoot() const
 QList<ServedRoot> SyncServer::roots() const
 {
     return m_roots;
+}
+
+void SyncServer::setDeliveryRoot(const QString &absPath)
+{
+    if (absPath.isEmpty()) {
+        m_deliveryRoot.clear();
+        return;
+    }
+    const QString native = QDir::cleanPath(QDir::fromNativeSeparators(absPath));
+    QDir().mkpath(native);   // 投递目录必须存在：PUT 的父目录检查走的是 ensureDirUnder
+    m_deliveryRoot = QDir(native).absolutePath();
+}
+
+QString SyncServer::deliveryRoot() const
+{
+    return m_deliveryRoot;
+}
+
+QString SyncServer::effectiveDeliveryRoot() const
+{
+    if (!m_deliveryRoot.isEmpty())
+        return m_deliveryRoot;
+    return m_roots.isEmpty() ? QString() : m_roots.first().localPath;
 }
 
 int SyncServer::readyConnections() const
@@ -852,6 +876,15 @@ QList<ServedFile> SyncServer::collectFiles()
                         QDirIterator::Subdirectories);
         while (it.hasNext())
             candidates.append({root.localPath, root.alias, it.next()});
+    }
+
+    // 投递箱在同步根之外，单独扫一遍；对外仍然叫 `_inbox/…`
+    // （没设投递目录时它在第一个根里面，已经由上面的遍历带出来了，别扫两遍）
+    if (!m_deliveryRoot.isEmpty()) {
+        QDirIterator it(m_deliveryRoot, QDir::Files | QDir::NoDotAndDotDot,
+                        QDirIterator::Subdirectories);
+        while (it.hasNext())
+            candidates.append({m_deliveryRoot, QStringLiteral("_inbox"), it.next()});
     }
 
     QSet<QString> seen;

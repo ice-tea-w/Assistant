@@ -559,7 +559,7 @@ Rectangle {
 
                         Text {
                             text: dropArea.containsDrag ? "松手即发送"
-                                                       : "发给已配对的主机，对方「收取投递」后落进收件箱"
+                                                       : "发给已配对的主机：文件会直接落进对端收件箱"
                             color: dropArea.containsDrag ? syncPage.accentColor : syncPage.mutedColor
                             font.pixelSize: Style.captionSize
                             wrapMode: Text.WordWrap
@@ -580,12 +580,6 @@ Rectangle {
                             text: sync.outboxCount > 0 ? "立即发送（" + sync.outboxCount + "）" : "立即发送"
                             enabled: sync.outboxCount > 0 && !sync.sending
                             onClicked: sync.sendQueuedNow()
-                        }
-
-                        Button {
-                            text: "收取投递"
-                            enabled: !sync.sending && sync.peerPaired
-                            onClicked: sync.fetchIncoming()
                         }
 
                         Button {
