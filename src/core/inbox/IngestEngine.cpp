@@ -632,6 +632,67 @@ bool IngestEngine::archive(int downloadId, const QString &destDir, QString *erro
     return true;
 }
 
+bool IngestEngine::unarchive(int downloadId, QString *error)
+{
+    if (!m_db || !m_db->isOpen()) {
+        if (error)
+            *error = QStringLiteral("下载数据库未打开");
+        return false;
+    }
+    const auto row = m_db->byId(downloadId);
+    if (!row || row->inBox) {
+        if (error)
+            *error = QStringLiteral("该记录仍在收件箱，无需撤销归档");
+        return false;
+    }
+
+    // 只撤销**本应用**做的归档；用户自己移走的必须由 TrackingEngine 处理
+    JournalRow organize;
+    bool found = false;
+    const QVector<JournalRow> journals = m_db->journalFor(downloadId);
+    for (const JournalRow &journal : journals) {
+        if (journal.op == QLatin1String("organize")
+            && journal.opState == QLatin1String("done")
+            && journal.toPath == row->curPath) {
+            organize = journal;
+            found = true;
+        }
+    }
+    if (!found) {
+        if (error)
+            *error = QStringLiteral("这条不是本应用归档的（文件可能被手动移动），不能撤销归档");
+        return false;
+    }
+    if (!QFileInfo::exists(row->curPath)) {
+        if (error)
+            *error = QStringLiteral("归档后的文件已不存在：") + row->curPath;
+        return false;
+    }
+
+    QDir().mkpath(m_boxPath);
+    const QString target = uniqueTarget(m_boxPath, row->name);
+    const qint64 journal = m_db->beginJournal(downloadId, QStringLiteral("unarchive"),
+                                              row->curPath, target);
+    DWORD moveError = 0;
+    if (!moveFile(row->curPath, target, &moveError)) {
+        if (journal > 0)
+            m_db->finishJournal(journal, false, static_cast<int>(moveError));
+        if (error)
+            *error = QStringLiteral("撤销归档失败（Win32 %1）").arg(moveError);
+        return false;
+    }
+
+    if (journal > 0)
+        m_db->finishJournal(journal, true);
+    m_db->updateAfterUnarchive(downloadId, target);
+
+    Logger::get().info("IngestEngine: 撤销归档 {} → {}",
+                       organize.toPath.toStdString(), target.toStdString());
+    setNotice(QStringLiteral("已撤销归档：%1").arg(row->name));
+    emit changed();
+    return true;
+}
+
 bool IngestEngine::undo(int downloadId, QString *error)
 {
     if (!m_db || !m_db->isOpen()) {

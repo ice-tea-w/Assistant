@@ -89,6 +89,7 @@ public:
     bool updatePaths(int id, const QString &srcPath, const QString &curPath);
     bool updateBoxPath(int id, const QString &boxPath);
     bool updateAfterArchive(int id, const QString &curPath);   ///< 我方归档（规则 move/手动）
+    bool updateAfterUnarchive(int id, const QString &boxPath); ///< 撤销归档，回到 box
     bool setSuggestion(int id, const QString &dest, const QString &ruleName);
     bool setDupOf(int id, int dupOf);
 

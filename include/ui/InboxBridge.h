@@ -42,6 +42,11 @@ public:
 
     /// S11：按规则建议（suggest_dest）归档。
     Q_INVOKABLE bool archiveItem(int id);
+    /// S11：撤销本应用的归档（用户手动移走的不动）。
+    Q_INVOKABLE bool unarchiveItem(int id);
+    /// S11 查重裁决：保留两份（清除 dup 标记）/ 打开更早的那份。
+    Q_INVOKABLE bool keepBoth(int id);
+    Q_INVOKABLE void revealDuplicate(int id);
     /// S11：把当前路径加入待办。
     Q_INVOKABLE bool addToTodo(int id);
     /// S11：读取文本内容到系统剪贴板 + 剪贴板历史（>1 MB 或二进制拒绝）。

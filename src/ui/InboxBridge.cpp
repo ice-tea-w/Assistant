@@ -213,6 +213,48 @@ bool InboxBridge::archiveItem(int id)
     return true;
 }
 
+bool InboxBridge::unarchiveItem(int id)
+{
+    if (!m_engine)
+        return false;
+    QString error;
+    if (!m_engine->unarchive(id, &error)) {
+        m_lastError = error;
+        emit lastErrorChanged();
+        return false;
+    }
+    m_lastError.clear();
+    emit lastErrorChanged();
+    refresh();
+    return true;
+}
+
+bool InboxBridge::keepBoth(int id)
+{
+    if (!m_db)
+        return false;
+    m_db->setDupOf(id, 0);
+    refresh();
+    return true;
+}
+
+void InboxBridge::revealDuplicate(int id)
+{
+    if (!m_db)
+        return;
+    const auto row = m_db->byId(id);
+    if (!row || row->dupOf <= 0)
+        return;
+    const auto original = m_db->byId(row->dupOf);
+    if (!original)
+        return;
+    const QString path = original->curPath.isEmpty() ? original->boxPath : original->curPath;
+    if (path.isEmpty() || !QFileInfo::exists(path))
+        return;
+    QProcess::startDetached(QStringLiteral("explorer.exe"),
+                            { QStringLiteral("/select,") + QDir::toNativeSeparators(path) });
+}
+
 bool InboxBridge::addToTodo(int id)
 {
     if (!m_todoDb || !m_db)

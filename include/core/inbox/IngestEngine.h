@@ -58,6 +58,10 @@ public:
     /// 按建议/指定目录归档（把文件从 box 移到 dest 目录，走 journal）。
     bool archive(int downloadId, const QString &destDir, QString *error = nullptr);
 
+    /// 撤销**本应用**的归档：journal 里最后一次 organize 必须成功且目标仍是 cur_path；
+    /// 不是本应用移动的（用户自己移走）不动。
+    bool unarchive(int downloadId, QString *error = nullptr);
+
     /// 撤销一次接管：把文件从 box 移回原下载目录（同名冲突自动加 (n)）。
     bool undo(int downloadId, QString *error = nullptr);
 

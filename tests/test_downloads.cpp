@@ -826,6 +826,15 @@ void TestDownloads::ingestSuggestsThenArchives()
     QVERIFY(!row->inBox);
     QCOMPARE(row->trackState, QStringLiteral("FiledAway"));
 
+    // 撤销归档：只撤销本应用的 organize，文件回到 box
+    QString unarchiveError;
+    QVERIFY2(engine.unarchive(id, &unarchiveError), qPrintable(unarchiveError));
+    row = db.byId(id);
+    QVERIFY(row->inBox);
+    QCOMPARE(row->trackState, QStringLiteral("InBox"));
+    QVERIFY(QFileInfo::exists(boxDir + "/paper.pdf"));
+    QVERIFY(!QFileInfo::exists(archiveDir + "/paper.pdf"));
+
     watcher.stop();
     engine.setEventSource(nullptr);
     engine.stop();
@@ -931,6 +940,10 @@ void TestDownloads::ingestMarksDuplicate()
     const auto second = db.byId(secondId);
     QVERIFY(second.has_value());
     QCOMPARE(second->dupOf, firstId);
+
+    // 裁决：保留两份 → 清除标记
+    QVERIFY(db.setDupOf(secondId, 0));
+    QCOMPARE(db.byId(secondId)->dupOf, 0);
 
     watcher.stop();
     engine.setEventSource(nullptr);

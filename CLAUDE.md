@@ -161,8 +161,11 @@ Phase 3 剩余（收尾中，写在这里便于续接）：
       suggest/move/skip/notify）+ `skip` 不接管 + `autoOrganize` 才自动移动；quickSig 查重写 `dup_of`；
       「最近下载」`⋯` 菜单：归档到建议位置 / 加入待办 / 复制内容 / 复制路径；
       `downloads.db` v2 加 `suggest_dest` / `rule_name`。21 个用例，`ctest` 9/9
-- [ ] **C4 S11 剩余**：规则编辑器 + dry-run（仅 config.json）、查重裁决 UI/fullSig、
-      归档撤销入口、**IM 源适配器（QQ/微信/钉钉）**；移动仍在 GUI 线程
+- [x] **C4 S11 安全出口**（2026-11-12）：`IngestEngine::unarchive()` 只撤销本应用 journal 里的
+      `organize`（用户手动移走明确拒绝）；查重最小裁决：打开重复原件 / 保留两份（`dup_of=0`）；
+      **没有删除按钮**
+- [ ] **C5 S11 剩余**：规则编辑器 + dry-run（仍只有 config.json）、`fullSig`/删除到回收站、
+      **IM 源适配器（QQ/微信/钉钉）**；移动仍在 GUI 线程
 
 > ✅ **P0-3 已修掉**：不再套 2 万条任意截断，真机索引 20000 → **31845** 条，
 > `Documents`/`Downloads` 终于进得来。A3 的 Win32 扫描器扫 31845 条只要 **459–502 ms**。

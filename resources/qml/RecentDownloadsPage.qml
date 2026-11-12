@@ -243,6 +243,21 @@ Rectangle {
                         text: "复制路径"
                         onTriggered: inbox.copyPath(modelData.id)
                     }
+                    MenuItem {
+                        text: "撤销归档"
+                        enabled: !modelData.inBox && modelData.trackState === "FiledAway"
+                        onTriggered: inbox.unarchiveItem(modelData.id)
+                    }
+                    MenuItem {
+                        text: "打开重复的原件"
+                        visible: modelData.duplicate
+                        onTriggered: inbox.revealDuplicate(modelData.id)
+                    }
+                    MenuItem {
+                        text: "保留两份（清除重复标记）"
+                        visible: modelData.duplicate
+                        onTriggered: inbox.keepBoth(modelData.id)
+                    }
                     MenuSeparator { }
                     MenuItem {
                         text: "重新定位（索引反查）"

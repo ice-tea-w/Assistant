@@ -494,6 +494,26 @@ bool DownloadsDatabase::updateAfterArchive(int id, const QString &curPath)
     return true;
 }
 
+bool DownloadsDatabase::updateAfterUnarchive(int id, const QString &boxPath)
+{
+    if (!isOpen())
+        return false;
+    const QString now = nowIso();
+    QSqlQuery q(*m_db);
+    q.prepare(QStringLiteral(
+        "UPDATE downloads SET box_path=:p, cur_path=:p, in_box=1,"
+        " pipe_state='InBox', track_state='InBox', filed_at=NULL,"
+        " last_verified=:now, suggest_dest='' WHERE id=:id"));
+    q.bindValue(QStringLiteral(":p"), boxPath);
+    q.bindValue(QStringLiteral(":now"), now);
+    q.bindValue(QStringLiteral(":id"), id);
+    if (!q.exec()) {
+        m_lastError = q.lastError().text();
+        return false;
+    }
+    return true;
+}
+
 bool DownloadsDatabase::setSuggestion(int id, const QString &dest, const QString &ruleName)
 {
     if (!isOpen())
