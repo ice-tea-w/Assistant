@@ -42,7 +42,20 @@ const char *kSchema[] = {
         secret       BLOB NOT NULL,
         paired_at    INTEGER NOT NULL,
         last_seen_at INTEGER NOT NULL DEFAULT 0
-    ))"
+    ))",
+
+    R"(CREATE TABLE IF NOT EXISTS outbox (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        local_path      TEXT NOT NULL,
+        rel_path        TEXT NOT NULL,
+        size            INTEGER NOT NULL,
+        created_at      INTEGER NOT NULL,
+        attempts        INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at INTEGER NOT NULL DEFAULT 0,
+        last_error      TEXT NOT NULL DEFAULT ''
+    ))",
+
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_outbox_rel ON outbox(rel_path)"
 };
 
 } // namespace
@@ -328,4 +341,128 @@ bool SyncDatabase::touchDevice(const QString &deviceId, qint64 seenAt)
     q.addBindValue(seenAt);
     q.addBindValue(deviceId);
     return q.exec();
+}
+
+// ---- outbox ----
+
+bool SyncDatabase::enqueueOutbox(OutboxItem &item)
+{
+    QSqlQuery q(m_db);
+    q.prepare(QStringLiteral(
+        "INSERT INTO outbox (local_path, rel_path, size, created_at, attempts, next_attempt_at, last_error) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(rel_path) DO UPDATE SET local_path=excluded.local_path, "
+        "size=excluded.size, created_at=excluded.created_at, attempts=0, "
+        "next_attempt_at=excluded.next_attempt_at, last_error=''"));
+    q.addBindValue(item.localPath);
+    q.addBindValue(item.relPath);
+    q.addBindValue(item.size);
+    q.addBindValue(item.createdAt);
+    q.addBindValue(item.attempts);
+    q.addBindValue(item.nextAttemptAt);
+    // 默认构造的 QString 是 null，会以 NULL 绑定，撞 last_error 的 NOT NULL
+    q.addBindValue(item.lastError.isNull() ? QStringLiteral("") : item.lastError);
+    if (!q.exec()) {
+        Logger::get().warn("SyncDatabase: enqueueOutbox {} failed — {}",
+                           item.relPath.toStdString(), q.lastError().text().toStdString());
+        return false;
+    }
+
+    // 覆盖写时 id 不变，所以统一回查一次，调用方拿到的总是库里的真 id
+    QSqlQuery idQuery(m_db);
+    idQuery.prepare(QStringLiteral("SELECT id FROM outbox WHERE rel_path = ?"));
+    idQuery.addBindValue(item.relPath);
+    if (idQuery.exec() && idQuery.next())
+        item.id = idQuery.value(0).toLongLong();
+    return item.id > 0;
+}
+
+QList<OutboxItem> SyncDatabase::dueOutbox(qint64 now) const
+{
+    QList<OutboxItem> out;
+    QSqlQuery q(m_db);
+    q.prepare(QStringLiteral(
+        "SELECT id, local_path, rel_path, size, created_at, attempts, next_attempt_at, last_error "
+        "FROM outbox WHERE next_attempt_at <= ? ORDER BY id"));
+    q.addBindValue(now);
+    if (!q.exec())
+        return out;
+
+    while (q.next()) {
+        OutboxItem item;
+        item.id            = q.value(0).toLongLong();
+        item.localPath     = q.value(1).toString();
+        item.relPath       = q.value(2).toString();
+        item.size          = q.value(3).toLongLong();
+        item.createdAt     = q.value(4).toLongLong();
+        item.attempts      = q.value(5).toInt();
+        item.nextAttemptAt = q.value(6).toLongLong();
+        item.lastError     = q.value(7).toString();
+        out.append(item);
+    }
+    return out;
+}
+
+QList<OutboxItem> SyncDatabase::outboxItems() const
+{
+    QList<OutboxItem> out;
+    QSqlQuery q(m_db);
+    if (!q.exec(QStringLiteral(
+            "SELECT id, local_path, rel_path, size, created_at, attempts, next_attempt_at, last_error "
+            "FROM outbox ORDER BY id")))
+        return out;
+
+    while (q.next()) {
+        OutboxItem item;
+        item.id            = q.value(0).toLongLong();
+        item.localPath     = q.value(1).toString();
+        item.relPath       = q.value(2).toString();
+        item.size          = q.value(3).toLongLong();
+        item.createdAt     = q.value(4).toLongLong();
+        item.attempts      = q.value(5).toInt();
+        item.nextAttemptAt = q.value(6).toLongLong();
+        item.lastError     = q.value(7).toString();
+        out.append(item);
+    }
+    return out;
+}
+
+bool SyncDatabase::markOutboxSent(qint64 id)
+{
+    QSqlQuery q(m_db);
+    q.prepare(QStringLiteral("DELETE FROM outbox WHERE id = ?"));
+    q.addBindValue(id);
+    return q.exec();
+}
+
+bool SyncDatabase::markOutboxFailed(qint64 id, const QString &error, qint64 nextAttemptAt)
+{
+    QSqlQuery q(m_db);
+    q.prepare(QStringLiteral(
+        "UPDATE outbox SET attempts = attempts + 1, last_error = ?, next_attempt_at = ? WHERE id = ?"));
+    q.addBindValue(error);
+    q.addBindValue(nextAttemptAt);
+    q.addBindValue(id);
+    if (!q.exec()) {
+        Logger::get().warn("SyncDatabase: markOutboxFailed {} failed — {}",
+                           id, q.lastError().text().toStdString());
+        return false;
+    }
+    return true;
+}
+
+bool SyncDatabase::removeOutbox(qint64 id)
+{
+    QSqlQuery q(m_db);
+    q.prepare(QStringLiteral("DELETE FROM outbox WHERE id = ?"));
+    q.addBindValue(id);
+    return q.exec();
+}
+
+int SyncDatabase::outboxCount() const
+{
+    QSqlQuery q(m_db);
+    if (!q.exec(QStringLiteral("SELECT COUNT(*) FROM outbox")) || !q.next())
+        return 0;
+    return q.value(0).toInt();
 }

@@ -82,6 +82,7 @@ private slots:
     void databaseBaseline();
     void databaseConflicts();
     void databaseDevices();
+    void databaseOutbox();
 
     void folderTransportRoundTrip();
     void folderTransportRejectsTraversal();
@@ -1018,6 +1019,75 @@ void TestSync::tlsBackendSelfCheck()
 
     QVERIFY2(QSslSocket::supportsSsl(), "没有可用的 TLS 后端：直连通道无法启用");
     QVERIFY(!backends.isEmpty());
+}
+
+void TestSync::databaseOutbox()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString dbPath = dir.path() + "/sync.db";
+
+    SyncDatabase db(QStringLiteral("test_outbox"));
+    QVERIFY(db.open(dbPath));
+    QCOMPARE(db.outboxCount(), 0);
+    QVERIFY(db.outboxItems().isEmpty());
+
+    OutboxItem a;
+    a.localPath = QStringLiteral("E:/tmp/report.pdf");
+    a.relPath   = QStringLiteral("_inbox/dev-a1b2-laptop/1760000000_report.pdf");
+    a.size      = 1024;
+    a.createdAt = 1760000000;
+    QVERIFY(db.enqueueOutbox(a));
+    QVERIFY(a.id > 0);
+
+    OutboxItem b;
+    b.localPath = QStringLiteral("E:/tmp/照片.jpg");
+    b.relPath   = QStringLiteral("_inbox/dev-a1b2-laptop/1760000001_照片.jpg");
+    b.size      = 2048;
+    b.createdAt = 1760000001;
+    QVERIFY(db.enqueueOutbox(b));
+    QCOMPARE(db.outboxCount(), 2);
+
+    // 同一 relPath 再入队 → 覆盖，不新增，且失败计数清零
+    QVERIFY(db.markOutboxFailed(a.id, QStringLiteral("连不上主机"), 1760009999));
+    QList<OutboxItem> all = db.outboxItems();
+    QCOMPARE(all.size(), 2);
+    QCOMPARE(all.at(0).attempts, 1);
+    QCOMPARE(all.at(0).lastError, QStringLiteral("连不上主机"));
+
+    OutboxItem again = a;
+    again.id            = -1;
+    again.attempts      = 0;
+    again.nextAttemptAt = 0;
+    again.size          = 4096;
+    QVERIFY(db.enqueueOutbox(again));
+    QCOMPARE(db.outboxCount(), 2);
+    QCOMPARE(again.id, a.id);                       // 覆盖后 id 稳定
+    all = db.outboxItems();
+    QCOMPARE(all.at(0).size, qint64(4096));
+    QCOMPARE(all.at(0).attempts, 0);
+    QVERIFY(all.at(0).lastError.isEmpty());
+
+    // 到点才重试：next_attempt_at 在未来的不算 due
+    QVERIFY(db.markOutboxFailed(a.id, QStringLiteral("主机未监听"), 1760000500));
+    QList<OutboxItem> due = db.dueOutbox(1760000400);
+    QCOMPARE(due.size(), 1);                        // 只剩 b
+    QCOMPARE(due.at(0).relPath, b.relPath);
+    due = db.dueOutbox(1760000600);
+    QCOMPARE(due.size(), 2);
+
+    // 发送成功即删行；手动移除同样生效
+    QVERIFY(db.markOutboxSent(a.id));
+    QCOMPARE(db.outboxCount(), 1);
+    QVERIFY(db.removeOutbox(b.id));
+    QCOMPARE(db.outboxCount(), 0);
+
+    // 重开同一份库：outbox 表存在且为空（建表幂等）
+    db.close();
+    SyncDatabase reopen(QStringLiteral("test_outbox_reopen"));
+    QVERIFY(reopen.open(dbPath));
+    QCOMPARE(reopen.outboxCount(), 0);
+    reopen.close();
 }
 
 QTEST_MAIN(TestSync)
