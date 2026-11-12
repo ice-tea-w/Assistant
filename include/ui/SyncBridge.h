@@ -16,6 +16,10 @@ class QEventLoop;
 class QFileSystemWatcher;
 class ConfigManager;
 
+namespace Sync::Net {
+struct NetPeer;
+}
+
 /// 主面板「设备同步」页的 QML↔C++ 桥梁。
 ///
 /// 与 PanelBridge 并列而不是塞进它：PanelBridge 已承载待办/笔记/剪贴板三块，
@@ -50,6 +54,9 @@ class SyncBridge : public QObject
     Q_PROPERTY(bool         pairActive    READ pairActive    NOTIFY pairChanged)
     Q_PROPERTY(QVariantList pairedDevices READ pairedDevices NOTIFY pairedDevicesChanged)
     Q_PROPERTY(bool         peerPaired    READ peerPaired    NOTIFY netChanged)
+    // ---- 投递（单文件直发 + 待发队列）----
+    Q_PROPERTY(int          outboxCount   READ outboxCount   NOTIFY outboxChanged)
+    Q_PROPERTY(QVariantList outboxList    READ outboxList    NOTIFY outboxChanged)
 
 public:
     explicit SyncBridge(QObject *parent = nullptr);
@@ -86,6 +93,8 @@ public:
     bool         pairActive() const;
     QVariantList pairedDevices() const;
     bool         peerPaired() const;
+    int          outboxCount() const;
+    QVariantList outboxList() const;
 
     Q_INVOKABLE void addSharedDir(const QString &path);
     Q_INVOKABLE void removeSharedDir(const QString &path);
@@ -147,6 +156,17 @@ public:
     /// 主机：解除某台已配对设备的授权
     Q_INVOKABLE void forgetDevice(const QString &deviceId);
 
+    /// 把文件放进待发队列（队友不在线也不丢），随后自动尝试发送
+    Q_INVOKABLE void queueSend(const QStringList &paths);
+    /// 立刻把队列里到点的条目发出去
+    Q_INVOKABLE void sendQueuedNow();
+    /// 从队列里删掉一条（放弃发送）
+    Q_INVOKABLE void removeQueuedItem(qint64 id);
+    /// 从主机的 `_inbox/` 领取投递到本机收件箱
+    Q_INVOKABLE void fetchIncoming();
+    /// 重新读一遍队列（供 QML 手动刷新）
+    Q_INVOKABLE void refreshOutbox();
+
 signals:
     void statusTextChanged();
     void busyChanged();
@@ -175,6 +195,9 @@ signals:
     void filesReceived(int count, const QString &inboxDir);
     /// 一键共享/一键连接的结果（QML 用来弹提示）
     void shareOpFinished(bool ok, const QString &message);
+    void outboxChanged();
+    /// 一轮发送的结果：成功几个、失败几个
+    void deliveryFinished(int sent, int failed);
 
 private:
     void onEngineProgress(int percent, const QString &file);
@@ -191,6 +214,7 @@ private:
     QString inboxPath() const;
     QString deliveryDir() const;
     void setSendStatus(const QString &text);
+    void setSending(bool b);
     void setShareStatus(const QString &text);
     /// "<别名>/相对路径" → 本地绝对路径；别名不认识时返回空串
     QString absForRel(const QString &relPath) const;
@@ -206,6 +230,10 @@ private:
     /// 本机稳定标识，首次调用时生成并写进配置
     QString ensureDeviceId();
     bool    hasPeerCredentials() const;
+    /// 按配置拼出直连对端；凭据不全时返回 false
+    bool    peerForDelivery(Sync::Net::NetPeer *peer) const;
+    /// 投递落点：`_inbox/<设备名>-<deviceId 前 8 位>/<时间戳>_<原名>`
+    QString deliveryRelPath(const QString &localPath) const;
 
     QString       m_dbPath;
     ConfigManager *m_config = nullptr;
@@ -248,6 +276,11 @@ private:
     QString      m_pairCode;
     bool         m_pairActive = false;
     QVariantList m_pairedDevices;
+
+    // ---- 投递 ----
+    QVariantList m_outboxList;
+    bool         m_flushBusy = false;
+    bool         m_fetchBusy = false;
 
     QFileSystemWatcher *m_watcher = nullptr;
     QTimer *m_inboxTimer = nullptr;

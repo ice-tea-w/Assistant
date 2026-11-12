@@ -502,10 +502,8 @@ Rectangle {
                 }
             }
 
-            // ---- 发送文件（折叠，默认收起）----
-            // ---- 发送：仍走共享目录的 _投递/（旧通道），直连直发在 B 阶段 ----
+            // ---- 发送文件：直连投递（不经过共享目录，也不需要两边的同步目录对齐）----
             Rectangle {
-                visible: false
                 Layout.fillWidth: true
                 Layout.preferredHeight: sendColumn.implicitHeight + 20
                 radius: Style.radius
@@ -519,7 +517,7 @@ Rectangle {
                         var files = []
                         for (var i = 0; i < drop.urls.length; ++i)
                             files.push(String(drop.urls[i]))
-                        sync.sendFiles(files)
+                        sync.queueSend(files)
                     }
                 }
 
@@ -533,53 +531,117 @@ Rectangle {
                         Layout.fillWidth: true
                         spacing: 8
 
-                        Button {
-                            text: sendBody.visible ? "▾ 发送文件（拖拽即发）"
-                                                   : "▸ 发送文件（拖拽即发）"
-                            flat: true
-                            onClicked: sendBody.visible = !sendBody.visible
+                        Text {
+                            text: "发送文件"
+                            font.pixelSize: Style.titleSize
+                            font.bold: true
                         }
 
                         Text {
-                            visible: !sendBody.visible
-                            text: dropArea.containsDrag ? "松手即发送" : "也可以把文件拖到这张卡片上"
+                            text: dropArea.containsDrag ? "松手即发送"
+                                                       : "发给已配对的主机，对方「收取投递」后落进收件箱"
                             color: dropArea.containsDrag ? syncPage.accentColor : syncPage.mutedColor
                             font.pixelSize: Style.captionSize
+                            wrapMode: Text.WordWrap
                             Layout.fillWidth: true
                         }
                     }
 
-                    ColumnLayout {
-                        id: sendBody
-                        visible: false
+                    RowLayout {
                         Layout.fillWidth: true
                         spacing: 8
+
+                        Button {
+                            text: "选择文件…"
+                            onClicked: sendDialog.open()
+                        }
+
+                        Button {
+                            text: sync.outboxCount > 0 ? "立即发送（" + sync.outboxCount + "）" : "立即发送"
+                            enabled: sync.outboxCount > 0 && !sync.sending
+                            onClicked: sync.sendQueuedNow()
+                        }
+
+                        Button {
+                            text: "收取投递"
+                            enabled: !sync.sending && sync.peerPaired
+                            onClicked: sync.fetchIncoming()
+                        }
+
+                        Button {
+                            text: "收件箱"
+                            onClicked: sync.openInbox()
+                        }
+                    }
+
+                    Text {
+                        visible: !sync.peerPaired
+                        text: "还没和主机配对：文件先存在队列里，配对后自动发出去。"
+                        color: syncPage.accentColor
+                        font.pixelSize: Style.captionSize
+                        wrapMode: Text.WordWrap
+                        Layout.fillWidth: true
+                    }
+
+                    Text {
+                        visible: sync.outboxCount === 0
+                        text: "队列是空的。拖文件到这张卡片上，或点「选择文件…」。"
+                        color: syncPage.mutedColor
+                        font.pixelSize: Style.captionSize
+                        wrapMode: Text.WordWrap
+                        Layout.fillWidth: true
+                    }
+
+                    Repeater {
+                        model: sync.outboxList
 
                         RowLayout {
                             Layout.fillWidth: true
                             spacing: 8
 
-                            Button {
-                                text: "选择文件…"
-                                enabled: !sync.sending
-                                onClicked: sendDialog.open()
+                            Text {
+                                text: modelData.name
+                                elide: Text.ElideMiddle
+                                Layout.fillWidth: true
                             }
 
                             Text {
-                                text: sync.sendStatus.length > 0
-                                      ? sync.sendStatus
-                                      : "文件会落到共享目录的 _投递/<你的设备名>/ 里；对端程序在线时自动收进收件箱。"
-                                color: syncPage.mutedColor
+                                text: modelData.lastError.length > 0
+                                      ? "重试 " + modelData.attempts + " 次：" + modelData.lastError
+                                      : (modelData.attempts > 0
+                                         ? "已重试 " + modelData.attempts + " 次"
+                                         : Math.round(modelData.size / 1024) + " KB")
+                                color: modelData.lastError.length > 0 ? syncPage.accentColor
+                                                                      : syncPage.mutedColor
                                 font.pixelSize: Style.captionSize
-                                wrapMode: Text.WordWrap
-                                Layout.fillWidth: true
+                                elide: Text.ElideRight
+                                Layout.preferredWidth: 260
+                            }
+
+                            Button {
+                                text: "移除"
+                                onClicked: sync.removeQueuedItem(modelData.id)
                             }
                         }
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
 
                         ProgressBar {
                             Layout.fillWidth: true
                             indeterminate: true
                             visible: sync.sending
+                        }
+
+                        Text {
+                            text: String(sync.sendStatus)
+                            visible: sync.sendStatus.length > 0 && !sync.sending
+                            color: syncPage.mutedColor
+                            font.pixelSize: Style.captionSize
+                            elide: Text.ElideRight
+                            Layout.fillWidth: true
                         }
                     }
                 }
@@ -753,6 +815,6 @@ Rectangle {
         id: sendDialog
         title: "选择要发送的文件"
         fileMode: FileDialog.OpenFiles
-        onAccepted: sync.sendFiles(selectedFiles)
+        onAccepted: sync.queueSend(selectedFiles)
     }
 }

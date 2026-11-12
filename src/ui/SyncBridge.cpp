@@ -999,6 +999,261 @@ void SyncBridge::forgetDevice(const QString &deviceId)
     refreshPairedDevices();
 }
 
+// ---- 投递（单文件直发 + 待发队列）----
+
+int SyncBridge::outboxCount() const { return m_outboxList.size(); }
+QVariantList SyncBridge::outboxList() const { return m_outboxList; }
+
+bool SyncBridge::peerForDelivery(Sync::Net::NetPeer *peer) const
+{
+    if (!peer || !hasPeerCredentials())
+        return false;
+
+    const Sync::Net::PeerAddress parsed =
+        Sync::Net::parsePeerAddress(m_config->syncPeerAddress(), quint16(m_config->syncPort()));
+    if (!parsed.ok)
+        return false;
+
+    peer->host                = parsed.host;
+    peer->port                = parsed.port;
+    peer->expectedFingerprint = m_config->syncPeerFingerprint();
+    peer->deviceSecret        = QByteArray::fromBase64(m_config->syncPeerSecret().toLatin1());
+    peer->deviceId            = const_cast<SyncBridge *>(this)->ensureDeviceId();
+    return !peer->deviceSecret.isEmpty();
+}
+
+QString SyncBridge::deliveryRelPath(const QString &localPath) const
+{
+    // 投递箱按发送者分子目录：deviceId 前 8 位防两台同名设备互相覆盖
+    const QString deviceId = const_cast<SyncBridge *>(this)->ensureDeviceId();
+    const QString who = QStringLiteral("%1-%2")
+                            .arg(Sync::sanitizeDeviceName(m_deviceName),
+                                 deviceId.left(8));
+    const QString name = Sync::makeDeliveryFileName(
+        QFileInfo(localPath).fileName(), QDateTime::currentDateTime());
+    return QStringLiteral("_inbox/%1/%2").arg(who, name);
+}
+
+void SyncBridge::refreshOutbox()
+{
+    QVariantList list;
+    const QList<OutboxItem> items = m_db.outboxItems();
+    for (const OutboxItem &item : items) {
+        QVariantMap row;
+        row.insert(QStringLiteral("id"), item.id);
+        row.insert(QStringLiteral("name"), QFileInfo(item.localPath).fileName());
+        row.insert(QStringLiteral("path"), item.localPath);
+        row.insert(QStringLiteral("size"), item.size);
+        row.insert(QStringLiteral("attempts"), item.attempts);
+        row.insert(QStringLiteral("lastError"), item.lastError);
+        row.insert(QStringLiteral("nextAttemptAt"), item.nextAttemptAt);
+        list.append(row);
+    }
+    if (list == m_outboxList)
+        return;
+    m_outboxList = list;
+    emit outboxChanged();
+}
+
+void SyncBridge::queueSend(const QStringList &paths)
+{
+    if (paths.isEmpty())
+        return;
+
+    int queued = 0;
+    for (const QString &raw : paths) {
+        const QString path = toLocalPath(raw.trimmed());
+        const QFileInfo info(path);
+        if (!info.isFile()) {
+            setSendStatus(QStringLiteral("跳过（不是文件）：%1").arg(path));
+            continue;
+        }
+        OutboxItem item;
+        item.localPath     = info.absoluteFilePath();
+        item.relPath       = deliveryRelPath(item.localPath);
+        item.size          = info.size();
+        item.createdAt     = QDateTime::currentSecsSinceEpoch();
+        item.nextAttemptAt = 0;
+        if (!m_db.enqueueOutbox(item)) {
+            setSendStatus(QStringLiteral("入队失败：%1").arg(info.fileName()));
+            continue;
+        }
+        ++queued;
+    }
+
+    refreshOutbox();
+    Logger::get().info("SyncBridge/投递: 入队 {} 个，队列 {} 个", queued, m_outboxList.size());
+    setSendStatus(queued > 0 ? QStringLiteral("已加入队列 %1 个").arg(queued)
+                             : QStringLiteral("没有可发送的文件"));
+    if (queued > 0)
+        sendQueuedNow();
+}
+
+void SyncBridge::removeQueuedItem(qint64 id)
+{
+    if (!m_db.removeOutbox(id)) {
+        setSendStatus(QStringLiteral("从队列移除失败"));
+        return;
+    }
+    refreshOutbox();
+    setSendStatus(QStringLiteral("已从队列移除"));
+}
+
+void SyncBridge::sendQueuedNow()
+{
+    if (m_flushBusy)
+        return;
+
+    QList<OutboxItem> due = m_db.dueOutbox(QDateTime::currentSecsSinceEpoch());
+    if (due.isEmpty()) {
+        refreshOutbox();
+        return;
+    }
+
+    Sync::Net::NetPeer peer;
+    if (!peerForDelivery(&peer)) {
+        setSendStatus(QStringLiteral("还没和主机配对，文件先留在队列里"));
+        return;
+    }
+
+    m_flushBusy = true;
+    setSending(true);
+    setSendStatus(QStringLiteral("正在发送 %1 个文件…").arg(due.size()));
+
+    // 数据库连接归主线程：工作线程只拿快照、只做网络与文件，结果回主线程落库
+    auto *worker = QThread::create([this, due, peer] {
+        struct Outcome { qint64 id; bool ok; QString error; };
+        QList<Outcome> results;
+
+        Sync::Net::NetTransport transport(peer);
+        for (const OutboxItem &item : due) {
+            if (!QFileInfo::exists(item.localPath)) {
+                results.append({item.id, false, QStringLiteral("源文件已不在：%1").arg(item.localPath)});
+                continue;
+            }
+            if (!transport.push(item.localPath, item.relPath)) {
+                results.append({item.id, false, transport.lastError()});
+                continue;
+            }
+            results.append({item.id, true, QString()});
+        }
+
+        QMetaObject::invokeMethod(this, [this, results] {
+            const qint64 now = QDateTime::currentSecsSinceEpoch();
+            int sent = 0;
+            int failed = 0;
+            for (const auto &r : results) {
+                if (r.ok) {
+                    m_db.markOutboxSent(r.id);
+                    ++sent;
+                    continue;
+                }
+                ++failed;
+                // 退避：每失败一次多等一分钟，最长十分钟
+                const OutboxItem probe = [&] {
+                    for (const OutboxItem &i : m_db.outboxItems())
+                        if (i.id == r.id)
+                            return i;
+                    return OutboxItem{};
+                }();
+                const qint64 wait = qMin<qint64>(60 * (probe.attempts + 1), 600);
+                m_db.markOutboxFailed(r.id, r.error, now + wait);
+            }
+
+            m_flushBusy = false;
+            setSending(false);
+            refreshOutbox();
+            setSendStatus(QStringLiteral("发送完成：成功 %1，失败 %2").arg(sent).arg(failed));
+            emit deliveryFinished(sent, failed);
+        }, Qt::QueuedConnection);
+    });
+
+    connect(worker, &QThread::finished, this, [worker] { worker->deleteLater(); },
+            Qt::QueuedConnection);
+    worker->start();
+}
+
+void SyncBridge::fetchIncoming()
+{
+    if (m_fetchBusy)
+        return;
+
+    Sync::Net::NetPeer peer;
+    if (!peerForDelivery(&peer)) {
+        setSendStatus(QStringLiteral("还没和主机配对，收不了投递"));
+        return;
+    }
+
+    m_fetchBusy = true;
+    setSending(true);
+    setSendStatus(QStringLiteral("正在检查投递…"));
+
+    const QString inbox = inboxPath();
+    auto *worker = QThread::create([this, peer, inbox] {
+        struct Arrival { QString relPath; QString hash; bool placed; };
+        QList<Arrival> arrivals;
+
+        Sync::Net::NetTransport transport(peer);
+        const QList<Sync::RemoteFileInfo> remote = transport.listRemote();
+        if (remote.isEmpty() && !transport.lastError().isEmpty()) {
+            QMetaObject::invokeMethod(this, [this, error = transport.lastError()] {
+                m_fetchBusy = false;
+                setSending(false);
+                setSendStatus(QStringLiteral("收取失败：%1").arg(error));
+            }, Qt::QueuedConnection);
+            return;
+        }
+
+        for (const Sync::RemoteFileInfo &info : remote) {
+            // 主机上只有一个投递箱，谁发的都在 `_inbox/` 里
+            if (!info.relPath.startsWith(QStringLiteral("_inbox/"), Qt::CaseInsensitive))
+                continue;
+
+            const QString tmp = QDir::tempPath()
+                + QStringLiteral("/assistant-delivery-%1").arg(QFileInfo(info.relPath).fileName());
+            if (!transport.fetch(info.relPath, tmp))
+                continue;
+
+            const QString placed = Sync::placeIncoming(tmp, inbox);
+            QFile::remove(tmp);
+            if (placed.isEmpty())
+                continue;
+
+            QFile f(placed);
+            QByteArray hash;
+            if (f.open(QIODevice::ReadOnly)) {
+                QCryptographicHash hasher(QCryptographicHash::Sha256);
+                hasher.addData(&f);
+                hash = hasher.result().toHex();
+            }
+            arrivals.append({info.relPath, QString::fromLatin1(hash), true});
+        }
+
+        QMetaObject::invokeMethod(this, [this, arrivals, inbox] {
+            int count = static_cast<int>(arrivals.size());
+            for (const auto &a : arrivals)
+                m_db.markReceived(a.relPath, a.hash);
+            m_fetchBusy = false;
+            setSending(false);
+            if (count > 0) {
+                setSendStatus(QStringLiteral("收到 %1 个文件").arg(count));
+                emit filesReceived(count, inbox);
+            } else {
+                setSendStatus(QStringLiteral("没有新的投递"));
+            }
+        }, Qt::QueuedConnection);
+
+        // 领完再从主机删除（服务端会扔进它自己的 .sync/trash）；
+        // 删失败不致命，下一轮 List 还会看到它，markReceived 让本地不会重复落盘。
+        for (const auto &a : arrivals)
+            transport.removeRemote(a.relPath);
+    });
+
+    connect(worker, &QThread::finished, this, [worker] { worker->deleteLater(); },
+            Qt::QueuedConnection);
+    worker->start();
+}
+
 // ---- 同步 ----
 
 void SyncBridge::syncNow()
@@ -1147,6 +1402,14 @@ void SyncBridge::setSendStatus(const QString &text)
         return;
     m_sendStatus = text;
     emit sendStatusChanged();
+}
+
+void SyncBridge::setSending(bool b)
+{
+    if (m_sending == b)
+        return;
+    m_sending = b;
+    emit sendingChanged();
 }
 
 void SyncBridge::setShareStatus(const QString &text)
@@ -1535,6 +1798,13 @@ void SyncBridge::startWatchers()
 
 void SyncBridge::pollInbox()
 {
+    // 0) 直连投递：队列里有到点的条目就顺手发一轮。主机不在线时 push 直接失败、
+    //    条目退回队列，不在这里做任何额外判断（退避时间由 outbox 自己记）。
+    if (m_db.isOpen() && !m_flushBusy && !m_fetchBusy && !m_outboxList.isEmpty()
+        && hasPeerCredentials()) {
+        sendQueuedNow();
+    }
+
     if (m_sharedDir.isEmpty())
         return;
 
