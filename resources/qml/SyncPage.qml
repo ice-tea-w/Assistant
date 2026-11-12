@@ -16,6 +16,8 @@ Rectangle {
     readonly property color accentColor: Style.accentColor
     readonly property color borderColor: Style.borderColor
     readonly property color panelColor: Style.panelColor
+    // 自己是主机：有配对的设备、但没有对端地址（主机只被连，不主动连人）
+    readonly property bool hostMode: !sync.peerPaired && sync.pairedDevices.length > 0
 
     // 自检结果（点「自检」后填充，多行）
     property string selfText: ""
@@ -561,8 +563,11 @@ Rectangle {
                         }
 
                         Text {
-                            text: dropArea.containsDrag ? "松手即发送"
-                                                       : "发给已配对的主机：文件会直接落进对端收件箱"
+                            text: dropArea.containsDrag
+                                  ? "松手即发送"
+                                  : (syncPage.hostMode
+                                     ? "主机没有对方地址可推，文件先进本机发件箱，等对方连上来点「收取文件」时取走"
+                                     : "发给已配对的主机：文件会直接落进对端收件箱")
                             color: dropArea.containsDrag ? syncPage.accentColor : syncPage.mutedColor
                             font.pixelSize: Style.captionSize
                             wrapMode: Text.WordWrap
@@ -576,7 +581,7 @@ Rectangle {
 
                         Button {
                             text: "选择文件…"
-                            enabled: sync.peerPaired
+                            enabled: sync.peerPaired || syncPage.hostMode
                             onClicked: sendDialog.open()
                         }
 
@@ -584,6 +589,13 @@ Rectangle {
                             text: sync.outboxCount > 0 ? "立即发送（" + sync.outboxCount + "）" : "立即发送"
                             enabled: sync.outboxCount > 0 && !sync.sending && sync.peerPaired
                             onClicked: sync.sendQueuedNow()
+                        }
+
+                        Button {
+                            text: "收取文件"
+                            visible: sync.peerPaired
+                            enabled: !sync.sending && sync.peerPaired
+                            onClicked: sync.fetchIncoming()
                         }
 
                         Button {
@@ -641,9 +653,10 @@ Rectangle {
                     }
 
                     Text {
-                        visible: !sync.peerPaired && sync.pairedDevices.length > 0
-                        text: "主机模式：这台机器只接收，暂时不能向外发送（主机→客户端还没做），"
-                              + "所以「选择文件」是灰的；对方发来的文件会直接进收件箱。"
+                        visible: syncPage.hostMode
+                        text: "主机模式：这台机器不主动连人，所以没有「立即发送」；"
+                              + "选的文件会先放进发件箱，对方连上来点「收取文件」时取走。"
+                              + "对方发给你的文件会直接进收件箱。"
                         color: syncPage.mutedColor
                         font.pixelSize: Style.captionSize
                         wrapMode: Text.WordWrap

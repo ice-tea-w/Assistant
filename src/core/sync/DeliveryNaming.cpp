@@ -123,6 +123,9 @@ bool isReservedDeliveryPath(const QString &relPath)
     static const QStringList kReserved = {
         QStringLiteral("_inbox"),
         QStringLiteral("_投递"),
+        // 发件箱：主机暂存"要给别人"的文件，等对方连上来取；同样不能被同步引擎当成普通文件来回传
+        QStringLiteral("_outbox"),
+        QStringLiteral(".outbox"),
     };
 
     const QStringList parts = relPath.split(QLatin1Char('/'), Qt::SkipEmptyParts);

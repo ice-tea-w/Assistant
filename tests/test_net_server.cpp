@@ -133,6 +133,7 @@ private slots:
     void pairingIssuesSecretOnce();
     void pairingWrongCodeClosesWindow();
     void deliveryBoxLandsInInbox();
+    void outboxLandsInOutboxRoot();
 
 private:
     bool startServer(const QString &root);
@@ -443,6 +444,69 @@ void TestNetServer::deliveryBoxLandsInInbox()
     QVERIFY(ok);
     QVERIFY2(listed.contains(rel), "List 里看不到投递文件，接收方就永远领不到");
     QVERIFY(!listed.contains(QStringLiteral("work/_inbox/dev-test/1760000000_hello.txt")));
+}
+
+void TestNetServer::outboxLandsInOutboxRoot()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString workDir   = root.filePath(QStringLiteral("work"));
+    const QString outboxDir = root.filePath(QStringLiteral("outbox"));
+    QVERIFY(QDir().mkpath(workDir));
+
+    auto secret = [this](const QString &deviceId) {
+        return deviceId == QStringLiteral("dev-test") ? m_deviceSecret : QByteArray();
+    };
+    SyncServer server(m_serverIdentity, secret);
+    server.setDeliveryRoot(root.filePath(QStringLiteral("inbox")));
+    server.setOutboxRoot(outboxDir);
+    QVERIFY2(server.listen(0, {{workDir, QStringLiteral("work")}}), qPrintable(server.lastError()));
+
+    TestClient client;
+    QVERIFY(client.connectTo(server.port(), m_clientIdentity));
+    QVERIFY(authenticate(client, 300));
+
+    // 主机暂存给某台设备的文件：`_outbox/<收件设备>/…` 落到发件箱目录，不进同步根
+    const QByteArray content = QByteArrayLiteral("for peer");
+    const QString dev  = QStringLiteral("dev-peer01");
+    const QString rel  = QStringLiteral("_outbox/%1/1760000000_note.txt").arg(dev);
+    QJsonObject put;
+    put.insert(QStringLiteral("path"), rel);
+    put.insert(QStringLiteral("size"), content.size());
+    put.insert(QStringLiteral("hash"),
+               QString::fromLatin1(QCryptographicHash::hash(content, QCryptographicHash::Sha256).toHex()));
+    QVERIFY(client.send(makeJsonFrame(FrameType::Put, 400, put)));
+
+    Frame chunk;
+    chunk.type    = FrameType::PutChunk;
+    chunk.flags   = quint16(FrameFlag::FlagBlob);
+    chunk.reqId   = 401;
+    chunk.payload = content;
+    QVERIFY(client.send(chunk));
+
+    Frame end;
+    end.type    = FrameType::End;
+    end.flags   = quint16(FrameFlag::FlagJson);
+    end.reqId   = 402;
+    end.payload = QJsonDocument(QJsonObject()).toJson(QJsonDocument::Compact);
+    QVERIFY(client.send(end));
+
+    Frame ack;
+    QVERIFY(client.read(&ack));
+    QCOMPARE(ack.type, FrameType::PutAck);
+    QVERIFY(QJsonDocument::fromJson(ack.payload).object().value(QStringLiteral("ok")).toBool());
+
+    QCOMPARE(readFile(outboxDir + QLatin1Char('/') + dev + QStringLiteral("/1760000000_note.txt")),
+             content);
+    QVERIFY(!QFileInfo::exists(workDir + QStringLiteral("/_outbox")));
+
+    // 收件方靠 List 发现自己那份
+    bool ok = false;
+    const QHash<QString, QString> listed = listAll(server, &ok);
+    QVERIFY(ok);
+    QVERIFY2(listed.contains(rel), "List 里看不到发件箱文件，对端就永远取不到");
+    QVERIFY(!listed.contains(QStringLiteral("work/_outbox/") + dev
+                             + QStringLiteral("/1760000000_note.txt")));
 }
 
 bool TestNetServer::authenticate(TestClient &client, quint32 baseId)

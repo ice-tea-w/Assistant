@@ -222,6 +222,8 @@ private:
     /// 按当前同步根重建 watcher（递归注册目录，上限 1000 个）
     void startWatchers();
     QString inboxPath() const;
+    /// 主机侧的发件箱根目录（`outbox/<收件设备>/…`），与 sync.db 同级
+    QString outboxDir() const;
     QString deliveryDir() const;
     void setSendStatus(const QString &text);
     void setSending(bool b);

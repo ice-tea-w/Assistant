@@ -73,6 +73,11 @@ public:
     void setDeliveryRoot(const QString &absPath);
     QString deliveryRoot() const;
 
+    /// 发件箱（`_outbox/<收件设备>/…`）的落地目录：主机暂存"要给别人"的文件，
+    /// 等对方连上来自己取（客户端不监听，主机推不过去）。
+    void setOutboxRoot(const QString &absPath);
+    QString outboxRoot() const;
+
     /// 已认证成功的连接数（测试与界面用）。
     int readyConnections() const;
 
@@ -135,6 +140,8 @@ private:
 
     /// 实际生效的投递目录：设过就用设的，没设退回第一个根
     QString effectiveDeliveryRoot() const;
+    /// 实际生效的发件箱目录：设过就用设的，没设就用「投递目录下 `.outbox`」
+    QString effectiveOutboxRoot() const;
 
     bool isPeerLocked(const QString &peer) const;
     void recordAuthFailure(const QString &peer);
@@ -163,6 +170,8 @@ private:
     QString                      m_sharedRoot;
     /// 投递箱落地目录（空 = 退回第一个根）
     QString                      m_deliveryRoot;
+    /// 发件箱落地目录（空 = 投递目录下的 `.outbox`）
+    QString                      m_outboxRoot;
     QString                      m_lastError;
     QHash<QSslSocket *, std::shared_ptr<Connection>> m_connections;
 

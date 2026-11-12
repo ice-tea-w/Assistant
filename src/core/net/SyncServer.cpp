@@ -194,6 +194,13 @@ bool SyncServer::splitRel(const QString &relPath, QString *rootAbs, QString *sub
         return true;
     }
 
+    // 发件箱：主机暂存"要给别人"的文件，等对方连上来自己取（客户端不监听，主机推不过去）
+    if (QString::compare(head, QStringLiteral("_outbox"), Qt::CaseInsensitive) == 0) {
+        *rootAbs = effectiveOutboxRoot();
+        *subRel  = headSlash < 0 ? QString() : relPath.mid(headSlash + 1);
+        return !rootAbs->isEmpty();
+    }
+
     // 单根且无别名：relPath 就是根内相对路径（兼容旧的"共享根"形态）
     if (m_roots.first().alias.isEmpty()) {
         *rootAbs = m_roots.first().localPath;
@@ -273,6 +280,33 @@ QString SyncServer::effectiveDeliveryRoot() const
     if (!m_deliveryRoot.isEmpty())
         return m_deliveryRoot;
     return m_roots.isEmpty() ? QString() : m_roots.first().localPath;
+}
+
+void SyncServer::setOutboxRoot(const QString &absPath)
+{
+    if (absPath.isEmpty()) {
+        m_outboxRoot.clear();
+        return;
+    }
+    const QString native = QDir::cleanPath(QDir::fromNativeSeparators(absPath));
+    QDir().mkpath(native);
+    m_outboxRoot = QDir(native).absolutePath();
+}
+
+QString SyncServer::outboxRoot() const
+{
+    return m_outboxRoot;
+}
+
+QString SyncServer::effectiveOutboxRoot() const
+{
+    if (!m_outboxRoot.isEmpty())
+        return m_outboxRoot;
+    const QString delivery = effectiveDeliveryRoot();
+    if (delivery.isEmpty())
+        return QString();
+    // 没显式设发件箱时放在投递目录下的隐藏子目录：不与收件箱里的文件混在一起
+    return QDir(delivery).filePath(QStringLiteral(".outbox"));
 }
 
 int SyncServer::readyConnections() const
@@ -887,6 +921,15 @@ QList<ServedFile> SyncServer::collectFiles()
             candidates.append({m_deliveryRoot, QStringLiteral("_inbox"), it.next()});
     }
 
+    // 发件箱同理：对外叫 `_outbox/<收件设备>/<文件>`
+    const QString outbox = effectiveOutboxRoot();
+    if (!m_outboxRoot.isEmpty() && !outbox.isEmpty()) {
+        QDirIterator it(outbox, QDir::Files | QDir::NoDotAndDotDot,
+                        QDirIterator::Subdirectories);
+        while (it.hasNext())
+            candidates.append({outbox, QStringLiteral("_outbox"), it.next()});
+    }
+
     QSet<QString> seen;
 
     for (const Candidate &cand : candidates) {
@@ -895,6 +938,7 @@ QList<ServedFile> SyncServer::collectFiles()
         const QString sub = QDir(cand.rootAbs).relativeFilePath(info.absoluteFilePath());
         if (sub.startsWith(QStringLiteral(".sync") + QLatin1Char('/'))
             || sub.startsWith(QStringLiteral(".assistant-sync") + QLatin1Char('/'))
+            || sub.startsWith(QStringLiteral(".outbox") + QLatin1Char('/'))
             || sub.contains(QStringLiteral("/.assistant-part"))
             || sub.endsWith(QStringLiteral(".assistant-part"))) {
             continue;

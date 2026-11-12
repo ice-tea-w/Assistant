@@ -732,10 +732,11 @@ void SyncBridge::startNetServer()
     // 投递直接落进收件箱：对端 push `_inbox/<发送者>/<文件>`，服务端就写到收件箱里，
     // 不再先攒在同步根下面等人来领（那样用户会在自己的同步范围里看到异物）。
     const QString deliveryRoot = inboxPath();
+    const QString outboxRoot   = outboxDir();
     m_netRunning = true;
     setNetStatus(QStringLiteral("正在监听 %1 端口…").arg(wantPort));
 
-    m_netThread = QThread::create([this, identity, roots, wantPort, deliveryRoot] {
+    m_netThread = QThread::create([this, identity, roots, wantPort, deliveryRoot, outboxRoot] {
         auto *server = new Sync::Net::SyncServer(identity, [this](const QString &deviceId) {
             QMutexLocker locker(&m_netMutex);
             return m_netSecrets.value(deviceId);
@@ -763,6 +764,7 @@ void SyncBridge::startNetServer()
         });
 
         server->setDeliveryRoot(deliveryRoot);
+        server->setOutboxRoot(outboxRoot);
 
         if (!server->listen(wantPort, roots)) {
             const QString err = server->lastError();
@@ -1114,6 +1116,48 @@ void SyncBridge::queueSend(const QStringList &paths)
     if (paths.isEmpty())
         return;
 
+    // 主机模式：自己没有对端可推（客户端不监听），只能先把文件放进发件箱，
+    // 等对方连上来点「收取文件」时取走。这里不做网络，纯本地暂存。
+    if (!hasPeerCredentials()) {
+        const QList<DeviceRecord> devices = m_db.allDevices();
+        if (devices.isEmpty()) {
+            setSendStatus(QStringLiteral("还没和任何设备配对：先让对方的连接方来配对，再发文件"));
+            return;
+        }
+        const QString recipient = devices.first().deviceId;
+        const QString dir = QDir(outboxDir()).filePath(recipient);
+        if (!QDir().mkpath(dir)) {
+            setSendStatus(QStringLiteral("建不出发件箱目录：%1").arg(dir));
+            return;
+        }
+
+        int staged = 0;
+        for (const QString &raw : paths) {
+            const QFileInfo info(toLocalPath(raw.trimmed()));
+            if (!info.isFile()) {
+                setSendStatus(QStringLiteral("跳过（不是文件）：%1").arg(info.filePath()));
+                continue;
+            }
+            const QString base = Sync::makeDeliveryFileName(
+                info.fileName(), QDateTime::currentDateTime());
+            QString dst = dir + QLatin1Char('/') + base;
+            for (int seq = 2; QFileInfo::exists(dst); ++seq)
+                dst = dir + QLatin1Char('/') + base + QStringLiteral("_%1").arg(seq);
+            if (QFile::copy(info.absoluteFilePath(), dst))
+                ++staged;
+            else
+                setSendStatus(QStringLiteral("放进发件箱失败：%1").arg(info.fileName()));
+        }
+
+        refreshOutbox();
+        Logger::get().info("SyncBridge/投递: 放进发件箱 {} 个，收件设备 {}",
+                           staged, recipient.toStdString());
+        setSendStatus(staged > 0
+                          ? QStringLiteral("已放进发件箱 %1 个：等对方连上来点「收取文件」").arg(staged)
+                          : QStringLiteral("没有可发送的文件"));
+        return;
+    }
+
     int queued = 0;
     for (const QString &raw : paths) {
         const QString path = toLocalPath(raw.trimmed());
@@ -1254,10 +1298,12 @@ void SyncBridge::fetchIncoming()
 
     m_fetchBusy = true;
     setSending(true);
-    setSendStatus(QStringLiteral("正在检查投递…"));
+    setSendStatus(QStringLiteral("正在检查发件箱…"));
 
     const QString inbox = inboxPath();
-    auto *worker = QThread::create([this, peer, inbox] {
+    const QString boxPrefix =
+        QStringLiteral("_outbox/%1/").arg(ensureDeviceId());
+    auto *worker = QThread::create([this, peer, inbox, boxPrefix] {
         struct Arrival { QString relPath; QString hash; bool placed; };
         QList<Arrival> arrivals;
 
@@ -1496,6 +1542,13 @@ void SyncBridge::setShareStatus(const QString &text)
         return;
     m_shareStatus = text;
     emit shareStatusChanged();
+}
+
+QString SyncBridge::outboxDir() const
+{
+    // 与 sync.db 同级，跟着数据目录走；不进用户的收件箱，免得和收到的文件混在一起
+    const QString base = m_dbPath.isEmpty() ? QDir::tempPath() : QFileInfo(m_dbPath).absolutePath();
+    return QDir(base).filePath(QStringLiteral("outbox"));
 }
 
 QString SyncBridge::inboxPath() const
