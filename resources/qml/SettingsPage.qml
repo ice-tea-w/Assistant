@@ -540,6 +540,89 @@ Rectangle {
             }
         }
 
+        // ---- IM 接收目录（S11，默认关闭，需用户确认）----
+        ColumnLayout {
+            id: imSection
+            Layout.fillWidth: true
+            spacing: 8
+
+            Text {
+                text: "IM 接收目录（QQ / 微信 / 钉钉）"
+                color: mutedColor
+                font.pixelSize: 12
+            }
+
+            RowLayout {
+                spacing: 8
+
+                Switch {
+                    checked: config.imEnabled
+                    onToggled: config.setImEnabled(checked)
+                }
+
+                Text {
+                    text: config.imEnabled
+                          ? "已开启：复制到这些目录的完成文件会进收件箱"
+                          : "未开启（默认，不碰 IM 目录）"
+                    color: mutedColor
+                    font.pixelSize: 12
+                }
+            }
+
+            Text {
+                text: "多个目录用分号分隔；修改目录后需重启应用（watcher 只在启动时建）。"
+                color: mutedColor
+                font.pixelSize: Style.captionSize
+                wrapMode: Text.WordWrap
+                Layout.maximumWidth: 460
+            }
+
+            TextField {
+                id: imDirsField
+                text: config.imDirs.join(";")
+                placeholderText: "C:/Users/me/Documents/WeChat Files;..."
+                Layout.fillWidth: true
+                Layout.maximumWidth: 460
+            }
+
+            RowLayout {
+                spacing: 4
+
+                Button {
+                    text: "扫描常见目录"
+                    onClicked: {
+                        var found = inbox.imCandidates()
+                        if (found.length === 0) {
+                            imStatus.text = "没有发现常见 IM 目录"
+                        } else {
+                            imDirsField.text = found.join(";")
+                            imStatus.text = "已填入 " + found.length + " 个目录，请确认后保存"
+                        }
+                    }
+                }
+                Button {
+                    text: "保存目录"
+                    onClicked: {
+                        var parts = imDirsField.text.split(";")
+                        var dirs = []
+                        for (var i = 0; i < parts.length; ++i) {
+                            var d = parts[i].trim()
+                            if (d.length > 0)
+                                dirs.push(d)
+                        }
+                        config.setImDirs(dirs)
+                        imStatus.text = "已保存（" + dirs.length + " 个目录），重启后监听"
+                    }
+                }
+            }
+
+            Text {
+                id: imStatus
+                color: accentColor
+                font.pixelSize: Style.captionSize
+            }
+        }
+
         // ---- 全局热键（可自定义，Phase 3 收尾）----
         ColumnLayout {
             spacing: 8

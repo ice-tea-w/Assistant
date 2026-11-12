@@ -28,6 +28,8 @@ class ConfigManager : public QObject
     Q_PROPERTY(int inboxSettleMs READ inboxSettleMs NOTIFY inboxChanged)
 Q_PROPERTY(bool inboxAutoOrganize READ inboxAutoOrganize WRITE setInboxAutoOrganize NOTIFY inboxChanged)
 Q_PROPERTY(QVariantList inboxRules READ inboxRules NOTIFY inboxRulesChanged)
+Q_PROPERTY(bool imEnabled READ imEnabled NOTIFY imChanged)
+Q_PROPERTY(QStringList imDirs READ imDirs NOTIFY imChanged)
     Q_PROPERTY(QString syncLocalRoot READ syncLocalRoot NOTIFY syncChanged)
     Q_PROPERTY(QVariantList syncRoots READ syncRoots NOTIFY syncChanged)
     Q_PROPERTY(QString syncSharedDir READ syncSharedDir NOTIFY syncChanged)
@@ -86,6 +88,8 @@ public:
     QStringList inboxExtraWatchDirs() const;         ///< 只监听、不索引的归档目录
     bool    inboxAutoOrganize() const;               ///< 规则 move 是否真正执行（默认 false）
     QVariantList inboxRules() const;                 ///< 归档规则（S11，原始配置形态）
+    bool        imEnabled() const;                   ///< IM 接收目录接管（默认 false）
+    QStringList imDirs() const;                      ///< 用户确认过的 IM 接收目录
     // ---- 设备同步（Phase: 联网功能）----
     QString syncLocalRoot() const;             // 本地共享根（单根时代的旧字段，保留兼容）
     /// 要同步的本地文件夹列表，每项 {localPath, alias}。为空时回退到 syncLocalRoot。
@@ -116,6 +120,8 @@ public:
     Q_INVOKABLE void setInboxPath(const QString &path);
     Q_INVOKABLE void setInboxAutoOrganize(bool enabled);
     Q_INVOKABLE void setInboxRules(const QVariantList &rules);
+    Q_INVOKABLE void setImEnabled(bool enabled);
+    Q_INVOKABLE void setImDirs(const QStringList &dirs);
 
     Q_INVOKABLE void setSyncLocalRoot(const QString &path);
     Q_INVOKABLE void setSyncRoots(const QVariantList &roots);
@@ -141,6 +147,7 @@ signals:
     void fileProjectPolicyChanged();
     void inboxChanged();
     void inboxRulesChanged();
+    void imChanged();
     void syncChanged();
     void configLoaded();
 
@@ -169,6 +176,8 @@ private:
     QStringList    m_inboxExtraWatchDirs;
     bool           m_inboxAutoOrganize = false;
     QVariantList   m_inboxRules;
+    bool           m_imEnabled = false;
+    QStringList    m_imDirs;
     QString m_filePath;
 
     QString m_syncLocalRoot;

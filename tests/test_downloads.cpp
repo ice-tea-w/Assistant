@@ -25,6 +25,7 @@
 #include "core/QueryParser.h"
 #include "core/inbox/DownloadRules.h"
 #include "core/inbox/IDownloadSource.h"
+#include "core/inbox/ImSource.h"
 #include "core/inbox/IngestEngine.h"
 #include "core/inbox/TrackingEngine.h"
 #include "database/DownloadsDatabase.h"
@@ -54,6 +55,8 @@ private slots:
     void offlineReconcileUsesNameAndFileId();
     void manualRelocateFindsUnknown();
     void rulesMatchKindSizeAndPriority();
+    void imSourceOnlyWatchesConfirmedDirs();
+    void imIngestCapturesToBox();
     void ingestSuggestsThenArchives();
     void autoOrganizeMovesImmediately();
     void ingestMarksDuplicate();
@@ -790,6 +793,73 @@ void TestDownloads::rulesMatchKindSizeAndPriority()
     const auto bigDecision = rules.evaluate(doc, QStringLiteral("/inbox"));
     QCOMPARE(bigDecision.ruleName, QStringLiteral("big"));
     QCOMPARE(bigDecision.action, QStringLiteral("notify"));
+}
+
+void TestDownloads::imSourceOnlyWatchesConfirmedDirs()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    QVERIFY(QDir().mkpath(dir.path() + "/WeChat Files"));
+    QVERIFY(QDir().mkpath(dir.path() + "/Tencent Files"));
+
+    ImSource empty(QStringList{});
+    QVERIFY(!empty.isAvailable());
+    QCOMPARE(empty.roots().size(), 0);
+
+    ImSource source({ dir.path() + "/WeChat Files",
+                      dir.path() + "/Tencent Files",
+                      dir.path() + "/NotInstalled" });
+    QVERIFY(source.isAvailable());
+    const auto roots = source.roots();
+    QCOMPARE(roots.size(), 2);                 // 不存在的目录被忽略
+    QVERIFY(roots.first().recursive);
+    QCOMPARE(source.settleMs(), 2000);
+    QVERIFY(source.partialExtensions().contains(QStringLiteral("tmp")));
+}
+
+void TestDownloads::imIngestCapturesToBox()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString imDir = dir.path() + "/WeChat Files";
+    const QString boxDir = dir.path() + "/Inbox";
+    QVERIFY(QDir().mkpath(imDir));
+
+    DownloadsDatabase db(QStringLiteral("downloads_test_im"));
+    QVERIFY(db.open(dir.path() + "/downloads.db"));
+
+    ImSource source({ imDir });
+    IngestEngine engine(&db);
+    engine.setSource(&source);
+    engine.setBoxPath(boxDir);
+    engine.setSettleMs(120);
+    engine.setEnabled(true);
+
+    FileEventDispatcher dispatcher;
+    FileWatcher watcher;
+    watcher.setCoalesceMs(50);
+    engine.setEventSource(&dispatcher);
+    connect(&watcher, &FileWatcher::batchReady, this,
+            [&dispatcher](const QVector<FileSystemEvent> &batch) { dispatcher.publish(batch); });
+
+    QSignalSpy captured(&engine, &IngestEngine::captured);
+    QVERIFY(engine.start());
+    QVERIFY(watcher.start({ imDir }));
+
+    QVERIFY(writeFile(imDir + "/wechat_received.pdf", "im file"));
+    QTRY_VERIFY_WITH_TIMEOUT(captured.count() > 0, 10000);
+
+    const int id = captured.first().at(0).toInt();
+    const auto row = db.byId(id);
+    QVERIFY(row.has_value());
+    QCOMPARE(row->sourceId, QStringLiteral("im"));
+    QVERIFY(row->inBox);
+    QVERIFY(QFileInfo::exists(boxDir + "/wechat_received.pdf"));
+
+    watcher.stop();
+    engine.setEventSource(nullptr);
+    engine.stop();
+    db.close();
 }
 
 void TestDownloads::ingestSuggestsThenArchives()

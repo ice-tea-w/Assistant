@@ -60,7 +60,7 @@ cmake --build build --config Debug
 
 ## 当前开发阶段
 
-**v0.4.0 文件子系统 A + B + C（S9）+ D（S10 主体）+ E（S11 核心）** + **M4 插件市场已合并**（2026-11-12）
+**v0.4.0 文件子系统 A + B + C（S9）+ D（S10）+ E（S11 完整）** + **M4 插件市场已合并**（2026-11-12）
 
 已完成：
 - Phase 0: Hello 窗口、编译环境
@@ -170,8 +170,12 @@ Phase 3 剩余（收尾中，写在这里便于续接）：
 - [x] **C6 查重收尾**（2026-11-12）：`FileIdentity::fullSignature`（流式 SHA-256，只用于裁决）；
       `RecycleBin::moveToRecycleBin`（`SHFileOperationW` + `FOF_ALLOWUNDO`，永不 `DeleteFile`）；
       两段式 fullSig 比对 + 确认框后才删，`pipe/track = Deleted`；24 个用例，`ctest` 9/9
-- [ ] **C7 最后的缺口**：**IM 源适配器（QQ/微信/钉钉）**（需真实环境确认目录与“边接收边判定”）；
-      移动仍在 GUI 线程
+- [x] **C7 IM 源适配器**（2026-11-12）：`ImSource`（默认关闭、目录需用户确认、递归监听）；
+      `inbox.im.enabled/dirs` + 设置页开关/目录/“扫描常见目录”/保存；独立 `IngestEngine`
+      共享 downloads.db / box / 规则，`source_id=im`；26 个用例，`ctest` 9/9；
+      真机冒烟 `watching 8 root(s)` + IM 文件进 box。目录变更需重启
+- [ ] **C8 优化项（非功能缺口）**：USN Journal、`Unknown` 的手动文件选择器、
+      跨卷 strong 真实 e2e、移动操作移出 GUI 线程
 
 > ✅ **P0-3 已修掉**：不再套 2 万条任意截断，真机索引 20000 → **31845** 条，
 > `Documents`/`Downloads` 终于进得来。A3 的 Win32 扫描器扫 31845 条只要 **459–502 ms**。
@@ -233,7 +237,8 @@ Phase 3 剩余（收尾中，写在这里便于续接）：
 | FileIdentity | `include/core/FileIdentity.h`, `src/core/FileIdentity.cpp` | 物理身份 `(volumeSerial, FileId)` + `quickSig`（首尾 64KB）+ `fullSig`（裁决用全量 SHA-256）+ 独占打开检测 |
 | RecycleBin | `include/core/RecycleBin.h`, `src/core/RecycleBin.cpp` | 删除只走回收站（`SHFileOperationW` + `FOF_ALLOWUNDO`），永不 `DeleteFile` |
 | DownloadsDatabase | `include/database/DownloadsDatabase.h`, `src/database/DownloadsDatabase.cpp` | `downloads.db`（独立连接 `downloads`，**权威数据**）：downloads 双状态 + move_journal + tracking_events + rules + sources + app_meta；迁移失败拒绝启动 |
-| IDownloadSource / BrowserSource | `include/core/inbox/IDownloadSource.h`, `src/core/inbox/BrowserSource.cpp` | 下载源适配器（Phase C 只有浏览器）：`FOLDERID_Downloads`、临时后缀、静默期；IM 源留给 S11 |
+| IDownloadSource / BrowserSource | `include/core/inbox/IDownloadSource.h`, `src/core/inbox/BrowserSource.cpp` | 下载源接口 + 浏览器（`FOLDERID_Downloads`、临时后缀、静默期） |
+| ImSource | `include/core/inbox/ImSource.h`, `src/core/inbox/ImSource.cpp` | IM 接收目录（QQ/微信/钉钉）：用户确认目录、递归监听、`source_id=im`；常见目录扫描 |
 | IngestEngine | `include/core/inbox/IngestEngine.h`, `src/core/inbox/IngestEngine.cpp` | 收件箱管线：事件驱动 → A/B/C 完成判定（退避）→ `MoveFileExW` → 登记 FileId/quickSig → journal/对账 → 撤销 |
 | TrackingEngine | `include/core/inbox/TrackingEngine.h`, `src/core/inbox/TrackingEngine.cpp` | 去向追踪：同卷 FileId（exact）/ 跨卷 quickSig（strong）/ 多级链 / 离线级别 0–2 / 单条手动重定位 |
 | DownloadRules | `include/core/inbox/DownloadRules.h`, `src/core/inbox/DownloadRules.cpp` | 归档规则：kind/size 匹配、priority first-match、`{inbox}/{name}/{yyyy}` 模板；suggest/move/skip/notify |

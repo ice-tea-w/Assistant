@@ -5,6 +5,7 @@
 #include "core/Logger.h"
 #include "core/RecycleBin.h"
 #include "core/inbox/IngestEngine.h"
+#include "core/inbox/ImSource.h"
 #include "core/inbox/DownloadRules.h"
 #include "core/inbox/TrackingEngine.h"
 #include "database/ClipboardDatabase.h"
@@ -283,6 +284,11 @@ QVariantList InboxBridge::previewRules(const QVariantList &rules) const
         out.append(item);
     }
     return out;
+}
+
+QStringList InboxBridge::imCandidates() const
+{
+    return ImSource::discover();
 }
 
 bool InboxBridge::prepareDeleteDuplicate(int id)

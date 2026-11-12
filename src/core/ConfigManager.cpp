@@ -80,6 +80,8 @@ void ConfigManager::applyDefaults()
     m_inboxExtraWatchDirs.clear();
     m_inboxAutoOrganize = false;
     m_inboxRules.clear();
+    m_imEnabled = false;
+    m_imDirs.clear();
 
     // 设备同步：路径留空由用户在设置页填；设备名默认取主机名
     m_syncLocalRoot.clear();
@@ -288,6 +290,17 @@ void ConfigManager::load()
                     m_inboxRules.append(rule);
                 }
             }
+            if (in.contains("im") && in["im"].is_object()) {
+                const auto &im = in["im"];
+                m_imEnabled = im.value("enabled", false);
+                if (im.contains("dirs") && im["dirs"].is_array()) {
+                    m_imDirs.clear();
+                    for (const auto &item : im["dirs"]) {
+                        if (item.is_string())
+                            m_imDirs.append(QString::fromStdString(item.get<std::string>()));
+                    }
+                }
+            }
         }
         // sync（设备同步）
         if (j.contains("sync")) {
@@ -421,6 +434,13 @@ void ConfigManager::save()
             } }
         });
     }
+    j["inbox"]["im"] = {
+        {"enabled", m_imEnabled},
+        {"dirs", json::array()}
+    };
+    for (const QString &dir : m_imDirs)
+        j["inbox"]["im"]["dirs"].push_back(dir.toStdString());
+
     j["sync"] = {
         {"localRoot",  m_syncLocalRoot.toStdString()},
         {"sharedDir",  m_syncSharedDir.toStdString()},
@@ -524,6 +544,16 @@ bool ConfigManager::inboxAutoOrganize() const
 QVariantList ConfigManager::inboxRules() const
 {
     return m_inboxRules;
+}
+
+bool ConfigManager::imEnabled() const
+{
+    return m_imEnabled;
+}
+
+QStringList ConfigManager::imDirs() const
+{
+    return m_imDirs;
 }
 
 void ConfigManager::setInboxEnabled(bool enabled)
@@ -671,6 +701,24 @@ void ConfigManager::setInboxRules(const QVariantList &rules)
     save();
     Logger::get().info("ConfigManager: 归档规则已更新（{} 条）", rules.size());
     emit inboxRulesChanged();
+}
+
+void ConfigManager::setImEnabled(bool enabled)
+{
+    if (m_imEnabled == enabled)
+        return;
+    m_imEnabled = enabled;
+    save();
+    emit imChanged();
+}
+
+void ConfigManager::setImDirs(const QStringList &dirs)
+{
+    if (m_imDirs == dirs)
+        return;
+    m_imDirs = dirs;
+    save();
+    emit imChanged();
 }
 
 void ConfigManager::setSyncLocalRoot(const QString &path)

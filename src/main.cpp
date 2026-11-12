@@ -15,6 +15,7 @@
 #include "core/FileScanner.h"
 #include "core/FileWatcher.h"
 #include "core/inbox/IDownloadSource.h"
+#include "core/inbox/ImSource.h"
 #include "core/inbox/IngestEngine.h"
 #include "core/inbox/TrackingEngine.h"
 #include "database/HistoryDatabase.h"
@@ -112,12 +113,22 @@ int main(int argc, char *argv[])
     ingest.setBoxPath(config.inboxPath());
     ingest.setEnabled(config.inboxEnabled());
     ingest.setSettleMs(config.inboxSettleMs());
-    {
-        DownloadRules rules;
-        rules.load(config.inboxRules());
-        ingest.setRules(rules);
-        ingest.setAutoOrganize(config.inboxAutoOrganize());
-    }
+
+    DownloadRules downloadRules;
+    downloadRules.load(config.inboxRules());
+    ingest.setRules(downloadRules);
+    ingest.setAutoOrganize(config.inboxAutoOrganize());
+
+    // IM 源（S11）：目录由用户显式配置，默认关闭；每个目录递归监听。
+    // 独立引擎共享 downloads.db / box / 规则；收件箱对账只由 browser 引擎负责。
+    ImSource     imSource(config.imDirs());
+    IngestEngine imIngest(&downloadsDb);
+    imIngest.setSource(&imSource);
+    imIngest.setBoxPath(config.inboxPath());
+    imIngest.setEnabled(config.inboxEnabled() && config.imEnabled());
+    imIngest.setAutoReconcileBox(false);
+    imIngest.setRules(downloadRules);
+    imIngest.setAutoOrganize(config.inboxAutoOrganize());
 
     // ---- app indexer (Step 5): register launchable Start Menu apps ----
     for (const AppIndexer::Entry &app : AppIndexer::scan())
@@ -167,6 +178,7 @@ int main(int argc, char *argv[])
     FileWatcher         fileWatcher;
     fileIndex.setEventSource(&fileEvents);
     ingest.setEventSource(&downloadEvents);
+    imIngest.setEventSource(&downloadEvents);
     tracking.setEventSource(&trackingEvents);
     QObject::connect(&fileWatcher, &FileWatcher::batchReady,
                      [&fileEvents, &downloadEvents, &trackingEvents](const QVector<FileSystemEvent> &batch) {
@@ -181,10 +193,17 @@ int main(int argc, char *argv[])
         if (!extra.isEmpty() && !watchRoots.contains(extra))
             watchRoots.append(extra);   // 只监听、不索引（tracking.extraWatchDirs）
     }
+    if (config.inboxEnabled() && config.imEnabled()) {
+        for (const IDownloadSource::WatchRoot &root : imSource.roots()) {
+            if (!watchRoots.contains(root.dir))
+                watchRoots.append(root.dir);
+        }
+    }
 
     // 顺序有讲究：先让 IngestEngine 建好收件箱目录，否则 FileWatcher 会跳过不存在的根、
     // FileIndex 首次扫描也会漏掉 box（收件箱文件就搜不到）。
     ingest.start();                  // 双对账（journal intent + box 幽灵条目）+ 建 box
+    imIngest.start();                // IM 源（共享 box，只做接管，不做 box 对账）
     fileIndex.startAsync();          // 放在 engine.load() 之前，但不再阻塞
     fileWatcher.start(watchRoots);
     tracking.start();                // 去向追踪（实时 + 索引就绪后的离线反查）
@@ -195,12 +214,21 @@ int main(int argc, char *argv[])
         ingest.setBoxPath(config.inboxPath());
         ingest.setSettleMs(config.inboxSettleMs());
         ingest.setAutoOrganize(config.inboxAutoOrganize());
+        imIngest.setEnabled(config.inboxEnabled() && config.imEnabled());
+        imIngest.setBoxPath(config.inboxPath());
+        imIngest.setAutoOrganize(config.inboxAutoOrganize());
+    });
+    QObject::connect(&config, &ConfigManager::imChanged, &app, [&] {
+        // 目录变化需要重启才能重建 watcher；开关可以立即生效
+        imIngest.setEnabled(config.inboxEnabled() && config.imEnabled());
     });
     QObject::connect(&config, &ConfigManager::inboxRulesChanged, &app, [&] {
         DownloadRules rules;
         rules.load(config.inboxRules());
         ingest.setRules(rules);
         ingest.setAutoOrganize(config.inboxAutoOrganize());
+        imIngest.setRules(rules);
+        imIngest.setAutoOrganize(config.inboxAutoOrganize());
     });
 
     Logger::get().info("FileIndex: engine = v2（硬上限 {} 条）",
@@ -216,15 +244,16 @@ int main(int argc, char *argv[])
         tray.notify(QStringLiteral("收到 %1 个文件").arg(count),
                     QStringLiteral("收件箱：") + inboxDir);
     });
-    // 接管成功后弹一条托盘通知（Phase C）
-    QObject::connect(&ingest, &IngestEngine::captured, &tray,
-                     [&tray](int, const QString &name, qint64 size) {
+    // 接管成功后弹一条托盘通知（Phase C；IM 源同样）
+    const auto notifyCaptured = [&tray](int, const QString &name, qint64 size) {
         const QString sizeText = size >= 1024 * 1024
                                      ? QStringLiteral("%1 MB").arg(size / (1024.0 * 1024.0), 0, 'f', 1)
                                      : QStringLiteral("%1 KB").arg(size / 1024.0, 0, 'f', 1);
         tray.notify(QStringLiteral("已接管 %1").arg(name),
                     sizeText + QStringLiteral(" · 已放入收件箱"));
-    });
+    };
+    QObject::connect(&ingest, &IngestEngine::captured, &tray, notifyCaptured);
+    QObject::connect(&imIngest, &IngestEngine::captured, &tray, notifyCaptured);
     HotkeyManager hotkey;
 
     // 设置页改热键需要（先注册失败要能回滚，见 PanelBridge::applyHotkey）
@@ -316,6 +345,7 @@ int main(int argc, char *argv[])
     inboxBridge.setClipboardDatabase(&clipDb);
     inboxBridge.setTrackingEngine(&tracking);
     QObject::connect(&tracking, &TrackingEngine::changed, &inboxBridge, &InboxBridge::refresh);
+    QObject::connect(&imIngest, &IngestEngine::changed, &inboxBridge, &InboxBridge::refresh);
 
     // ---- main panel window (Phase 3 Step 1) ----
     // 常驻主面板：独立 engine，初始隐藏，由 🏠 按钮 / 托盘菜单触发显示。

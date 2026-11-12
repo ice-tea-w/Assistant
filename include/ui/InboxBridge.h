@@ -53,6 +53,8 @@ public:
     Q_INVOKABLE bool deleteDuplicate(int id);
     /// 规则 dry-run：不入库、不移动，只返回“当前待整理会命中哪条规则、去哪里”。
     Q_INVOKABLE QVariantList previewRules(const QVariantList &rules) const;
+    /// 扫描常见 IM 目录（只返回存在的），供设置页填入后由用户确认。
+    Q_INVOKABLE QStringList imCandidates() const;
     /// S11：把当前路径加入待办。
     Q_INVOKABLE bool addToTodo(int id);
     /// S11：读取文本内容到系统剪贴板 + 剪贴板历史（>1 MB 或二进制拒绝）。
