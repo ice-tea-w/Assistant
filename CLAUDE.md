@@ -98,10 +98,13 @@ cmake --build build --config Debug
       收件箱行暂时隐藏（仍绑共享目录的 `_投递/`，等 B 阶段直连投递）
 - [x] 单文件直发（2026-11-12，B 阶段前半）：`sync.db` 加 `outbox` 表（离线排队 + 退避重试）；
       投递路径固定 `_inbox/<设备名>-<deviceId 前 8 位>/<时间戳>_<原名>`；服务端 `splitRel()` 把首段
-      `_inbox` 映射到第一个根（不要求别名）；`Sync::isReservedDeliveryPath()` 让引擎两侧跳过投递箱
-      （否则投递文件会被当同步内容来回传）；桥新增 `queueSend` / `sendQueuedNow` / `fetchIncoming` /
-      `removeQueuedItem`，页面「发送文件」卡从隐藏改常显（选择文件 / 立即发送 / 收取投递 / 收件箱）
-- [ ] 直连剩余：`LocalDirTransport`（host 本地根与共享根对称）、直连卡片真机肉眼走查、两台机器真跑、
+      `_inbox` 映射到 **`setDeliveryRoot()` 指定的收件箱**（不要求别名；没设时退回第一个根只为兼容旧用例），
+      投递不再落进同步范围；`Sync::isReservedDeliveryPath()` 让引擎两侧跳过投递箱
+      （否则投递文件会被当同步内容来回传）；桥新增 `queueSend` / `sendQueuedNow` / `removeQueuedItem`，
+      页面「发送文件」卡常显（选择文件 / 立即发送 / 收件箱）。投递是**客户端→主机**单向：
+      对端一 push 就落进主机收件箱，不需要「领取」；`fetchIncoming()` 因此对主机早退
+- [ ] 直连剩余：主机→客户端投递（需客户端也监听，或保留 `_inbox` 暂存 + 领取）、
+      `LocalDirTransport`（host 本地根与共享根对称）、直连卡片真机肉眼走查、两台机器真跑、
       双实例投递走查（停主机后发送 → 队列保留 → 重开主机自动补发）、C 阶段删 `FolderTransport` /
       `DeliveryNaming`（仅剩 `isReservedDeliveryPath` 在用时不要一起删）/ SMB 命令与用例
 
