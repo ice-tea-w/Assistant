@@ -1166,7 +1166,14 @@ void SyncBridge::sendQueuedNow()
 
     Sync::Net::NetPeer peer;
     if (!peerForDelivery(&peer)) {
-        setSendStatus(QStringLiteral("还没和主机配对，文件先留在队列里"));
+        // 主机只负责被连：它没有对端地址可推，队列里的文件也就永远发不出去，
+        // 所以这里必须说清"为什么"和"怎么办"，不能只说没配对（主机明明配过设备）。
+        if (!m_db.allDevices().isEmpty()) {
+            setSendStatus(QStringLiteral(
+                "主机模式：这台机器只接收，暂时不能向外发送（主机→客户端还没做）"));
+        } else {
+            setSendStatus(QStringLiteral("还没和主机配对，文件先留在队列里，配对后自动发出"));
+        }
         return;
     }
 

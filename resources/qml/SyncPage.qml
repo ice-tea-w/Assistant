@@ -534,6 +534,9 @@ Rectangle {
                     id: dropArea
                     anchors.fill: parent
                     onDropped: {
+                        // 主机模式没有可送达的对端，入队只会让文件卡在这里
+                        if (!sync.peerPaired)
+                            return
                         var files = []
                         for (var i = 0; i < drop.urls.length; ++i)
                             files.push(String(drop.urls[i]))
@@ -573,12 +576,13 @@ Rectangle {
 
                         Button {
                             text: "选择文件…"
+                            enabled: sync.peerPaired
                             onClicked: sendDialog.open()
                         }
 
                         Button {
                             text: sync.outboxCount > 0 ? "立即发送（" + sync.outboxCount + "）" : "立即发送"
-                            enabled: sync.outboxCount > 0 && !sync.sending
+                            enabled: sync.outboxCount > 0 && !sync.sending && sync.peerPaired
                             onClicked: sync.sendQueuedNow()
                         }
 
@@ -634,6 +638,16 @@ Rectangle {
                             flat: true
                             onClicked: sync.refreshPairState()
                         }
+                    }
+
+                    Text {
+                        visible: !sync.peerPaired && sync.pairedDevices.length > 0
+                        text: "主机模式：这台机器只接收，暂时不能向外发送（主机→客户端还没做），"
+                              + "所以「选择文件」是灰的；对方发来的文件会直接进收件箱。"
+                        color: syncPage.mutedColor
+                        font.pixelSize: Style.captionSize
+                        wrapMode: Text.WordWrap
+                        Layout.fillWidth: true
                     }
 
                     Text {
