@@ -58,6 +58,39 @@ const char *kSchema[] = {
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_outbox_rel ON outbox(rel_path)"
 };
 
+/// 早期设计文档里的 devices 表（id/name/peer_id/peer_name/pair_secret…）与现在这套
+/// device_id/fingerprint/secret 不兼容。CREATE TABLE IF NOT EXISTS 会安静地跳过，
+/// 之后 upsertDevice 只会得到一句 "Parameter count mismatch"。这里把旧表改个名留着，
+/// 让下面的 CREATE 重新建出新表。
+bool migrateLegacyDevices(QSqlDatabase &db)
+{
+    QSqlQuery info(db);
+    if (!info.exec(QStringLiteral("PRAGMA table_info(devices)")))
+        return false;
+
+    bool hasTable = false;
+    bool hasDeviceId = false;
+    while (info.next()) {
+        hasTable = true;
+        if (info.value(1).toString() == QLatin1String("device_id"))
+            hasDeviceId = true;
+    }
+    if (!hasTable || hasDeviceId)
+        return true;
+
+    const QString legacy = QStringLiteral("devices_legacy_%1")
+                               .arg(QDateTime::currentSecsSinceEpoch());
+    QSqlQuery alter(db);
+    if (!alter.exec(QStringLiteral("ALTER TABLE devices RENAME TO %1").arg(legacy))) {
+        Logger::get().error("SyncDatabase: 旧 devices 表改名失败 — {}",
+                            alter.lastError().text().toStdString());
+        return false;
+    }
+    Logger::get().warn("SyncDatabase: 旧 devices 表结构不兼容，已改名保留为 {}，外层重建新表",
+                       legacy.toStdString());
+    return true;
+}
+
 } // namespace
 
 SyncDatabase::SyncDatabase(const QString &connectionName)
@@ -88,6 +121,9 @@ bool SyncDatabase::open(const QString &filePath)
 
 bool SyncDatabase::createSchema()
 {
+    if (!migrateLegacyDevices(m_db))
+        return false;
+
     QSqlQuery q(m_db);
     for (const char *sql : kSchema) {
         if (!q.exec(QString::fromUtf8(sql))) {

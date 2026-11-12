@@ -84,6 +84,12 @@ PairingOutcome pairWithHost(const NetPeer &peer, const QString &code,
     PairingOutcome outcome;
     const int timeoutMs = peer.timeoutMs > 0 ? peer.timeoutMs : 10000;
 
+    // PairHello 必须带自己的标识；调用方漏填时在这里直接报，免得白跑一趟服务端
+    if (peer.deviceId.isEmpty()) {
+        outcome.error = QStringLiteral("本机 deviceId 为空，无法发起配对");
+        return outcome;
+    }
+
     QSslSocket socket;
     QSslConfiguration cfg = QSslConfiguration::defaultConfiguration();
     cfg.setPeerVerifyMode(QSslSocket::QueryPeer);   // 自签证书：连上之后手比指纹

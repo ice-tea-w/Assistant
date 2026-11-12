@@ -13,6 +13,9 @@
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QSslSocket>
+#include <QSqlDatabase>
+#include <QSqlQuery>
+#include <QSqlError>
 
 #include "core/ConfigManager.h"
 #include "core/Logger.h"
@@ -82,6 +85,7 @@ private slots:
     void databaseBaseline();
     void databaseConflicts();
     void databaseDevices();
+    void devicesSchemaMigrates();
     void databaseOutbox();
 
     void folderTransportRoundTrip();
@@ -1044,6 +1048,51 @@ void TestSync::tlsBackendSelfCheck()
     QVERIFY(!backends.isEmpty());
 }
 
+void TestSync::devicesSchemaMigrates()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.path() + QStringLiteral("/sync.db");
+
+    // 造一张「早期设计文档」里的旧表：列名与新代码完全不同
+    {
+        QSqlDatabase legacy = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"),
+                                                        QStringLiteral("test_legacy_devices"));
+        legacy.setDatabaseName(path);
+        QVERIFY(legacy.open());
+        QSqlQuery q(legacy);
+        QVERIFY(q.exec(QStringLiteral(
+            "CREATE TABLE devices (id TEXT PRIMARY KEY, name TEXT NOT NULL, peer_id TEXT, "
+            "peer_name TEXT, pair_secret TEXT, last_seen INTEGER, paired_at INTEGER)")));
+        legacy.close();
+    }
+    QSqlDatabase::removeDatabase(QStringLiteral("test_legacy_devices"));
+
+    SyncDatabase db(QStringLiteral("test_migrate_devices"));
+    QVERIFY(db.open(path));   // 打开时应该把旧表改名，再建出 new 表
+
+    DeviceRecord rec;
+    rec.deviceId    = QStringLiteral("dev-migrate");
+    rec.fingerprint = QStringLiteral("abcd");
+    rec.secret      = QByteArray(32, '\x11');
+    rec.pairedAt    = 1760000000;
+    QVERIFY(db.upsertDevice(rec));          // 旧表结构下这里只会得到 Parameter count mismatch
+    QCOMPARE(db.allDevices().size(), 1);
+
+    // 旧表还在（改名保留），证明迁移没删数据
+    {
+        QSqlDatabase probe = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"),
+                                                      QStringLiteral("test_probe_devices"));
+        probe.setDatabaseName(path);
+        QVERIFY(probe.open());
+        QSqlQuery q(probe);
+        QVERIFY(q.exec(QStringLiteral(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'devices_legacy_%'")));
+        QVERIFY(q.next());
+        probe.close();
+    }
+    QSqlDatabase::removeDatabase(QStringLiteral("test_probe_devices"));
+}
 void TestSync::databaseOutbox()
 {
     QTemporaryDir dir;
