@@ -166,6 +166,10 @@ public:
     Q_INVOKABLE void fetchIncoming();
     /// 重新读一遍队列（供 QML 手动刷新）
     Q_INVOKABLE void refreshOutbox();
+    /// 换收件箱目录（空串 = 恢复默认「文档/Assistant 收件箱」）
+    Q_INVOKABLE void setInboxDir(const QString &path);
+    /// 恢复默认收件箱
+    Q_INVOKABLE void resetInboxDir();
 
 signals:
     void statusTextChanged();

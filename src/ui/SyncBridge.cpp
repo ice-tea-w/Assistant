@@ -112,6 +112,15 @@ bool SyncBridge::init(const QString &dbPath)
         m_watchFiles      = m_config->syncWatchFiles();
         m_inboxDir        = m_config->syncInboxDir();
 
+        // 自定义收件箱在换机器 / 换用户目录后会失效：建不出来就回落默认，别静默失败
+        if (!m_inboxDir.trimmed().isEmpty() && !QDir(m_inboxDir).exists()
+            && !QDir().mkpath(m_inboxDir)) {
+            Logger::get().warn("SyncBridge: 收件箱目录不可用，回落默认（{}）",
+                               m_inboxDir.toStdString());
+            m_inboxDir.clear();
+            m_config->setSyncInboxDir(QString());
+        }
+
         // 旧配置只有一个 localRoot，迁移成列表里的一项
         if (m_roots.isEmpty() && !m_config->syncLocalRoot().isEmpty()) {
             const QString p = QDir::cleanPath(m_config->syncLocalRoot());
@@ -1430,6 +1439,42 @@ QString SyncBridge::inboxPath() const
     if (docs.isEmpty())
         docs = QDir::homePath();
     return docs + QStringLiteral("/Assistant 收件箱");
+}
+
+void SyncBridge::setInboxDir(const QString &path)
+{
+    const QString cleaned = QDir::cleanPath(QDir::fromNativeSeparators(path.trimmed()));
+    if (cleaned.isEmpty() || cleaned == QStringLiteral(".")) {
+        resetInboxDir();
+        return;
+    }
+
+    if (!QDir().mkpath(cleaned)) {
+        setSendStatus(QStringLiteral("建不出这个目录：%1").arg(cleaned));
+        return;
+    }
+
+    if (m_inboxDir == cleaned && (!m_config || m_config->syncInboxDir() == cleaned))
+        return;
+
+    m_inboxDir = cleaned;
+    if (m_config)
+        m_config->setSyncInboxDir(cleaned);
+    Logger::get().info("SyncBridge: 收件箱改为 {}", cleaned.toStdString());
+    setSendStatus(QStringLiteral("收件箱：%1").arg(cleaned));
+    emit inboxDirChanged();
+}
+
+void SyncBridge::resetInboxDir()
+{
+    if (m_inboxDir.isEmpty() && (!m_config || m_config->syncInboxDir().isEmpty()))
+        return;
+
+    m_inboxDir.clear();
+    if (m_config)
+        m_config->setSyncInboxDir(QString());
+    setSendStatus(QStringLiteral("收件箱已恢复默认：%1").arg(inboxPath()));
+    emit inboxDirChanged();
 }
 
 QString SyncBridge::deliveryDir() const

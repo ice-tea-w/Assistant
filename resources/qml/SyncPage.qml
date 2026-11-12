@@ -574,6 +574,35 @@ Rectangle {
                         }
                     }
 
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+
+                        Text {
+                            text: "收件箱"
+                            color: syncPage.mutedColor
+                            font.pixelSize: Style.captionSize
+                        }
+
+                        Text {
+                            text: sync.inboxDir
+                            color: syncPage.textColor
+                            font.pixelSize: Style.captionSize
+                            elide: Text.ElideMiddle
+                            Layout.fillWidth: true
+                        }
+
+                        Button {
+                            text: "更换…"
+                            onClicked: inboxDialog.open()
+                        }
+
+                        Button {
+                            text: "默认"
+                            onClicked: sync.resetInboxDir()
+                        }
+                    }
+
                     Text {
                         visible: !sync.peerPaired
                         text: "还没和主机配对：文件先存在队列里，配对后自动发出去。"
@@ -809,6 +838,12 @@ Rectangle {
         id: rootDialog
         title: "选择要同步的文件夹"
         onAccepted: sync.addRoot(selectedFolder)
+    }
+
+    FolderDialog {
+        id: inboxDialog
+        title: "选择收件箱文件夹"
+        onAccepted: sync.setInboxDir(selectedFolder)
     }
 
     FileDialog {
