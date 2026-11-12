@@ -956,6 +956,7 @@ void SyncBridge::pairWithPeer(const QString &address, const QString &code)
     peer.host = parsed.host;
     peer.port = parsed.port;
     peer.expectedFingerprint = m_config->syncPeerFingerprint();   // 换主机时先清空
+    peer.deviceId = ensureDeviceId();                              // PairHello 必带，空了服务端拒
     peer.timeoutMs = 15000;
     const QString clientName = m_deviceName;
     const QString clientFingerprint = identity.fingerprint;
