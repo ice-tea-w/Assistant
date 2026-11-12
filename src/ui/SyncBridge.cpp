@@ -1443,7 +1443,8 @@ QString SyncBridge::inboxPath() const
 
 void SyncBridge::setInboxDir(const QString &path)
 {
-    const QString cleaned = QDir::cleanPath(QDir::fromNativeSeparators(path.trimmed()));
+    // FolderDialog 给的是 file:// URL，先按本项目约定转成本地路径
+    const QString cleaned = QDir::cleanPath(QDir::fromNativeSeparators(toLocalPath(path)));
     if (cleaned.isEmpty() || cleaned == QStringLiteral(".")) {
         resetInboxDir();
         return;
