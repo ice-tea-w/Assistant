@@ -592,6 +592,39 @@ bool SyncBridge::pairActive() const { return m_pairActive; }
 QVariantList SyncBridge::pairedDevices() const { return m_pairedDevices; }
 bool SyncBridge::peerPaired() const { return hasPeerCredentials(); }
 
+QString SyncBridge::pairStatus() const
+{
+    if (!m_config)
+        return QStringLiteral("未配对");
+    if (m_config->syncPeerAddress().isEmpty())
+        return QStringLiteral("未配对：还没有对端地址");
+    if (m_config->syncPeerFingerprint().isEmpty())
+        return QStringLiteral("未配对：缺对端证书指纹");
+    if (m_config->syncPeerSecret().isEmpty())
+        return QStringLiteral("未配对：缺设备口令（上次配对可能没走完）");
+    return QStringLiteral("已配对：%1:%2")
+        .arg(m_config->syncPeerAddress())
+        .arg(m_config->syncPort());
+}
+
+void SyncBridge::refreshPairState()
+{
+    if (!m_config)
+        return;
+
+    // 只在配置文件真的被改过时重读：别的进程（另一个实例）刚配对完，
+    // 或者上一轮配对写盘后本进程内存还是旧的，都会让页面一直显示「未配对」。
+    const QFileInfo info(m_config->filePath());
+    const qint64 stamp = info.exists() ? info.lastModified().toMSecsSinceEpoch() : 0;
+    if (stamp != m_configStamp) {
+        m_configStamp = stamp;
+        m_config->load();
+    }
+
+    refreshPairedDevices();
+    emit pairChanged();
+}
+
 bool SyncBridge::hasPeerCredentials() const
 {
     return m_config
@@ -1288,11 +1321,21 @@ void SyncBridge::syncNow()
         return;
     }
 
-    if (m_roots.isEmpty() || !hasPeerCredentials()) {
-        setStatus(QStringLiteral("请先添加要同步的文件夹，并完成与主机的配对"));
-        // 同步没跑起来必须有痕迹：界面上只改一行状态，用户回头查不出为什么
-        Logger::get().warn("SyncBridge: 跳过同步（同步根 {} 个，已配对 {}）",
-                           m_roots.size(), hasPeerCredentials());
+    if (m_roots.isEmpty()) {
+        setStatus(QStringLiteral("请先添加要同步的文件夹"));
+        Logger::get().warn("SyncBridge: 跳过同步（没有同步根）");
+        return;
+    }
+
+    if (!hasPeerCredentials()) {
+        // 主机模式：这台机器是服务端，自己没有「到主机」的凭据 —— 同步由对方发起，
+        // 它连过来拉走这边的文件。所以这里不是错误，别按警告刷屏（自动同步会反复触发）。
+        if (!m_db.allDevices().isEmpty()) {
+            setStatus(QStringLiteral("主机模式：等你配对的设备点「立即同步」来拉取"));
+            return;
+        }
+        setStatus(QStringLiteral("请先与主机配对，或在下面「直连」里等对方连过来"));
+        Logger::get().warn("SyncBridge: 跳过同步（同步根 {} 个，没有配对凭据）", m_roots.size());
         return;
     }
 
