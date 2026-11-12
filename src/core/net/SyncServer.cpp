@@ -183,6 +183,16 @@ bool SyncServer::splitRel(const QString &relPath, QString *rootAbs, QString *sub
     if (m_roots.isEmpty())
         return false;
 
+    // 投递箱不属于任何同步根：`_inbox/<发送者>/…` 一律落到第一个根下面。
+    // 多根模式要求路径带别名，而投递没有别名可带，少了这条特例就永远 BAD_PATH。
+    const int headSlash = relPath.indexOf(QLatin1Char('/'));
+    const QString head  = headSlash < 0 ? relPath : relPath.left(headSlash);
+    if (QString::compare(head, QStringLiteral("_inbox"), Qt::CaseInsensitive) == 0) {
+        *rootAbs = m_roots.first().localPath;
+        *subRel  = relPath;
+        return true;
+    }
+
     // 单根且无别名：relPath 就是根内相对路径（兼容旧的"共享根"形态）
     if (m_roots.first().alias.isEmpty()) {
         *rootAbs = m_roots.first().localPath;
@@ -856,9 +866,16 @@ QList<ServedFile> SyncServer::collectFiles()
             || sub.endsWith(QStringLiteral(".assistant-part"))) {
             continue;
         }
-        const QString relPath = cand.alias.isEmpty()
+        // 投递箱对外只有一个名字 `_inbox/…`，不挂别名：客户端凭它发、也凭它领，
+        // 而引擎侧看到保留段会跳过，所以两边不会把它当同步内容。
+        const bool inDeliveryBox =
+            sub.compare(QStringLiteral("_inbox"), Qt::CaseInsensitive) == 0
+            || sub.startsWith(QStringLiteral("_inbox/"), Qt::CaseInsensitive);
+        const QString relPath = inDeliveryBox
                                     ? sub
-                                    : cand.alias + QLatin1Char('/') + sub;
+                                    : (cand.alias.isEmpty()
+                                           ? sub
+                                           : cand.alias + QLatin1Char('/') + sub);
 
         ServedFile f;
         f.relPath = relPath;

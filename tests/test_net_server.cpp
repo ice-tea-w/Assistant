@@ -3,6 +3,7 @@
 #include "core/net/SyncFrame.h"
 #include "core/net/SyncServer.h"
 
+#include <QCryptographicHash>
 #include <QDateTime>
 #include <QDir>
 #include <QElapsedTimer>
@@ -21,13 +22,20 @@ using namespace Sync::Net;
 
 namespace {
 
-void writeFile(const QString &path, const QByteArray &content)
-{
+void writeFile(const QString &path, const QByteArray &content){
     QDir().mkpath(QFileInfo(path).absolutePath());
     QFile f(path);
     if (!f.open(QIODevice::WriteOnly))
         return;
     f.write(content);
+}
+
+QByteArray readFile(const QString &path)
+{
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly))
+        return QByteArray();
+    return f.readAll();
 }
 
 /// 会自己泵事件循环的最小客户端：服务端与客户端同线程，不能阻塞等。
@@ -124,6 +132,7 @@ private slots:
     void indexIsUsedAcrossRestart();
     void pairingIssuesSecretOnce();
     void pairingWrongCodeClosesWindow();
+    void deliveryBoxLivesInFirstRoot();
 
 private:
     bool startServer(const QString &root);
@@ -367,6 +376,69 @@ void TestNetServer::pingPongRoundTrip()
     QVERIFY(client.read(&pong));
     QCOMPARE(pong.type, FrameType::Pong);
     QCOMPARE(pong.reqId, quint32(9));
+}
+
+void TestNetServer::deliveryBoxLivesInFirstRoot()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString workDir = root.filePath(QStringLiteral("work"));
+    const QString docsDir = root.filePath(QStringLiteral("docs"));
+    QVERIFY(QDir().mkpath(workDir));
+    QVERIFY(QDir().mkpath(docsDir));
+
+    auto secret = [this](const QString &deviceId) {
+        return deviceId == QStringLiteral("dev-test") ? m_deviceSecret : QByteArray();
+    };
+    SyncServer server(m_serverIdentity, secret);
+    const QList<ServedRoot> roots{{workDir, QStringLiteral("work")},
+                                  {docsDir, QStringLiteral("docs")}};
+    QVERIFY2(server.listen(0, roots), qPrintable(server.lastError()));
+
+    TestClient client;
+    QVERIFY(client.connectTo(server.port(), m_clientIdentity));
+    QVERIFY(authenticate(client, 100));
+
+    // 多根模式下投递不带别名：`_inbox/…` 必须落到第一个根，而不是 BAD_PATH
+    const QByteArray content = QByteArrayLiteral("hello team");
+    const QString rel = QStringLiteral("_inbox/dev-test/1760000000_hello.txt");
+    QJsonObject put;
+    put.insert(QStringLiteral("path"), rel);
+    put.insert(QStringLiteral("size"), content.size());
+    put.insert(QStringLiteral("hash"),
+               QString::fromLatin1(QCryptographicHash::hash(content, QCryptographicHash::Sha256).toHex()));
+    QVERIFY(client.send(makeJsonFrame(FrameType::Put, 200, put)));
+
+    Frame chunk;
+    chunk.type    = FrameType::PutChunk;
+    chunk.flags   = quint16(FrameFlag::FlagBlob);
+    chunk.reqId   = 201;
+    chunk.payload = content;
+    QVERIFY(client.send(chunk));
+
+    Frame end;
+    end.type    = FrameType::End;
+    end.flags   = quint16(FrameFlag::FlagJson);
+    end.reqId   = 202;
+    end.payload = QJsonDocument(QJsonObject()).toJson(QJsonDocument::Compact);
+    QVERIFY(client.send(end));
+
+    Frame ack;
+    QVERIFY(client.read(&ack));
+    QCOMPARE(ack.type, FrameType::PutAck);
+    QCOMPARE(ack.reqId, quint32(202));
+    QVERIFY(QJsonDocument::fromJson(ack.payload).object().value(QStringLiteral("ok")).toBool());
+
+    const QString landed = workDir + QStringLiteral("/_inbox/dev-test/1760000000_hello.txt");
+    QCOMPARE(readFile(landed), content);
+    QVERIFY(!QFileInfo::exists(docsDir + QStringLiteral("/_inbox")));
+
+    // 领取方靠 List 发现投递：对外只叫 `_inbox/…`，不挂别名
+    bool ok = false;
+    const QHash<QString, QString> listed = listAll(server, &ok);
+    QVERIFY(ok);
+    QVERIFY2(listed.contains(rel), "List 里看不到投递文件，接收方就永远领不到");
+    QVERIFY(!listed.contains(QStringLiteral("work/_inbox/dev-test/1760000000_hello.txt")));
 }
 
 bool TestNetServer::authenticate(TestClient &client, quint32 baseId)
