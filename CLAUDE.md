@@ -96,8 +96,14 @@ cmake --build build --config Debug
       `syncNow()` 不再挂 `FolderTransport`（只剩 `NetTransport`），`refreshChannel()` 改为「直连/未配对」；
       同步页删掉整张共享目录卡片（`net share` / `net use` / UNC 输入 / 检查共享 / 别名对齐），直连卡片移到页面最上方，
       收件箱行暂时隐藏（仍绑共享目录的 `_投递/`，等 B 阶段直连投递）
+- [x] 单文件直发（2026-11-12，B 阶段前半）：`sync.db` 加 `outbox` 表（离线排队 + 退避重试）；
+      投递路径固定 `_inbox/<设备名>-<deviceId 前 8 位>/<时间戳>_<原名>`；服务端 `splitRel()` 把首段
+      `_inbox` 映射到第一个根（不要求别名）；`Sync::isReservedDeliveryPath()` 让引擎两侧跳过投递箱
+      （否则投递文件会被当同步内容来回传）；桥新增 `queueSend` / `sendQueuedNow` / `fetchIncoming` /
+      `removeQueuedItem`，页面「发送文件」卡从隐藏改常显（选择文件 / 立即发送 / 收取投递 / 收件箱）
 - [ ] 直连剩余：`LocalDirTransport`（host 本地根与共享根对称）、直连卡片真机肉眼走查、两台机器真跑、
-      B 阶段直连投递区 + 单文件直发、C 阶段删 `FolderTransport` / `DeliveryNaming` / SMB 命令与用例
+      双实例投递走查（停主机后发送 → 队列保留 → 重开主机自动补发）、C 阶段删 `FolderTransport` /
+      `DeliveryNaming`（仅剩 `isReservedDeliveryPath` 在用时不要一起删）/ SMB 命令与用例
 
 Phase 3 剩余（收尾中，写在这里便于续接）：
 - [x] 热键自定义（设置页捕获组合键 → `PanelBridge::applyHotkey` → `HotkeyManager::reRegister`，失败自动回滚原热键）
