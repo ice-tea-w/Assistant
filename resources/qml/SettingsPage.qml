@@ -301,6 +301,53 @@ Rectangle {
             }
         }
 
+        // ---- 下载接管（Phase C）----
+        ColumnLayout {
+            Layout.fillWidth: true
+            spacing: 8
+
+            Text {
+                text: "下载接管（收件箱）"
+                color: mutedColor
+                font.pixelSize: 12
+            }
+
+            RowLayout {
+                spacing: 8
+
+                Switch {
+                    id: inboxSwitch
+                    checked: config.inboxEnabled
+                    onToggled: config.setInboxEnabled(checked)
+                }
+
+                Text {
+                    text: config.inboxEnabled
+                          ? "已开启：只接管开启之后完成的新下载"
+                          : "未开启（不会移动任何文件）"
+                    color: mutedColor
+                    font.pixelSize: 12
+                }
+            }
+
+            Text {
+                text: "收件箱：" + config.inboxPath
+                color: mutedColor
+                font.pixelSize: Style.captionSize
+                elide: Text.ElideMiddle
+                Layout.maximumWidth: 460
+            }
+
+            Text {
+                text: "下载完成判定通过后移入收件箱（可在「最近下载」页打开/定位/撤销）；"
+                      + "绝不删除源文件，失败时保持原位。"
+                color: mutedColor
+                font.pixelSize: Style.captionSize
+                wrapMode: Text.WordWrap
+                Layout.maximumWidth: 460
+            }
+        }
+
         // ---- 全局热键（可自定义，Phase 3 收尾）----
         ColumnLayout {
             spacing: 8

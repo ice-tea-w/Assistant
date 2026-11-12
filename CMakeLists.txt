@@ -337,3 +337,34 @@ target_link_libraries(assistant_governance_tests PRIVATE
 add_test(NAME file_governance COMMAND assistant_governance_tests)
 set_tests_properties(file_governance PROPERTIES
     ENVIRONMENT "PATH=${VCPKG_BIN_DIR};${VCPKG_DBG_BIN_DIR};$ENV{PATH}")
+
+# ---- Phase C：下载收件箱（S9 骨架）----
+add_executable(assistant_inbox_tests
+    tests/test_downloads.cpp
+    src/core/Logger.cpp
+    src/core/FileIdentity.cpp
+    src/core/FileKind.cpp
+    src/core/FileClassifier.cpp
+    src/core/QueryParser.cpp
+    src/core/FileWatcher.cpp
+    src/core/FileEventDispatcher.cpp
+    src/core/inbox/BrowserSource.cpp
+    src/core/inbox/IngestEngine.cpp
+    src/database/DownloadsDatabase.cpp
+    src/database/DatabaseMigrator.cpp
+    include/core/FileWatcher.h
+    include/core/inbox/IDownloadSource.h
+    include/core/inbox/IngestEngine.h
+    include/database/DownloadsDatabase.h
+)
+target_include_directories(assistant_inbox_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_compile_definitions(assistant_inbox_tests PRIVATE APP_VERSION="${PROJECT_VERSION}")
+target_link_libraries(assistant_inbox_tests PRIVATE
+    Qt6::Core Qt6::Sql Qt6::Test spdlog::spdlog)
+if(WIN32)
+    target_link_libraries(assistant_inbox_tests PRIVATE shell32 ole32)
+endif()
+
+add_test(NAME download_box COMMAND assistant_inbox_tests)
+set_tests_properties(download_box PROPERTIES
+    ENVIRONMENT "PATH=${VCPKG_BIN_DIR};${VCPKG_DBG_BIN_DIR};$ENV{PATH}")

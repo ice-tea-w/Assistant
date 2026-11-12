@@ -276,6 +276,13 @@ Parsed parse(const QString &raw)
         }
 
         if (token.startsWith(QLatin1Char(':'))) {
+            // `:dl` = 收件箱里的文件（Phase C）。收件箱目录名固定为 Inbox；
+            // 用户改路径后这一段匹配不到，属于已知限制（Phase D 会按 DB 来源过滤）。
+            if (token == QLatin1String(":dl")) {
+                if (!out.inFilters.contains(QStringLiteral("inbox")))
+                    out.inFilters.append(QStringLiteral("inbox"));
+                continue;
+            }
             const uint16_t mask = FileKind::fromToken(QStringView(token).mid(1));
             if (mask != 0) {
                 out.kindMask = static_cast<uint16_t>(out.kindMask | mask);
@@ -295,7 +302,9 @@ Parsed parse(const QString &raw)
         }
 
         if (token.startsWith(QStringLiteral("in:"))) {
-            const QString value = token.mid(3).trimmed();
+            QString value = token.mid(3).trimmed();
+            if (value == QLatin1String("box"))
+                value = QStringLiteral("inbox");
             if (value.isEmpty())
                 out.terms.append(token);
             else if (!out.inFilters.contains(value))

@@ -72,6 +72,11 @@ void ConfigManager::applyDefaults()
     m_kindFilter     = KindFilter();
     m_kindOverrides.clear();
 
+    // Phase C：收件箱默认关闭（绝不默认搬用户文件），路径留空 → AppConfigLocation/Inbox
+    m_inboxEnabled  = false;
+    m_inboxPath.clear();
+    m_inboxSettleMs = 1200;
+
     // 设备同步：路径留空由用户在设置页填；设备名默认取主机名
     m_syncLocalRoot.clear();
     m_syncRoots.clear();
@@ -224,6 +229,17 @@ void ConfigManager::load()
                 }
             }
         }
+        // 下载接管（Phase C）
+        if (j.contains("inbox")) {
+            auto &in = j["inbox"];
+            if (in.contains("enabled"))   m_inboxEnabled  = in.value("enabled", false);
+            if (in.contains("path"))      m_inboxPath     = QString::fromStdString(in.value("path", std::string()));
+            if (in.contains("settleMs")) {
+                const int ms = in.value("settleMs", 1200);
+                if (ms >= 300 && ms <= 60000)
+                    m_inboxSettleMs = ms;
+            }
+        }
         // sync（设备同步）
         if (j.contains("sync")) {
             auto &s = j["sync"];
@@ -325,6 +341,12 @@ void ConfigManager::save()
             ExcludeRuleSet::projectPolicyToString(m_excludeRules.projectPolicy()).toStdString();
         fi["exclude"]["excludeProjectBuildDirs"] = m_excludeRules.excludesProjectBuildDirs();
     }
+    j["inbox"] = {
+        {"enabled",  m_inboxEnabled},
+        {"path",     m_inboxPath.toStdString()},
+        {"settleMs", m_inboxSettleMs},
+        {"firstRunPolicy", "newOnly"}
+    };
     j["sync"] = {
         {"localRoot",  m_syncLocalRoot.toStdString()},
         {"sharedDir",  m_syncSharedDir.toStdString()},
@@ -388,6 +410,45 @@ QStringList ConfigManager::fileKindFilterKinds() const
 QString ConfigManager::fileProjectPolicy() const
 {
     return ExcludeRuleSet::projectPolicyToString(m_excludeRules.projectPolicy());
+}
+
+bool ConfigManager::inboxEnabled() const
+{
+    return m_inboxEnabled;
+}
+
+QString ConfigManager::inboxPath() const
+{
+    if (!m_inboxPath.isEmpty())
+        return m_inboxPath;
+    QString dir = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation);
+    if (dir.isEmpty())
+        dir = QDir::currentPath() + "/config";
+    return dir + QStringLiteral("/Inbox");
+}
+
+int ConfigManager::inboxSettleMs() const
+{
+    return m_inboxSettleMs;
+}
+
+void ConfigManager::setInboxEnabled(bool enabled)
+{
+    if (m_inboxEnabled == enabled)
+        return;
+    m_inboxEnabled = enabled;
+    save();
+    Logger::get().info("ConfigManager: 下载接管 = {}", enabled ? "on" : "off");
+    emit inboxChanged();
+}
+
+void ConfigManager::setInboxPath(const QString &path)
+{
+    if (m_inboxPath == path)
+        return;
+    m_inboxPath = path;
+    save();
+    emit inboxChanged();
 }
 
 void ConfigManager::setFileKindFilter(const QString &mode, const QStringList &kinds)

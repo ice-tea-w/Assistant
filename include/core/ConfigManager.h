@@ -23,6 +23,9 @@ class ConfigManager : public QObject
     Q_PROPERTY(QString fileKindFilterMode READ fileKindFilterMode NOTIFY fileKindFilterChanged)
     Q_PROPERTY(QStringList fileKindFilterKinds READ fileKindFilterKinds NOTIFY fileKindFilterChanged)
     Q_PROPERTY(QString fileProjectPolicy READ fileProjectPolicy NOTIFY fileProjectPolicyChanged)
+    Q_PROPERTY(bool inboxEnabled READ inboxEnabled NOTIFY inboxChanged)
+    Q_PROPERTY(QString inboxPath READ inboxPath NOTIFY inboxChanged)
+    Q_PROPERTY(int inboxSettleMs READ inboxSettleMs NOTIFY inboxChanged)
     Q_PROPERTY(QString syncLocalRoot READ syncLocalRoot NOTIFY syncChanged)
     Q_PROPERTY(QVariantList syncRoots READ syncRoots NOTIFY syncChanged)
     Q_PROPERTY(QString syncSharedDir READ syncSharedDir NOTIFY syncChanged)
@@ -72,6 +75,11 @@ public:
     QStringList fileKindFilterKinds() const;
     /// 工程目录策略（skip / demote / index）。改它需要重扫索引。
     QString fileProjectPolicy() const;
+
+    // ---- 下载接管（Phase C，`inbox`）----
+    bool    inboxEnabled() const;      ///< 默认 false：不主动搬用户文件，需显式开启
+    QString inboxPath() const;         ///< 收件箱目录（空配置时用 AppConfigLocation/Inbox）
+    int     inboxSettleMs() const;     ///< 稳定静默期
     // ---- 设备同步（Phase: 联网功能）----
     QString syncLocalRoot() const;             // 本地共享根（单根时代的旧字段，保留兼容）
     /// 要同步的本地文件夹列表，每项 {localPath, alias}。为空时回退到 syncLocalRoot。
@@ -97,6 +105,10 @@ public:
     /// 设置页：工程目录策略。保存后由 main.cpp 触发 `FileIndex::refresh()`。
     Q_INVOKABLE void setFileProjectPolicy(const QString &policy);
 
+    /// 设置页：是否接管浏览器下载（只接管开启之后的新文件）。
+    Q_INVOKABLE void setInboxEnabled(bool enabled);
+    Q_INVOKABLE void setInboxPath(const QString &path);
+
     Q_INVOKABLE void setSyncLocalRoot(const QString &path);
     Q_INVOKABLE void setSyncRoots(const QVariantList &roots);
     Q_INVOKABLE void setSyncSharedDir(const QString &path);
@@ -119,6 +131,7 @@ signals:
     void fileIndexHardLimitChanged();
     void fileKindFilterChanged();
     void fileProjectPolicyChanged();
+    void inboxChanged();
     void syncChanged();
     void configLoaded();
 
@@ -140,6 +153,9 @@ private:
     ExcludeRuleSet m_excludeRules;            // Phase B：采集排除规则
     KindFilter     m_kindFilter;              // Phase B：检索白名单
     QVariantMap    m_kindOverrides;           // Phase B：原始 kindOverrides（扩展名 → token）
+    bool           m_inboxEnabled = false;    // Phase C：默认不接管（用户显式开启）
+    QString        m_inboxPath;               // 空 = AppConfigLocation/Inbox
+    int            m_inboxSettleMs = 1200;
     QString m_filePath;
 
     QString m_syncLocalRoot;

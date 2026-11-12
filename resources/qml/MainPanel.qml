@@ -71,6 +71,7 @@ ApplicationWindow {
         { "key": "todo",    "icon": "✓",  "label": "待办事项" },
         { "key": "notes",   "icon": "📝", "label": "记事本"   },
         { "key": "clip",    "icon": "📋", "label": "剪贴板"   },
+        { "key": "downloads","icon": "⬇", "label": "最近下载" },
         { "key": "sync",    "icon": "🔄", "label": "设备同步" },
         { "key": "plugins", "icon": "🧩", "label": "插件市场" }
     ]
@@ -106,6 +107,7 @@ ApplicationWindow {
         case "todo":    return "qrc:/qml/TodoPage.qml"
         case "notes":   return "qrc:/qml/NotesPage.qml"
         case "clip":    return "qrc:/qml/ClipboardPage.qml"
+        case "downloads": return "qrc:/qml/RecentDownloadsPage.qml"
         case "sync":    return "qrc:/qml/SyncPage.qml"
         case "plugins": return "qrc:/qml/PluginsPage.qml"
         case "settings":return "qrc:/qml/SettingsPage.qml"

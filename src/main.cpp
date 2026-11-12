@@ -12,8 +12,12 @@
 #include "core/AppIndexer.h"
 #include "core/FileEventDispatcher.h"
 #include "core/FileIndex.h"
+#include "core/FileScanner.h"
 #include "core/FileWatcher.h"
+#include "core/inbox/IDownloadSource.h"
+#include "core/inbox/IngestEngine.h"
 #include "database/HistoryDatabase.h"
+#include "database/DownloadsDatabase.h"
 #include "database/TodoDatabase.h"
 #include "database/NotesDatabase.h"
 #include "database/ClipboardDatabase.h"
@@ -22,6 +26,7 @@
 #include "ui/AppBridge.h"
 #include "ui/PanelBridge.h"
 #include "ui/PluginBridge.h"
+#include "ui/InboxBridge.h"
 #include "core/plugin/PluginCatalog.h"
 #include "core/plugin/PluginInstaller.h"
 #include "core/plugin/PluginLoader.h"
@@ -94,6 +99,19 @@ int main(int argc, char *argv[])
     syncBridge.setConfigManager(&config);
     syncBridge.init(dbDir + "/sync.db");
 
+    // ---- 下载接管（Phase C：收件箱）----
+    // 权威库：downloads.db（独立连接 `downloads`）。收件箱是索引根之一，
+    // 所以接管后的文件能被搜索到；引擎只在新下载上工作，绝不搬历史文件。
+    DownloadsDatabase downloadsDb;
+    downloadsDb.open(dbDir + "/downloads.db");
+
+    BrowserSource browserSource;
+    IngestEngine  ingest(&downloadsDb);
+    ingest.setSource(&browserSource);
+    ingest.setBoxPath(config.inboxPath());
+    ingest.setEnabled(config.inboxEnabled());
+    ingest.setSettleMs(config.inboxSettleMs());
+
     // ---- app indexer (Step 5): register launchable Start Menu apps ----
     for (const AppIndexer::Entry &app : AppIndexer::scan())
         backend.addApp(app.name, app.path);
@@ -109,6 +127,14 @@ int main(int argc, char *argv[])
     fileIndex.setClassifier(config.fileClassifier());
     fileIndex.setExcludeRules(config.excludeRules());
     fileIndex.setKindFilter(config.kindFilter());
+    // 收件箱也是索引根：接管后立刻能搜到（`:dl` / `in:box` 由路径段匹配）
+    {
+        QStringList roots = FileScanner::defaultRoots();
+        const QString inboxPath = config.inboxPath();
+        if (!inboxPath.isEmpty() && !roots.contains(inboxPath))
+            roots.append(inboxPath);
+        fileIndex.setRoots(roots);
+    }
     backend.setFileIndex(&fileIndex);
 
     // 设置页改白名单 → 立即生效（查询期过滤，不重建快照、不扫盘）
@@ -123,15 +149,27 @@ int main(int argc, char *argv[])
 
     // A5b：扫描完之后接上增量事件源。
     FileEventDispatcher fileEvents;
+    FileEventDispatcher downloadEvents;
     FileWatcher         fileWatcher;
     fileIndex.setEventSource(&fileEvents);
+    ingest.setEventSource(&downloadEvents);
     QObject::connect(&fileWatcher, &FileWatcher::batchReady,
-                     [&fileEvents](const QVector<FileSystemEvent> &batch) {
+                     [&fileEvents, &downloadEvents](const QVector<FileSystemEvent> &batch) {
+                         // 同一个 watcher、两个消费者：索引侧与接管侧互不认识
                          fileEvents.publish(batch);
+                         downloadEvents.publish(batch);
                      });
 
     fileIndex.startAsync();          // 放在 engine.load() 之前，但不再阻塞
     fileWatcher.start(fileIndex.roots());
+    ingest.start();                  // 启动双对账（journal intent + box 幽灵条目）
+
+    // 设置页切换接管开关 / 路径
+    QObject::connect(&config, &ConfigManager::inboxChanged, &app, [&] {
+        ingest.setEnabled(config.inboxEnabled());
+        ingest.setBoxPath(config.inboxPath());
+        ingest.setSettleMs(config.inboxSettleMs());
+    });
 
     Logger::get().info("FileIndex: engine = v2（硬上限 {} 条）",
                        config.fileIndexHardLimitEntries());
@@ -145,6 +183,15 @@ int main(int argc, char *argv[])
             return;
         tray.notify(QStringLiteral("收到 %1 个文件").arg(count),
                     QStringLiteral("收件箱：") + inboxDir);
+    });
+    // 接管成功后弹一条托盘通知（Phase C）
+    QObject::connect(&ingest, &IngestEngine::captured, &tray,
+                     [&tray](int, const QString &name, qint64 size) {
+        const QString sizeText = size >= 1024 * 1024
+                                     ? QStringLiteral("%1 MB").arg(size / (1024.0 * 1024.0), 0, 'f', 1)
+                                     : QStringLiteral("%1 KB").arg(size / 1024.0, 0, 'f', 1);
+        tray.notify(QStringLiteral("已接管 %1").arg(name),
+                    sizeText + QStringLiteral(" · 已放入收件箱"));
     });
     HotkeyManager hotkey;
 
@@ -232,12 +279,15 @@ int main(int argc, char *argv[])
     // 想接真服务器：设环境变量 ASSISTANT_MARKET_URL 指向一个 index.json。
     pluginCatalog.setMarketUrl(qEnvironmentVariable("ASSISTANT_MARKET_URL"));
 
+    InboxBridge inboxBridge(&downloadsDb, &ingest);
+
     // ---- main panel window (Phase 3 Step 1) ----
     // 常驻主面板：独立 engine，初始隐藏，由 🏠 按钮 / 托盘菜单触发显示。
     QQmlApplicationEngine panelEngine;
     panelEngine.rootContext()->setContextProperty("config", &config);
     panelEngine.rootContext()->setContextProperty("panel", &panel);
     panelEngine.rootContext()->setContextProperty("sync", &syncBridge);
+    panelEngine.rootContext()->setContextProperty("inbox", &inboxBridge);
     panelEngine.rootContext()->setContextProperty("appVersion", QCoreApplication::applicationVersion());
 
     // Must be registered BEFORE the QML loads: MainPanel binds `pluginApi` to
@@ -271,11 +321,12 @@ int main(int argc, char *argv[])
     QObject::connect(&tray, &TrayManager::mainPanelRequested, &app, showMainPanel);
 
     // 调试开关：带 --show-panel 启动时立即弹主面板（界面检查/截图用）；
-    // 附加 --page=N 可直接打开指定页（0 待办 / 1 记事本 / 2 剪贴板 / 3 设备同步 /
-    // 4 设置 / 5 插件市场）。主面板导航用 key，不再用索引。
+    // 附加 --page=N 可直接打开指定页（0 待办 / 1 记事本 / 2 剪贴板 / 3 最近下载 /
+    // 4 设备同步 / 5 设置 / 6 插件市场）。主面板导航用 key，不再用索引。
     if (qApp->arguments().contains(QStringLiteral("--show-panel"))) {
         QTimer::singleShot(400, &app, [&]() {
-            static const char *kPageKeys[] = { "todo", "notes", "clip", "sync", "settings", "plugins" };
+            static const char *kPageKeys[] = { "todo", "notes", "clip", "downloads",
+                                               "sync", "settings", "plugins" };
             for (const QString &arg : qApp->arguments()) {
                 if (!arg.startsWith(QStringLiteral("--page=")))
                     continue;

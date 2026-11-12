@@ -60,7 +60,7 @@ cmake --build build --config Debug
 
 ## 当前开发阶段
 
-**v0.4.0 文件子系统 A 阶段 + Phase B 功能一** + **M4 插件市场已合并**（2026-11-12）
+**v0.4.0 文件子系统 A + B + C（S9）** + **M4 插件市场已合并**（2026-11-12）
 
 已完成：
 - Phase 0: Hello 窗口、编译环境
@@ -138,7 +138,17 @@ Phase 3 剩余（收尾中，写在这里便于续接）：
       **查询期过滤**（`QueryEngine::query(..., KindFilter)`）—— 切换只赋值 + 发信号，实测 <1 ms、
       0 重建 0 读盘；设置页新增「文件索引范围」（全部/只保留/排除 + 16 类复选 + 工程目录策略），
       设置页包 `Flickable` 可滚动。代价是白名单不再节省快照内存（等 A6b）
-- [ ] **B3「待整理」Chip / 下载 box** → Phase C；`dirGlobs` 目前只按目录名匹配，相对路径 glob 未做
+- [ ] **B3「待整理」Chip**（搜索浮窗的 filter chip 未做）；下载 box 本身见 Phase C
+
+**v0.4.x 文件治理 Phase C · S9 下载收件箱骨架**（`docs/architecture/文件治理功能设计.md` §2）：
+- [x] **C1 下载 → 完成判定 → 拉入 box**（2026-11-12）：`DownloadsDatabase`（`downloads.db` v1 全表 +
+      `DatabaseMigrator`）、`FileIdentity`（卷序列号 + FileId + `quickSig`）、`BrowserSource`
+      （`FOLDERID_Downloads`）、`IngestEngine`（事件驱动 + A 临时后缀 / B 稳定期 / C 独占打开退避 +
+      同名 `(n)` + journal intent/done + 启动双对账 + 撤销）；`InboxBridge` + `RecentDownloadsPage.qml`
+      （待整理/已移出/全部 + 打开/定位/撤销）+ 托盘通知 + 设置页开关（默认关闭）；
+      `:dl` / `in:box` 路径段过滤。10 个用例，`ctest` 9/9。详见 `docs/devlog/2026-11-12.md`
+- [ ] **C2 去向追踪（S10）**：移出 box 后目前只标 `Unknown`，不关联新位置
+- [ ] **C3 归档规则 / 查重 / Todo/剪贴板联动 / IM 源（S11）**；移动仍在 GUI 线程（跨卷大文件会卡）
 
 > ✅ **P0-3 已修掉**：不再套 2 万条任意截断，真机索引 20000 → **31845** 条，
 > `Documents`/`Downloads` 终于进得来。A3 的 Win32 扫描器扫 31845 条只要 **459–502 ms**。
@@ -197,6 +207,11 @@ Phase 3 剩余（收尾中，写在这里便于续接）：
 | FileScanner | `include/core/FileScanner.h`, `src/core/FileScanner.cpp` | 采集层：Win32 **句柄栈 DFS**（`FindFirstFileExW` + `FindExInfoBasic` + `LARGE_FETCH`）；目录级剪枝、不跟随 reparse point、长路径 `\\?\`、权限拒绝计数、可取消；Phase B 加**工程哨兵前瞻 256 条**（skip/demote，保持 DFS 顺序）与文件级规则。剪枝名单只有这一份 |
 | FileIndexDatabase | `include/database/FileIndexDatabase.h`, `src/database/FileIndexDatabase.cpp` | `file_index.db`（独立连接 `file_index`）：dirs/files/roots 三表、三方差集、UPSERT 批量事务；Phase B 起真正读写 `cat_mask/flags/root_id/origin_id`，且这些字段参与差量比较。**派生数据**，可删库重扫 |
 | DatabaseMigrator | `include/database/DatabaseMigrator.h`, `src/database/DatabaseMigrator.cpp` | `PRAGMA user_version` **前向**迁移，每步一事务；高版本库拒绝；禁止 DROP+重建 |
+| FileIdentity | `include/core/FileIdentity.h`, `src/core/FileIdentity.cpp` | 物理身份 `(volumeSerial, FileId)` + `quickSig`（size+首尾 64KB 的 SHA-256）+ 独占打开检测；同卷改名 FileId 不变 |
+| DownloadsDatabase | `include/database/DownloadsDatabase.h`, `src/database/DownloadsDatabase.cpp` | `downloads.db`（独立连接 `downloads`，**权威数据**）：downloads 双状态 + move_journal + tracking_events + rules + sources + app_meta；迁移失败拒绝启动 |
+| IDownloadSource / BrowserSource | `include/core/inbox/IDownloadSource.h`, `src/core/inbox/BrowserSource.cpp` | 下载源适配器（Phase C 只有浏览器）：`FOLDERID_Downloads`、临时后缀、静默期；IM 源留给 S11 |
+| IngestEngine | `include/core/inbox/IngestEngine.h`, `src/core/inbox/IngestEngine.cpp` | 收件箱管线：事件驱动 → A/B/C 完成判定（退避）→ `MoveFileExW` → 登记 FileId/quickSig → journal/对账 → 撤销 |
+| InboxBridge | `include/ui/InboxBridge.h`, `src/ui/InboxBridge.cpp` | 「最近下载」页桥：列表（待整理/已移出/全部）+ 打开/定位/撤销 |
 | Calculator | `include/core/Calculator.h`, `src/core/Calculator.cpp` | 递归下降解析器, PEMDAS + 一元正负号 + 括号 |
 | TrayManager | `include/ui/TrayManager.h`, `src/ui/TrayManager.cpp` | 系统托盘图标 + 右键菜单 |
 | HotkeyManager | `include/core/HotkeyManager.h`, `src/core/HotkeyManager.cpp` | Windows RegisterHotKey 全局热键（可重注册） |
@@ -226,7 +241,7 @@ Phase 3 剩余（收尾中，写在这里便于续接）：
 > **DB 约定**：每个功能一个独立 DB 文件 + 独立 `QSqlDatabase` 连接名（见 `ClipboardDatabase`），不要共用一个连接。
 > **QML 约定**：搜索浮窗走 `AppBridge`，主面板走 `PanelBridge`，同步页走 `SyncBridge`（第三个桥，注入面板引擎）。
 > **测试约定**：QTest（`Qt6::Test`），不是 GTest；`tests/*.cpp` 里要 `#include "<名字>.moc"` 让 AUTOMOC 处理 `Q_OBJECT`。
-> **测试目标**：`assistant_tests`（同步）、`assistant_watch_tests`（A5 事件源）、`assistant_index_tests`（事件→索引→查询）、`assistant_search_tests`（provider + k-way merge）、`assistant_governance_tests`（Phase B 分类/规则/语法/白名单），外加 `assistant_golden` / `assistant_a3` / `assistant_bench`；`ctest` 一次跑全 8 项。
+> **测试目标**：`assistant_tests`（同步）、`assistant_watch_tests`（A5 事件源）、`assistant_index_tests`（事件→索引→查询）、`assistant_search_tests`（provider + k-way merge）、`assistant_governance_tests`（Phase B 分类/规则/语法/白名单）、`assistant_inbox_tests`（Phase C 身份/DB/接管/对账），外加 `assistant_golden` / `assistant_a3` / `assistant_bench`；`ctest` 一次跑全 9 项。
 
 ## Git 规范
 
