@@ -108,6 +108,9 @@ public:
 
 signals:
     void clientAuthenticated(const QString &deviceId);
+    /// 认证通过的设备自报的可达地址（观察到的 IP + 它自己上报的监听端口），
+    /// 供上层落库：下次要主动给对方发东西时用这个地址反连。
+    void peerReachable(const QString &deviceId, const QString &address, quint16 port);
     void authFailed(const QString &deviceId);
     void devicePaired(const QString &deviceId);
 
