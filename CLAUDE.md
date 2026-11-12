@@ -61,6 +61,7 @@ cmake --build build --config Debug
 ## 当前开发阶段
 
 **v0.4.0 文件子系统 A + B + C（S9）+ D（S10）+ E（S11 完整）** + **M4 插件市场已合并**（2026-11-12）
++ **设备同步直连通道已合并**（`qianju` → main，`ad04635`，2026-11-12）
 
 已完成：
 - Phase 0: Hello 窗口、编译环境
@@ -291,7 +292,7 @@ Phase 3 剩余（收尾中，写在这里便于续接）：
 > **DB 约定**：每个功能一个独立 DB 文件 + 独立 `QSqlDatabase` 连接名（见 `ClipboardDatabase`），不要共用一个连接。
 > **QML 约定**：搜索浮窗走 `AppBridge`，主面板走 `PanelBridge`，同步页走 `SyncBridge`（第三个桥，注入面板引擎）。
 > **测试约定**：QTest（`Qt6::Test`），不是 GTest；`tests/*.cpp` 里要 `#include "<名字>.moc"` 让 AUTOMOC 处理 `Q_OBJECT`。
-> **测试目标**：`assistant_tests`（同步）、`assistant_watch_tests`（A5 事件源）、`assistant_index_tests`（事件→索引→查询）、`assistant_search_tests`（provider + k-way merge）、`assistant_governance_tests`（Phase B 分类/规则/语法/白名单）、`assistant_inbox_tests`（Phase C/D/E 身份/DB/接管/对账/追踪/规则/查重），外加 `assistant_golden` / `assistant_a3` / `assistant_bench`；`ctest` 一次跑全 9 项。
+> **测试目标**：`assistant_tests`（同步）、`assistant_watch_tests`（A5 事件源）、`assistant_index_tests`（事件→索引→查询）、`assistant_search_tests`（provider + k-way merge）、`assistant_governance_tests`（Phase B 分类/规则/语法/白名单）、`assistant_inbox_tests`（Phase C/D/E 身份/DB/接管/对账/追踪/规则/查重）、`assistant_net_*`（直连：protocol / identity / tls / auth / server / transport / engine），外加 `assistant_golden` / `assistant_a3` / `assistant_bench`；`ctest` 一次跑全 16 项（`net_tls` 在本机 Qt 6.11.1 下有一条 Schannel 断言失败，见 `docs/devlog/2026-11-12.md`）。
 
 ## Git 规范
 
