@@ -125,7 +125,7 @@ private:
     QString m_syncPeerFingerprint;
     QString m_syncPeerSecret;
     QString m_syncDeviceName;
-    int     m_syncAutoIntervalMinutes = 0;
+    int     m_syncAutoIntervalMinutes = 1;
     bool    m_syncWatchFiles = true;
     QString m_syncInboxDir;
 };

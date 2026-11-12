@@ -133,6 +133,14 @@ bool SyncBridge::init(const QString &dbPath)
     }
     if (m_deviceName.isEmpty())
         m_deviceName = QSysInfo::machineHostName();
+
+    // 直连是 pull 模型：本机没动、对端动了，只有定时兜底才看得见。
+    // 老配置里这个值是 0（关闭），用户会以为"自动同步没生效"，所以配对过就默认给 1 分钟。
+    if (m_config && m_intervalMinutes <= 0 && hasPeerCredentials()) {
+        m_intervalMinutes = 1;
+        m_config->setSyncAutoIntervalMinutes(m_intervalMinutes);
+        Logger::get().info("SyncBridge: 自动同步间隔原为关闭，已默认改为 1 分钟");
+    }
     m_autoSync = m_intervalMinutes > 0;
 
     // 对端名：首次同步后从共享清单里读出来，启动时先空着
