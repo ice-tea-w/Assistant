@@ -25,6 +25,9 @@ bool read(const QString &path, Identity *out);
 /// 快速内容签名。读失败返回空串。大文件只读首尾各 64 KB。
 QString quickSignature(const QString &path);
 
+/// 全量内容签名（SHA-256 整个文件）。只在“查重裁决”时用，别在采集路径上调用。
+QString fullSignature(const QString &path);
+
 /// 当前时刻能否以**独占共享模式**打开（§2.3 条件 C）。
 /// 返回 true 只说明"此刻没有共享冲突"，不是"此后不会再被写"。
 bool canOpenExclusive(const QString &path, bool *sharingViolation = nullptr);

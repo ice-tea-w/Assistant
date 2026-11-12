@@ -258,6 +258,14 @@ Rectangle {
                         visible: modelData.duplicate
                         onTriggered: inbox.keepBoth(modelData.id)
                     }
+                    MenuItem {
+                        text: "删除重复副本（回收站）"
+                        visible: modelData.duplicate
+                        onTriggered: {
+                            if (inbox.prepareDeleteDuplicate(modelData.id))
+                                deleteDupDialog.open()
+                        }
+                    }
                     MenuSeparator { }
                     MenuItem {
                         text: "重新定位（索引反查）"
@@ -268,6 +276,36 @@ Rectangle {
                         text: "标记为已删除"
                         enabled: !modelData.inBox && modelData.trackState !== "Deleted"
                         onTriggered: inbox.markDeleted(modelData.id)
+                    }
+                }
+
+                Dialog {
+                    id: deleteDupDialog
+                    title: "删除重复副本"
+                    modal: true
+                    width: 380
+
+                    contentItem: Text {
+                        text: "两份文件内容完全一致。\n\n"
+                              + "将把「" + modelData.name + "」移入回收站；"
+                              + "原件不动，可从回收站还原。"
+                        color: textColor
+                        wrapMode: Text.WordWrap
+                        width: deleteDupDialog.availableWidth
+                    }
+
+                    footer: DialogButtonBox {
+                        Button {
+                            text: "取消"
+                            onClicked: deleteDupDialog.close()
+                        }
+                        Button {
+                            text: "移入回收站"
+                            onClicked: {
+                                inbox.deleteDuplicate(modelData.id)
+                                deleteDupDialog.close()
+                            }
+                        }
                     }
                 }
             }

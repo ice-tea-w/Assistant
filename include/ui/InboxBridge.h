@@ -47,6 +47,10 @@ public:
     /// S11 查重裁决：保留两份（清除 dup 标记）/ 打开更早的那份。
     Q_INVOKABLE bool keepBoth(int id);
     Q_INVOKABLE void revealDuplicate(int id);
+    /// 删除重复副本前的 fullSig 裁决；内容不完全一致时返回 false 并设置 lastError。
+    Q_INVOKABLE bool prepareDeleteDuplicate(int id);
+    /// 把已确认重复的副本移入回收站（只该 id 本身，原文件不动）。
+    Q_INVOKABLE bool deleteDuplicate(int id);
     /// 规则 dry-run：不入库、不移动，只返回“当前待整理会命中哪条规则、去哪里”。
     Q_INVOKABLE QVariantList previewRules(const QVariantList &rules) const;
     /// S11：把当前路径加入待办。

@@ -167,7 +167,10 @@ Phase 3 剩余（收尾中，写在这里便于续接）：
 - [x] **C5 规则编辑器 + dry-run**（2026-11-12）：`ConfigManager` 可写 `inboxAutoOrganize` /
       `setInboxRules` + `inboxRulesChanged`，主程序热更新 `DownloadRules`；设置页规则行可增删改
       （名称/种类/大小/action/去向），预览按钮只输出“命中哪条/去哪”，不移动文件
-- [ ] **C6 S11 剩余**：`fullSig` 裁决与“删除到回收站”、**IM 源适配器（QQ/微信/钉钉）**；
+- [x] **C6 查重收尾**（2026-11-12）：`FileIdentity::fullSignature`（流式 SHA-256，只用于裁决）；
+      `RecycleBin::moveToRecycleBin`（`SHFileOperationW` + `FOF_ALLOWUNDO`，永不 `DeleteFile`）；
+      两段式 fullSig 比对 + 确认框后才删，`pipe/track = Deleted`；24 个用例，`ctest` 9/9
+- [ ] **C7 最后的缺口**：**IM 源适配器（QQ/微信/钉钉）**（需真实环境确认目录与“边接收边判定”）；
       移动仍在 GUI 线程
 
 > ✅ **P0-3 已修掉**：不再套 2 万条任意截断，真机索引 20000 → **31845** 条，
@@ -227,7 +230,8 @@ Phase 3 剩余（收尾中，写在这里便于续接）：
 | FileScanner | `include/core/FileScanner.h`, `src/core/FileScanner.cpp` | 采集层：Win32 **句柄栈 DFS**（`FindFirstFileExW` + `FindExInfoBasic` + `LARGE_FETCH`）；目录级剪枝、不跟随 reparse point、长路径 `\\?\`、权限拒绝计数、可取消；Phase B 加**工程哨兵前瞻 256 条**（skip/demote，保持 DFS 顺序）与文件级规则。剪枝名单只有这一份 |
 | FileIndexDatabase | `include/database/FileIndexDatabase.h`, `src/database/FileIndexDatabase.cpp` | `file_index.db`（独立连接 `file_index`）：dirs/files/roots 三表、三方差集、UPSERT 批量事务；Phase B 起真正读写 `cat_mask/flags/root_id/origin_id`，且这些字段参与差量比较。**派生数据**，可删库重扫 |
 | DatabaseMigrator | `include/database/DatabaseMigrator.h`, `src/database/DatabaseMigrator.cpp` | `PRAGMA user_version` **前向**迁移，每步一事务；高版本库拒绝；禁止 DROP+重建 |
-| FileIdentity | `include/core/FileIdentity.h`, `src/core/FileIdentity.cpp` | 物理身份 `(volumeSerial, FileId)` + `quickSig`（size+首尾 64KB 的 SHA-256）+ 独占打开检测；同卷改名 FileId 不变 |
+| FileIdentity | `include/core/FileIdentity.h`, `src/core/FileIdentity.cpp` | 物理身份 `(volumeSerial, FileId)` + `quickSig`（首尾 64KB）+ `fullSig`（裁决用全量 SHA-256）+ 独占打开检测 |
+| RecycleBin | `include/core/RecycleBin.h`, `src/core/RecycleBin.cpp` | 删除只走回收站（`SHFileOperationW` + `FOF_ALLOWUNDO`），永不 `DeleteFile` |
 | DownloadsDatabase | `include/database/DownloadsDatabase.h`, `src/database/DownloadsDatabase.cpp` | `downloads.db`（独立连接 `downloads`，**权威数据**）：downloads 双状态 + move_journal + tracking_events + rules + sources + app_meta；迁移失败拒绝启动 |
 | IDownloadSource / BrowserSource | `include/core/inbox/IDownloadSource.h`, `src/core/inbox/BrowserSource.cpp` | 下载源适配器（Phase C 只有浏览器）：`FOLDERID_Downloads`、临时后缀、静默期；IM 源留给 S11 |
 | IngestEngine | `include/core/inbox/IngestEngine.h`, `src/core/inbox/IngestEngine.cpp` | 收件箱管线：事件驱动 → A/B/C 完成判定（退避）→ `MoveFileExW` → 登记 FileId/quickSig → journal/对账 → 撤销 |

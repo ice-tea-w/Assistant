@@ -344,6 +344,7 @@ add_executable(assistant_inbox_tests
     ${ASSISTANT_INDEX_TEST_SOURCES}
     # Phase C：收件箱 + 去向追踪
     src/core/FileIdentity.cpp
+    src/core/RecycleBin.cpp
     src/core/FileWatcher.cpp
     src/core/inbox/BrowserSource.cpp
     src/core/inbox/DownloadRules.cpp

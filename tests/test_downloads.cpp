@@ -36,6 +36,7 @@ class TestDownloads : public QObject
 private slots:
     void identitySurvivesRename();
     void quickSignatureTracksContent();
+    void fullSignatureComparesWholeFile();
 
     void databaseRoundTrip();
     void parserMapsDownloadTokens();
@@ -140,6 +141,29 @@ void TestDownloads::quickSignatureTracksContent()
 
     // 只改中间（不在首尾 64KB）也可能不变，这是 quickSig 的概率性语义 —— 这里只验证稳定
     QCOMPARE(FileIdentity::quickSignature(path), sig2);
+}
+
+void TestDownloads::fullSignatureComparesWholeFile()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    // 跨过 1 MB 分块边界，确认流式读取覆盖整个文件
+    QByteArray content(2 * 1024 * 1024 + 123, 'x');
+    const QString a = dir.path() + "/a.bin";
+    const QString b = dir.path() + "/b.bin";
+    const QString c = dir.path() + "/c.bin";
+    QVERIFY(writeFile(a, content));
+    QVERIFY(writeFile(b, content));
+
+    const QString sigA = FileIdentity::fullSignature(a);
+    QCOMPARE(sigA.size(), qsizetype(64));
+    QCOMPARE(FileIdentity::fullSignature(b), sigA);
+
+    // 中间一个字节不同：quickSig 可能相同（不在首尾），fullSig 必须不同
+    content[content.size() / 2] = 'y';
+    QVERIFY(writeFile(c, content));
+    QVERIFY(FileIdentity::fullSignature(c) != sigA);
 }
 
 void TestDownloads::databaseRoundTrip()

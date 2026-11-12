@@ -111,6 +111,24 @@ QString quickSignature(const QString &path)
     return QString::fromLatin1(hash.result().toHex());
 }
 
+QString fullSignature(const QString &path)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+        return QString();
+
+    QCryptographicHash hash(QCryptographicHash::Sha256);
+    constexpr qint64 kChunk = 1024 * 1024;
+    while (!file.atEnd()) {
+        const QByteArray chunk = file.read(kChunk);
+        if (chunk.isEmpty())
+            break;
+        hash.addData(chunk);
+    }
+    file.close();
+    return QString::fromLatin1(hash.result().toHex());
+}
+
 bool canOpenExclusive(const QString &path, bool *sharingViolation)
 {
     if (sharingViolation)

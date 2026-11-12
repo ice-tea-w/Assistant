@@ -1,7 +1,9 @@
 #include "ui/InboxBridge.h"
 
+#include "core/FileIdentity.h"
 #include "core/FileKind.h"
 #include "core/Logger.h"
+#include "core/RecycleBin.h"
 #include "core/inbox/IngestEngine.h"
 #include "core/inbox/DownloadRules.h"
 #include "core/inbox/TrackingEngine.h"
@@ -40,6 +42,8 @@ QString stateText(const DownloadRow &row)
         return QStringLiteral("失败");
     if (row.pipeState == QLatin1String("Undone"))
         return QStringLiteral("已撤销");
+    if (row.pipeState == QLatin1String("Deleted"))
+        return QStringLiteral("已删除（回收站）");
     if (row.inBox) {
         if (row.dupOf > 0)
             return QStringLiteral("待整理（重复）");
@@ -279,6 +283,66 @@ QVariantList InboxBridge::previewRules(const QVariantList &rules) const
         out.append(item);
     }
     return out;
+}
+
+bool InboxBridge::prepareDeleteDuplicate(int id)
+{
+    if (!m_db)
+        return false;
+    const auto row = m_db->byId(id);
+    if (!row || row->dupOf <= 0) {
+        m_lastError = QStringLiteral("这条不是重复副本");
+        emit lastErrorChanged();
+        return false;
+    }
+    const auto original = m_db->byId(row->dupOf);
+    if (!original) {
+        m_lastError = QStringLiteral("找不到重复的原件记录");
+        emit lastErrorChanged();
+        return false;
+    }
+
+    const QString duplicatePath = row->curPath.isEmpty() ? row->boxPath : row->curPath;
+    const QString originalPath = original->curPath.isEmpty() ? original->boxPath
+                                                             : original->curPath;
+    if (!QFileInfo::exists(duplicatePath) || !QFileInfo::exists(originalPath)) {
+        m_lastError = QStringLiteral("文件已不在原位置，无法裁决");
+        emit lastErrorChanged();
+        return false;
+    }
+
+    const QString duplicateSig = FileIdentity::fullSignature(duplicatePath);
+    const QString originalSig = FileIdentity::fullSignature(originalPath);
+    if (duplicateSig.isEmpty() || originalSig.isEmpty() || duplicateSig != originalSig) {
+        m_lastError = QStringLiteral("两份内容并不完全一致（quickSig 碰撞），未删除");
+        emit lastErrorChanged();
+        return false;
+    }
+
+    m_lastError.clear();
+    emit lastErrorChanged();
+    return true;
+}
+
+bool InboxBridge::deleteDuplicate(int id)
+{
+    if (!prepareDeleteDuplicate(id))
+        return false;
+
+    const auto row = m_db->byId(id);
+    const QString path = row->curPath.isEmpty() ? row->boxPath : row->curPath;
+    QString error;
+    if (!RecycleBin::moveToRecycleBin(path, &error)) {
+        m_lastError = error;
+        emit lastErrorChanged();
+        return false;
+    }
+
+    m_db->updateAfterDelete(id);
+    m_lastError.clear();
+    emit lastErrorChanged();
+    refresh();
+    return true;
 }
 
 bool InboxBridge::addToTodo(int id)

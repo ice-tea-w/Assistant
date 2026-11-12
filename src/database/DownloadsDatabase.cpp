@@ -546,6 +546,23 @@ bool DownloadsDatabase::setDupOf(int id, int dupOf)
     return true;
 }
 
+bool DownloadsDatabase::updateAfterDelete(int id)
+{
+    if (!isOpen())
+        return false;
+    QSqlQuery q(*m_db);
+    q.prepare(QStringLiteral(
+        "UPDATE downloads SET in_box=0, pipe_state='Deleted', track_state='Deleted',"
+        " last_verified=:now, suggest_dest='' WHERE id=:id"));
+    q.bindValue(QStringLiteral(":now"), nowIso());
+    q.bindValue(QStringLiteral(":id"), id);
+    if (!q.exec()) {
+        m_lastError = q.lastError().text();
+        return false;
+    }
+    return true;
+}
+
 std::optional<DownloadRow> DownloadsDatabase::bySigQuick(const QString &sigQuick,
                                                          int excludeId) const
 {
