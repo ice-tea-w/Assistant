@@ -1273,11 +1273,21 @@ void SyncBridge::syncNow()
         return;
     }
 
-    if (m_roots.isEmpty() || !hasPeerCredentials()) {
-        setStatus(QStringLiteral("请先添加要同步的文件夹，并完成与主机的配对"));
-        // 同步没跑起来必须有痕迹：界面上只改一行状态，用户回头查不出为什么
-        Logger::get().warn("SyncBridge: 跳过同步（同步根 {} 个，已配对 {}）",
-                           m_roots.size(), hasPeerCredentials());
+    if (m_roots.isEmpty()) {
+        setStatus(QStringLiteral("请先添加要同步的文件夹"));
+        Logger::get().warn("SyncBridge: 跳过同步（没有同步根）");
+        return;
+    }
+
+    if (!hasPeerCredentials()) {
+        // 主机模式：这台机器是服务端，自己没有「到主机」的凭据 —— 同步由对方发起，
+        // 它连过来拉走这边的文件。所以这里不是错误，别按警告刷屏（自动同步会反复触发）。
+        if (!m_db.allDevices().isEmpty()) {
+            setStatus(QStringLiteral("主机模式：等你配对的设备点「立即同步」来拉取"));
+            return;
+        }
+        setStatus(QStringLiteral("请先与主机配对，或在下面「直连」里等对方连过来"));
+        Logger::get().warn("SyncBridge: 跳过同步（同步根 {} 个，没有配对凭据）", m_roots.size());
         return;
     }
 

@@ -8,6 +8,7 @@ import QtQuick.Layouts
 // 主题色统一走 Style 单例。C++ 侧由 SyncBridge 注入为 `sync`。
 Rectangle {
     id: syncPage
+
     color: "transparent"
 
     readonly property color textColor:  Style.textColor
@@ -115,8 +116,8 @@ Rectangle {
                         font.pixelSize: Style.captionSize
                         text: "不经过共享目录：主机开一个端口，连接方拿 6 位码配对。"
                               + "走 ASYN v2 over TLS，只有主机出示证书，客户端靠口令认证。\n"
-                              + "配对后点下面「立即同步」：两边按「本地 / 上次基线 / 对端清单」比对，"
-                              + "只传差异、双向生效，文件直接走这条 TLS 连接，不经过任何中转。"
+                              + "配对之后由连接方点「立即同步」发起：两边按「本地 / 上次基线 / 对端清单」比对，"
+                              + "只传差异、双向生效。主机是被连的一方，不用点同步，等对方来拉即可。"
                     }
 
                     ColumnLayout {
@@ -454,7 +455,7 @@ Rectangle {
 
                         Button {
                             text: sync.busy ? "同步中…" : "立即同步"
-                            enabled: !sync.busy
+                            enabled: !sync.busy && sync.peerPaired
                             onClicked: sync.syncNow()
                         }
 
@@ -463,6 +464,16 @@ Rectangle {
                             checked: sync.watchFiles
                             onToggled: sync.setWatchFiles(checked)
                         }
+                    }
+
+                    Text {
+                        Layout.fillWidth: true
+                        wrapMode: Text.WordWrap
+                        color: syncPage.mutedColor
+                        font.pixelSize: 12
+                        visible: !sync.peerPaired && sync.pairedDevices.length > 0
+                        text: "你是主机：文件在你这边，等对方点「立即同步」来拉取；"
+                              + "这台机器上的「立即同步」没有对端可连，所以是灰的。"
                     }
 
                     RowLayout {
