@@ -399,6 +399,23 @@ bool DownloadsDatabase::updatePaths(int id, const QString &srcPath, const QStrin
     return true;
 }
 
+bool DownloadsDatabase::updateBoxPath(int id, const QString &boxPath)
+{
+    if (!isOpen())
+        return false;
+    QSqlQuery q(*m_db);
+    q.prepare(QStringLiteral(
+        "UPDATE downloads SET box_path=:b, cur_path=CASE WHEN in_box=1 THEN :b ELSE cur_path END"
+        " WHERE id=:id"));
+    q.bindValue(QStringLiteral(":b"), boxPath);
+    q.bindValue(QStringLiteral(":id"), id);
+    if (!q.exec()) {
+        m_lastError = q.lastError().text();
+        return false;
+    }
+    return true;
+}
+
 std::optional<DownloadRow> DownloadsDatabase::byId(int id) const
 {
     if (!isOpen())
@@ -433,6 +450,19 @@ std::optional<DownloadRow> DownloadsDatabase::byBoxPath(const QString &boxPath) 
     q.prepare(QStringLiteral("SELECT %1 FROM downloads WHERE box_path=:p")
                   .arg(QString::fromLatin1(kDownloadColumns)));
     q.bindValue(QStringLiteral(":p"), boxPath);
+    if (!q.exec() || !q.next())
+        return std::nullopt;
+    return rowFromQuery(q);
+}
+
+std::optional<DownloadRow> DownloadsDatabase::byCurPath(const QString &curPath) const
+{
+    if (!isOpen())
+        return std::nullopt;
+    QSqlQuery q(*m_db);
+    q.prepare(QStringLiteral("SELECT %1 FROM downloads WHERE cur_path=:p ORDER BY id DESC LIMIT 1")
+                  .arg(QString::fromLatin1(kDownloadColumns)));
+    q.bindValue(QStringLiteral(":p"), curPath);
     if (!q.exec() || !q.next())
         return std::nullopt;
     return rowFromQuery(q);
@@ -583,6 +613,48 @@ QVector<JournalRow> DownloadsDatabase::journalFor(int downloadId) const
     while (q.next())
         rows.append(journalFromQuery(q));
     return rows;
+}
+
+QVector<QStringList> DownloadsDatabase::trackingFor(int downloadId) const
+{
+    QVector<QStringList> rows;
+    if (!isOpen())
+        return rows;
+    QSqlQuery q(*m_db);
+    q.prepare(QStringLiteral(
+        "SELECT from_path, COALESCE(to_path,''), method, confidence, at"
+        " FROM tracking_events WHERE download_id=:id ORDER BY id"));
+    q.bindValue(QStringLiteral(":id"), downloadId);
+    if (!q.exec())
+        return rows;
+    while (q.next()) {
+        rows.append({ q.value(0).toString(), q.value(1).toString(),
+                      q.value(2).toString(), q.value(3).toString(), q.value(4).toString() });
+    }
+    return rows;
+}
+
+qint64 DownloadsDatabase::addTrackingEvent(int downloadId, const QString &fromPath,
+                                           const QString &toPath,
+                                           const QString &method, const QString &confidence)
+{
+    if (!isOpen())
+        return -1;
+    QSqlQuery q(*m_db);
+    q.prepare(QStringLiteral(
+        "INSERT INTO tracking_events(download_id, from_path, to_path, method, confidence, at)"
+        " VALUES(:id, :from, :to, :method, :confidence, :at)"));
+    q.bindValue(QStringLiteral(":id"), downloadId);
+    q.bindValue(QStringLiteral(":from"), fromPath);
+    q.bindValue(QStringLiteral(":to"), toPath.isEmpty() ? QVariant() : toPath);
+    q.bindValue(QStringLiteral(":method"), method);
+    q.bindValue(QStringLiteral(":confidence"), confidence);
+    q.bindValue(QStringLiteral(":at"), nowIso());
+    if (!q.exec()) {
+        m_lastError = q.lastError().text();
+        return -1;
+    }
+    return q.lastInsertId().toLongLong();
 }
 
 // ---------------------------------------------------------------------------

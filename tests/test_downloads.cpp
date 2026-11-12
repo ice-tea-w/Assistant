@@ -17,12 +17,15 @@
 #include <memory>
 
 #include "core/FileIdentity.h"
+#include "core/FileIndex.h"
 #include "core/FileKind.h"
+#include "core/FileSnapshot.h"
 #include "core/FileWatcher.h"
 #include "core/FileEventDispatcher.h"
 #include "core/QueryParser.h"
 #include "core/inbox/IDownloadSource.h"
 #include "core/inbox/IngestEngine.h"
+#include "core/inbox/TrackingEngine.h"
 #include "database/DownloadsDatabase.h"
 
 class TestDownloads : public QObject
@@ -40,8 +43,39 @@ private slots:
     void partialDownloadIsNotTaken();
     void nameCollisionGetsSuffix();
     void reconcileMarksMissingBoxFileUnknown();
+    void trackingFindsMovedFileByFileId();
+    void trackingTimeoutFallsBackToUnknown();
+    void trackingIgnoresCopyWhileBoxFileRemains();
+    void trackingFollowsSecondMove();
+    void offlineReconcileFindsMovedFile();
+    void offlineReconcileDetectsBoxRename();
 
 private:
+    /// 模拟一条"已在收件箱"的记录：文件真实存在，身份/签名按真实文件采集。
+    static int insertInBox(DownloadsDatabase &db, const QString &path)
+    {
+        FileIdentity::Identity identity;
+        const bool ok = FileIdentity::read(path, &identity);
+        const QFileInfo info(path);
+
+        DownloadRow row;
+        row.sourceId = QStringLiteral("browser");
+        row.srcPath = info.absolutePath() + "/" + info.fileName();
+        row.boxPath = path;
+        row.curPath = path;
+        row.inBox = true;
+        row.name = info.fileName();
+        row.size = info.size();
+        row.mtime = info.lastModified().toSecsSinceEpoch();
+        row.volumeSerial = ok ? identity.volumeSerial : 0;
+        row.fileId = ok ? identity.fileId : QString();
+        row.sigQuick = FileIdentity::quickSignature(path);
+        row.pipeState = QStringLiteral("InBox");
+        row.trackState = QStringLiteral("InBox");
+        row.createdAt = QDateTime::currentDateTime().toString(Qt::ISODate);
+        return db.insert(row);
+    }
+
     static bool writeFile(const QString &path, const QByteArray &content = "payload")
     {
         QDir().mkpath(QFileInfo(path).absolutePath());
@@ -366,6 +400,310 @@ void TestDownloads::reconcileMarksMissingBoxFileUnknown()
     QCOMPARE(fixed->trackState, QStringLiteral("Unknown"));
 
     engine.stop();
+    db.close();
+}
+
+void TestDownloads::trackingFindsMovedFileByFileId()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString boxDir = dir.path() + "/Inbox";
+    const QString dest = dir.path() + "/Archive";
+    QVERIFY(QDir().mkpath(boxDir));
+    QVERIFY(QDir().mkpath(dest));
+
+    const QString src = boxDir + "/report.pdf";
+    const QString moved = dest + "/report.pdf";
+    QVERIFY(writeFile(src, "track me"));
+
+    DownloadsDatabase db(QStringLiteral("downloads_test_track1"));
+    QVERIFY(db.open(dir.path() + "/downloads.db"));
+    const int id = insertInBox(db, src);
+    QVERIFY(id > 0);
+
+    TrackingEngine tracking(&db, nullptr);
+    tracking.setBoxPath(boxDir);
+    tracking.setWindowMs(3000);
+
+    FileEventDispatcher dispatcher;
+    FileWatcher watcher;
+    watcher.setCoalesceMs(50);
+    tracking.setEventSource(&dispatcher);
+    connect(&watcher, &FileWatcher::batchReady, this,
+            [&dispatcher](const QVector<FileSystemEvent> &batch) { dispatcher.publish(batch); });
+    QVERIFY(watcher.start({ boxDir, dest }));
+    tracking.start();
+
+    QVERIFY(QFile::rename(src, moved));
+
+    QTRY_VERIFY_WITH_TIMEOUT(([&] {
+        const auto row = db.byId(id);
+        return row && row->trackState == QStringLiteral("FiledAway") && row->curPath == moved;
+    }()), 8000);
+
+    const auto row = db.byId(id);
+    QVERIFY(!row->inBox);
+    const auto events = db.trackingFor(id);
+    QCOMPARE(events.size(), qsizetype(1));
+    QCOMPARE(events.first().at(2), QStringLiteral("watcher-frn"));
+    QCOMPARE(events.first().at(3), QStringLiteral("exact"));
+
+    watcher.stop();
+    tracking.stop();
+    db.close();
+}
+
+void TestDownloads::trackingTimeoutFallsBackToUnknown()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString boxDir = dir.path() + "/Inbox";
+    const QString elsewhere = dir.path() + "/NotWatched";
+    QVERIFY(QDir().mkpath(boxDir));
+    QVERIFY(QDir().mkpath(elsewhere));
+
+    const QString src = boxDir + "/lost.bin";
+    QVERIFY(writeFile(src, "nobody watches the destination"));
+
+    DownloadsDatabase db(QStringLiteral("downloads_test_track2"));
+    QVERIFY(db.open(dir.path() + "/downloads.db"));
+    const int id = insertInBox(db, src);
+
+    TrackingEngine tracking(&db, nullptr);
+    tracking.setBoxPath(boxDir);
+    tracking.setWindowMs(500);
+
+    FileEventDispatcher dispatcher;
+    FileWatcher watcher;
+    watcher.setCoalesceMs(50);
+    tracking.setEventSource(&dispatcher);
+    connect(&watcher, &FileWatcher::batchReady, this,
+            [&dispatcher](const QVector<FileSystemEvent> &batch) { dispatcher.publish(batch); });
+    QVERIFY(watcher.start({ boxDir }));
+    tracking.start();
+
+    QVERIFY(QFile::rename(src, elsewhere + "/lost.bin"));
+
+    QTRY_VERIFY_WITH_TIMEOUT(([&] {
+        const auto row = db.byId(id);
+        return row && row->trackState == QStringLiteral("Unknown");
+    }()), 6000);
+
+    const auto events = db.trackingFor(id);
+    QCOMPARE(events.size(), qsizetype(1));
+    QCOMPARE(events.first().at(3), QStringLiteral("unknown"));
+
+    watcher.stop();
+    tracking.stop();
+    db.close();
+}
+
+void TestDownloads::trackingIgnoresCopyWhileBoxFileRemains()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString boxDir = dir.path() + "/Inbox";
+    const QString dest = dir.path() + "/Archive";
+    QVERIFY(QDir().mkpath(boxDir));
+    QVERIFY(QDir().mkpath(dest));
+
+    const QString src = boxDir + "/keep.pdf";
+    QVERIFY(writeFile(src, "copy, not move"));
+
+    DownloadsDatabase db(QStringLiteral("downloads_test_track3"));
+    QVERIFY(db.open(dir.path() + "/downloads.db"));
+    const int id = insertInBox(db, src);
+
+    TrackingEngine tracking(&db, nullptr);
+    tracking.setBoxPath(boxDir);
+    tracking.setWindowMs(800);
+
+    FileEventDispatcher dispatcher;
+    FileWatcher watcher;
+    watcher.setCoalesceMs(50);
+    tracking.setEventSource(&dispatcher);
+    connect(&watcher, &FileWatcher::batchReady, this,
+            [&dispatcher](const QVector<FileSystemEvent> &batch) { dispatcher.publish(batch); });
+    QVERIFY(watcher.start({ boxDir, dest }));
+    tracking.start();
+
+    QVERIFY(QFile::copy(src, dest + "/keep.pdf"));
+    QTest::qWait(1800);
+
+    const auto row = db.byId(id);
+    QVERIFY2(row && row->inBox, "别处复制（原件仍在 box）不能触发追踪");
+    QCOMPARE(row->trackState, QStringLiteral("InBox"));
+    QCOMPARE(db.trackingFor(id).size(), qsizetype(0));
+
+    watcher.stop();
+    tracking.stop();
+    db.close();
+}
+
+void TestDownloads::trackingFollowsSecondMove()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString boxDir = dir.path() + "/Inbox";
+    const QString stage1 = dir.path() + "/Stage1";
+    const QString stage2 = dir.path() + "/Stage2";
+    QVERIFY(QDir().mkpath(boxDir));
+    QVERIFY(QDir().mkpath(stage1));
+    QVERIFY(QDir().mkpath(stage2));
+
+    const QString src = boxDir + "/chain.pdf";
+    QVERIFY(writeFile(src, "multi-hop"));
+
+    DownloadsDatabase db(QStringLiteral("downloads_test_track4"));
+    QVERIFY(db.open(dir.path() + "/downloads.db"));
+    const int id = insertInBox(db, src);
+
+    TrackingEngine tracking(&db, nullptr);
+    tracking.setBoxPath(boxDir);
+    tracking.setWindowMs(3000);
+
+    FileEventDispatcher dispatcher;
+    FileWatcher watcher;
+    watcher.setCoalesceMs(50);
+    tracking.setEventSource(&dispatcher);
+    connect(&watcher, &FileWatcher::batchReady, this,
+            [&dispatcher](const QVector<FileSystemEvent> &batch) { dispatcher.publish(batch); });
+    QVERIFY(watcher.start({ boxDir, stage1, stage2 }));
+    tracking.start();
+
+    const QString p1 = stage1 + "/chain.pdf";
+    const QString p2 = stage2 + "/chain.pdf";
+    QVERIFY(QFile::rename(src, p1));
+    QTRY_VERIFY_WITH_TIMEOUT(([&] {
+        const auto row = db.byId(id);
+        return row && row->curPath == p1 && row->trackState == QStringLiteral("FiledAway");
+    }()), 8000);
+
+    QVERIFY(QFile::rename(p1, p2));
+    QTRY_VERIFY_WITH_TIMEOUT(([&] {
+        const auto row = db.byId(id);
+        return row && row->curPath == p2 && row->trackState == QStringLiteral("FiledAway");
+    }()), 8000);
+
+    QCOMPARE(db.trackingFor(id).size(), qsizetype(2));   // box → Stage1 → Stage2
+
+    watcher.stop();
+    tracking.stop();
+    db.close();
+}
+
+void TestDownloads::offlineReconcileFindsMovedFile()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString boxDir = dir.path() + "/Inbox";
+    const QString archive = dir.path() + "/Archive";
+    QVERIFY(QDir().mkpath(boxDir));
+    QVERIFY(QDir().mkpath(archive));
+
+    // 关机期间：文件从 box 被移到 Archive，box 里已不存在
+    const QString dest = archive + "/moved.pdf";
+    QVERIFY(writeFile(dest, "offline moved payload"));
+    const QFileInfo info(dest);
+
+    FileIdentity::Identity identity;
+    QVERIFY(FileIdentity::read(dest, &identity));
+
+    DownloadsDatabase db(QStringLiteral("downloads_test_offline1"));
+    QVERIFY(db.open(dir.path() + "/downloads.db"));
+
+    DownloadRow row;
+    row.sourceId = QStringLiteral("browser");
+    row.srcPath = dir.path() + "/Downloads/moved.pdf";
+    row.boxPath = boxDir + "/moved.pdf";   // 已不存在
+    row.curPath = row.boxPath;
+    row.inBox = true;
+    row.name = QStringLiteral("moved.pdf");
+    row.size = info.size();
+    row.mtime = info.lastModified().toSecsSinceEpoch();
+    row.volumeSerial = identity.volumeSerial;
+    row.fileId = identity.fileId;
+    row.sigQuick = FileIdentity::quickSignature(dest);
+    row.pipeState = QStringLiteral("InBox");
+    row.trackState = QStringLiteral("InBox");
+    row.createdAt = QDateTime::currentDateTime().toString(Qt::ISODate);
+    const int id = db.insert(row);
+    QVERIFY(id > 0);
+
+    // 索引快照里已经有 Archive 的新位置（启动扫描完成后的状态）
+    FileIndex index;
+    FileSnapshot::Builder builder;
+    builder.add(QStringLiteral("moved.pdf"), dest, row.size, row.mtime, FileKind::Pdf);
+    index.setSnapshot(builder.finish());
+
+    TrackingEngine tracking(&db, &index);
+    tracking.setBoxPath(boxDir);
+    tracking.reconcileOffline();
+
+    const auto fixed = db.byId(id);
+    QVERIFY(fixed.has_value());
+    QVERIFY(!fixed->inBox);
+    QCOMPARE(fixed->trackState, QStringLiteral("FiledAway"));
+    QCOMPARE(fixed->curPath, dest);
+
+    const auto events = db.trackingFor(id);
+    QCOMPARE(events.size(), qsizetype(1));
+    QCOMPARE(events.first().at(2), QStringLiteral("startup-rescan"));
+    QCOMPARE(events.first().at(3), QStringLiteral("strong"));
+
+    db.close();
+}
+
+void TestDownloads::offlineReconcileDetectsBoxRename()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString boxDir = dir.path() + "/Inbox";
+    QVERIFY(QDir().mkpath(boxDir));
+
+    // 关机期间在 box 内改名
+    const QString renamed = boxDir + "/new-name.txt";
+    QVERIFY(writeFile(renamed, "renamed while app closed"));
+    const QFileInfo info(renamed);
+
+    FileIdentity::Identity identity;
+    QVERIFY(FileIdentity::read(renamed, &identity));
+
+    DownloadsDatabase db(QStringLiteral("downloads_test_offline2"));
+    QVERIFY(db.open(dir.path() + "/downloads.db"));
+
+    DownloadRow row;
+    row.sourceId = QStringLiteral("browser");
+    row.srcPath = dir.path() + "/Downloads/old-name.txt";
+    row.boxPath = boxDir + "/old-name.txt";   // 旧名字，已不存在
+    row.curPath = row.boxPath;
+    row.inBox = true;
+    row.name = QStringLiteral("old-name.txt");
+    row.size = info.size();
+    row.mtime = info.lastModified().toSecsSinceEpoch();
+    row.volumeSerial = identity.volumeSerial;
+    row.fileId = identity.fileId;
+    row.sigQuick = FileIdentity::quickSignature(renamed);
+    row.pipeState = QStringLiteral("InBox");
+    row.trackState = QStringLiteral("InBox");
+    row.createdAt = QDateTime::currentDateTime().toString(Qt::ISODate);
+    const int id = db.insert(row);
+    QVERIFY(id > 0);
+
+    FileIndex index;   // 级别 0 只看 box，不需要索引内容，但需要 isReady
+    FileSnapshot::Builder empty;
+    index.setSnapshot(empty.finish());
+
+    TrackingEngine tracking(&db, &index);
+    tracking.setBoxPath(boxDir);
+    tracking.reconcileOffline();
+
+    const auto fixed = db.byId(id);
+    QVERIFY(fixed.has_value());
+    QVERIFY2(fixed->inBox, "box 内改名不应变成已归档");
+    QCOMPARE(fixed->boxPath, renamed);
+    QCOMPARE(fixed->curPath, renamed);
+
     db.close();
 }
 

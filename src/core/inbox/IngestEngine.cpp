@@ -204,7 +204,8 @@ int IngestEngine::reconcile()
 
     QStringList notes;
     reconcileJournal(&notes);
-    reconcileBox(&notes);
+    if (m_autoReconcileBox)
+        reconcileBox(&notes);
 
     if (!notes.isEmpty()) {
         const QString text = QStringLiteral("启动对账：") + notes.join(QStringLiteral("；"));

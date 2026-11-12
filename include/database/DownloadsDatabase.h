@@ -85,10 +85,13 @@ public:
     bool updateTrackState(int id, const QString &state, const QString &curPath,
                           bool inBox, const QString &filedAt = QString());
     bool updatePaths(int id, const QString &srcPath, const QString &curPath);
+    bool updateBoxPath(int id, const QString &boxPath);
 
     std::optional<DownloadRow> byId(int id) const;
     std::optional<DownloadRow> bySrcPath(const QString &srcPath) const;
     std::optional<DownloadRow> byBoxPath(const QString &boxPath) const;
+    /// 多级移动链：当前路径被移走时用它找回记录。
+    std::optional<DownloadRow> byCurPath(const QString &curPath) const;
     QVector<DownloadRow> list(int limit = 200) const;
     QVector<DownloadRow> listInBox() const;
     int countInBox() const;
@@ -100,6 +103,11 @@ public:
     bool finishJournal(qint64 journalId, bool ok, int errorCode = 0);
     QVector<JournalRow> pendingIntents() const;
     QVector<JournalRow> journalFor(int downloadId) const;
+
+    // ---- tracking_events（追加型去向链）----
+    qint64 addTrackingEvent(int downloadId, const QString &fromPath, const QString &toPath,
+                            const QString &method, const QString &confidence);
+    QVector<QStringList> trackingFor(int downloadId) const;   ///< {from,to,method,confidence,at}
 
     // ---- app_meta ----
     QString meta(const QString &key) const;

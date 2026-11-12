@@ -16,6 +16,7 @@
 #include "core/FileWatcher.h"
 #include "core/inbox/IDownloadSource.h"
 #include "core/inbox/IngestEngine.h"
+#include "core/inbox/TrackingEngine.h"
 #include "database/HistoryDatabase.h"
 #include "database/DownloadsDatabase.h"
 #include "database/TodoDatabase.h"
@@ -137,6 +138,12 @@ int main(int argc, char *argv[])
     }
     backend.setFileIndex(&fileIndex);
 
+    // S10 去向追踪接管 box 幽灵条目：先尝试 FileId / quickSig 反查，再落 Unknown
+    ingest.setAutoReconcileBox(false);
+    TrackingEngine tracking(&downloadsDb, &fileIndex);
+    tracking.setBoxPath(config.inboxPath());
+    tracking.setWindowMs(config.inboxTrackingWindowSec() * 1000);
+
     // 设置页改白名单 → 立即生效（查询期过滤，不重建快照、不扫盘）
     QObject::connect(&config, &ConfigManager::fileKindFilterChanged, &app, [&] {
         fileIndex.setKindFilter(config.kindFilter());
@@ -150,19 +157,31 @@ int main(int argc, char *argv[])
     // A5b：扫描完之后接上增量事件源。
     FileEventDispatcher fileEvents;
     FileEventDispatcher downloadEvents;
+    FileEventDispatcher trackingEvents;
     FileWatcher         fileWatcher;
     fileIndex.setEventSource(&fileEvents);
     ingest.setEventSource(&downloadEvents);
+    tracking.setEventSource(&trackingEvents);
     QObject::connect(&fileWatcher, &FileWatcher::batchReady,
-                     [&fileEvents, &downloadEvents](const QVector<FileSystemEvent> &batch) {
-                         // 同一个 watcher、两个消费者：索引侧与接管侧互不认识
+                     [&fileEvents, &downloadEvents, &trackingEvents](const QVector<FileSystemEvent> &batch) {
+                         // 同一个 watcher、三个消费者：索引 / 接管 / 去向，互不认识
                          fileEvents.publish(batch);
                          downloadEvents.publish(batch);
+                         trackingEvents.publish(batch);
                      });
 
+    QStringList watchRoots = fileIndex.roots();
+    for (const QString &extra : config.inboxExtraWatchDirs()) {
+        if (!extra.isEmpty() && !watchRoots.contains(extra))
+            watchRoots.append(extra);   // 只监听、不索引（tracking.extraWatchDirs）
+    }
+
+    // 顺序有讲究：先让 IngestEngine 建好收件箱目录，否则 FileWatcher 会跳过不存在的根、
+    // FileIndex 首次扫描也会漏掉 box（收件箱文件就搜不到）。
+    ingest.start();                  // 双对账（journal intent + box 幽灵条目）+ 建 box
     fileIndex.startAsync();          // 放在 engine.load() 之前，但不再阻塞
-    fileWatcher.start(fileIndex.roots());
-    ingest.start();                  // 启动双对账（journal intent + box 幽灵条目）
+    fileWatcher.start(watchRoots);
+    tracking.start();                // 去向追踪（实时 + 索引就绪后的离线反查）
 
     // 设置页切换接管开关 / 路径
     QObject::connect(&config, &ConfigManager::inboxChanged, &app, [&] {
@@ -280,6 +299,7 @@ int main(int argc, char *argv[])
     pluginCatalog.setMarketUrl(qEnvironmentVariable("ASSISTANT_MARKET_URL"));
 
     InboxBridge inboxBridge(&downloadsDb, &ingest);
+    QObject::connect(&tracking, &TrackingEngine::changed, &inboxBridge, &InboxBridge::refresh);
 
     // ---- main panel window (Phase 3 Step 1) ----
     // 常驻主面板：独立 engine，初始隐藏，由 🏠 按钮 / 托盘菜单触发显示。

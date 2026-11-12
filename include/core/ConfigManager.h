@@ -80,6 +80,8 @@ public:
     bool    inboxEnabled() const;      ///< 默认 false：不主动搬用户文件，需显式开启
     QString inboxPath() const;         ///< 收件箱目录（空配置时用 AppConfigLocation/Inbox）
     int     inboxSettleMs() const;     ///< 稳定静默期
+    int     inboxTrackingWindowSec() const;          ///< 去向追踪窗口（默认 60 s）
+    QStringList inboxExtraWatchDirs() const;         ///< 只监听、不索引的归档目录
     // ---- 设备同步（Phase: 联网功能）----
     QString syncLocalRoot() const;             // 本地共享根（单根时代的旧字段，保留兼容）
     /// 要同步的本地文件夹列表，每项 {localPath, alias}。为空时回退到 syncLocalRoot。
@@ -156,6 +158,8 @@ private:
     bool           m_inboxEnabled = false;    // Phase C：默认不接管（用户显式开启）
     QString        m_inboxPath;               // 空 = AppConfigLocation/Inbox
     int            m_inboxSettleMs = 1200;
+    int            m_inboxTrackingWindowSec = 60;
+    QStringList    m_inboxExtraWatchDirs;
     QString m_filePath;
 
     QString m_syncLocalRoot;

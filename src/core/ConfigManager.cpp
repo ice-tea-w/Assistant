@@ -76,6 +76,8 @@ void ConfigManager::applyDefaults()
     m_inboxEnabled  = false;
     m_inboxPath.clear();
     m_inboxSettleMs = 1200;
+    m_inboxTrackingWindowSec = 60;
+    m_inboxExtraWatchDirs.clear();
 
     // 设备同步：路径留空由用户在设置页填；设备名默认取主机名
     m_syncLocalRoot.clear();
@@ -239,6 +241,20 @@ void ConfigManager::load()
                 if (ms >= 300 && ms <= 60000)
                     m_inboxSettleMs = ms;
             }
+            if (in.contains("tracking") && in["tracking"].is_object()) {
+                auto &tr = in["tracking"];
+                const int sec = tr.value("windowSec", 60);
+                if (sec >= 1 && sec <= 3600)
+                    m_inboxTrackingWindowSec = sec;
+                if (tr.contains("extraWatchDirs") && tr["extraWatchDirs"].is_array()) {
+                    m_inboxExtraWatchDirs.clear();
+                    for (const auto &item : tr["extraWatchDirs"]) {
+                        if (item.is_string())
+                            m_inboxExtraWatchDirs.append(
+                                QString::fromStdString(item.get<std::string>()));
+                    }
+                }
+            }
         }
         // sync（设备同步）
         if (j.contains("sync")) {
@@ -347,6 +363,14 @@ void ConfigManager::save()
         {"settleMs", m_inboxSettleMs},
         {"firstRunPolicy", "newOnly"}
     };
+    j["inbox"]["tracking"] = {
+        {"windowSec", m_inboxTrackingWindowSec},
+        {"extraWatchDirs", json::array()},
+        {"useUsnJournal", false},
+        {"notifyOnFiledAway", false}
+    };
+    for (const QString &dir : m_inboxExtraWatchDirs)
+        j["inbox"]["tracking"]["extraWatchDirs"].push_back(dir.toStdString());
     j["sync"] = {
         {"localRoot",  m_syncLocalRoot.toStdString()},
         {"sharedDir",  m_syncSharedDir.toStdString()},
@@ -430,6 +454,16 @@ QString ConfigManager::inboxPath() const
 int ConfigManager::inboxSettleMs() const
 {
     return m_inboxSettleMs;
+}
+
+int ConfigManager::inboxTrackingWindowSec() const
+{
+    return m_inboxTrackingWindowSec;
+}
+
+QStringList ConfigManager::inboxExtraWatchDirs() const
+{
+    return m_inboxExtraWatchDirs;
 }
 
 void ConfigManager::setInboxEnabled(bool enabled)

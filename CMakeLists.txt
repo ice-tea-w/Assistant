@@ -341,20 +341,18 @@ set_tests_properties(file_governance PROPERTIES
 # ---- Phase C：下载收件箱（S9 骨架）----
 add_executable(assistant_inbox_tests
     tests/test_downloads.cpp
-    src/core/Logger.cpp
+    ${ASSISTANT_INDEX_TEST_SOURCES}
+    # Phase C：收件箱 + 去向追踪
     src/core/FileIdentity.cpp
-    src/core/FileKind.cpp
-    src/core/FileClassifier.cpp
-    src/core/QueryParser.cpp
     src/core/FileWatcher.cpp
-    src/core/FileEventDispatcher.cpp
     src/core/inbox/BrowserSource.cpp
     src/core/inbox/IngestEngine.cpp
+    src/core/inbox/TrackingEngine.cpp
     src/database/DownloadsDatabase.cpp
-    src/database/DatabaseMigrator.cpp
     include/core/FileWatcher.h
     include/core/inbox/IDownloadSource.h
     include/core/inbox/IngestEngine.h
+    include/core/inbox/TrackingEngine.h
     include/database/DownloadsDatabase.h
 )
 target_include_directories(assistant_inbox_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)

@@ -46,6 +46,10 @@ public:
     void stop();
     bool isRunning() const;
 
+    /// box 幽灵条目是否由本引擎直接标 `Unknown`。
+    /// 装了 `TrackingEngine` 时置 false —— 它要先尝试离线反查再下结论。
+    void setAutoReconcileBox(bool enabled) { m_autoReconcileBox = enabled; }
+
     /// 撤销一次接管：把文件从 box 移回原下载目录（同名冲突自动加 (n)）。
     bool undo(int downloadId, QString *error = nullptr);
 
@@ -98,6 +102,7 @@ private:
     QString              m_boxPath;
     bool                 m_enabled = false;
     bool                 m_running = false;
+    bool                 m_autoReconcileBox = true;
     int                  m_settleOverrideMs = 0;
     QString              m_lastNotice;
 

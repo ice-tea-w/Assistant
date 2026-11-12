@@ -35,6 +35,8 @@ QString stateText(const DownloadRow &row)
         return QStringLiteral("已撤销");
     if (row.inBox)
         return QStringLiteral("待整理");
+    if (row.trackState == QLatin1String("FiledAway"))
+        return QStringLiteral("已归档");
     if (row.trackState == QLatin1String("Unknown"))
         return QStringLiteral("已移出（位置未知）");
     return QStringLiteral("已移出");

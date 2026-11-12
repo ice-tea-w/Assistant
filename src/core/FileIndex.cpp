@@ -398,6 +398,23 @@ QList<SearchResult> FileIndex::query(const QString &text, int limit)
     return out;
 }
 
+QStringList FileIndex::pathsBySizeMtime(qint64 size, qint64 mtime, int limit) const
+{
+    QStringList out;
+    if (limit <= 0)
+        return out;
+
+    const std::shared_ptr<const FileSnapshot> snap = m_snapshots->current();
+    if (!snap)
+        return out;
+
+    for (int i = 0; i < snap->size() && out.size() < limit; ++i) {
+        if (snap->sizeAt(i) == size && snap->mtimeAt(i) == mtime)
+            out.append(snap->pathAt(i));
+    }
+    return out;
+}
+
 FileIndex::IndexStats FileIndex::stats() const
 {
     IndexStats s;

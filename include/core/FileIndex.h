@@ -62,6 +62,10 @@ public:
     /// 线程安全：快照不可变，读侧无需加锁。
     QList<SearchResult> query(const QString &text, int limit);
 
+    /// 去向追踪的离线反查（§2.6 第六步级别 1）：按 `(size, mtime)` 精确匹配快照。
+    /// 只返回路径；候选通常是个位数（走 `idx_files_sizemtime` 的等价内存扫描）。
+    QStringList pathsBySizeMtime(qint64 size, qint64 mtime, int limit = 20) const;
+
     IndexStats stats() const;
     bool isReady() const;
 
