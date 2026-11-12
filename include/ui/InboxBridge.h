@@ -6,6 +6,7 @@
 
 class DownloadsDatabase;
 class IngestEngine;
+class TrackingEngine;
 class TodoDatabase;
 class ClipboardDatabase;
 
@@ -25,6 +26,8 @@ public:
     /// 联动既有功能（S11）：加入待办 / 复制内容需要这两个库。
     void setTodoDatabase(TodoDatabase *db) { m_todoDb = db; }
     void setClipboardDatabase(ClipboardDatabase *db) { m_clipDb = db; }
+    /// 「重新定位」需要追踪引擎的离线反查（级别 1/2）。
+    void setTrackingEngine(TrackingEngine *engine) { m_tracking = engine; }
 
     QVariantList items() const;
     Q_INVOKABLE QVariantList filterItems(const QString &filter) const;   ///< all / inbox / filed
@@ -44,6 +47,10 @@ public:
     /// S11：读取文本内容到系统剪贴板 + 剪贴板历史（>1 MB 或二进制拒绝）。
     Q_INVOKABLE bool copyContent(int id);
     Q_INVOKABLE bool copyPath(int id);
+    /// 手动重新定位一条 Unknown 记录（离线级别 1/2）。
+    Q_INVOKABLE bool relocateItem(int id);
+    /// 用户确认“已删除”（不自动判定，只改记录）。
+    Q_INVOKABLE bool markDeleted(int id);
 
 signals:
     void itemsChanged();
@@ -55,6 +62,7 @@ private:
 
     DownloadsDatabase *m_db = nullptr;
     IngestEngine      *m_engine = nullptr;
+    TrackingEngine    *m_tracking = nullptr;
     TodoDatabase      *m_todoDb = nullptr;
     ClipboardDatabase *m_clipDb = nullptr;
     QString m_lastError;

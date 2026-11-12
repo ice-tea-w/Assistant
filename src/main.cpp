@@ -307,6 +307,7 @@ int main(int argc, char *argv[])
     InboxBridge inboxBridge(&downloadsDb, &ingest);
     inboxBridge.setTodoDatabase(&todoDb);
     inboxBridge.setClipboardDatabase(&clipDb);
+    inboxBridge.setTrackingEngine(&tracking);
     QObject::connect(&tracking, &TrackingEngine::changed, &inboxBridge, &InboxBridge::refresh);
 
     // ---- main panel window (Phase 3 Step 1) ----

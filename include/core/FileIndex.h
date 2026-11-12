@@ -66,6 +66,9 @@ public:
     /// 只返回路径；候选通常是个位数（走 `idx_files_sizemtime` 的等价内存扫描）。
     QStringList pathsBySizeMtime(qint64 size, qint64 mtime, int limit = 20) const;
 
+    /// 级别 2：按文件名反查（大小写不敏感），再由调用方取 FileId 确认。
+    QStringList pathsByName(const QString &name, int limit = 50) const;
+
     IndexStats stats() const;
     bool isReady() const;
 

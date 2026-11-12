@@ -365,6 +365,90 @@ void TrackingEngine::tick()
     }
 }
 
+bool TrackingEngine::findOfflineCandidate(const DownloadRow &row, QString *path,
+                                          QString *confidence) const
+{
+    if (!m_index || !m_index->isReady())
+        return false;
+
+    // 级别 1：size + mtime → quickSig 唯一
+    if (!row.sigQuick.isEmpty()) {
+        const QStringList candidates = m_index->pathsBySizeMtime(row.size, row.mtime);
+        QStringList hits;
+        for (const QString &candidate : candidates) {
+            if (FileIdentity::quickSignature(candidate) == row.sigQuick)
+                hits.append(candidate);
+        }
+        if (hits.size() == 1) {
+            *path = hits.first();
+            *confidence = QStringLiteral("strong");
+            return true;
+        }
+    }
+
+    // 级别 2：原文件名 + FileId（覆盖“移动后又编辑”，同卷 FileId 不变）
+    if (!row.fileId.isEmpty()) {
+        const QStringList candidates = m_index->pathsByName(row.name);
+        QStringList hits;
+        for (const QString &candidate : candidates) {
+            FileIdentity::Identity identity;
+            if (FileIdentity::read(candidate, &identity)
+                && identity.fileId == row.fileId
+                && identity.volumeSerial == row.volumeSerial) {
+                hits.append(candidate);
+            }
+        }
+        if (hits.size() == 1) {
+            *path = hits.first();
+            *confidence = QStringLiteral("exact");
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool TrackingEngine::relocate(int downloadId, QString *error)
+{
+    if (!m_db || !m_db->isOpen()) {
+        if (error)
+            *error = QStringLiteral("下载数据库未打开");
+        return false;
+    }
+    const auto row = m_db->byId(downloadId);
+    if (!row) {
+        if (error)
+            *error = QStringLiteral("记录不存在");
+        return false;
+    }
+
+    // 路径还在：直接修正状态，不必反查
+    if (!row->curPath.isEmpty() && QFileInfo::exists(row->curPath)) {
+        m_db->updateTrackState(downloadId, QStringLiteral("FiledAway"),
+                               row->curPath, false,
+                               QDateTime::currentDateTime().toString(Qt::ISODate));
+        emit changed();
+        return true;
+    }
+
+    QString path;
+    QString confidence;
+    if (!findOfflineCandidate(*row, &path, &confidence)) {
+        if (error)
+            *error = QStringLiteral("索引里仍未找到唯一匹配（可稍后重试或手动指定）");
+        return false;
+    }
+
+    m_db->updateTrackState(downloadId, QStringLiteral("FiledAway"), path, false,
+                           QDateTime::currentDateTime().toString(Qt::ISODate));
+    m_db->addTrackingEvent(downloadId,
+                           row->curPath.isEmpty() ? row->boxPath : row->curPath,
+                           path, QStringLiteral("manual-rescan"), confidence);
+    emit notice(QStringLiteral("%1 → %2").arg(row->name, QDir::toNativeSeparators(path)));
+    emit changed();
+    return true;
+}
+
 void TrackingEngine::reconcileOffline()
 {
     if (m_offlineDone || !m_db || !m_db->isOpen())
@@ -399,21 +483,14 @@ void TrackingEngine::reconcileOffline()
             continue;
         }
 
-        // 级别 1：(size, mtime) 反查 + quickSig 唯一确认
-        const QStringList candidates = m_index->pathsBySizeMtime(row.size, row.mtime);
-        QStringList hits;
-        for (const QString &candidate : candidates) {
-            if (row.sigQuick.isEmpty())
-                break;
-            if (FileIdentity::quickSignature(candidate) == row.sigQuick)
-                hits.append(candidate);
-        }
-
-        if (hits.size() == 1) {
-            m_db->updateTrackState(row.id, QStringLiteral("FiledAway"), hits.first(), false,
+        // 级别 1/2：(size,mtime)+quickSig，或 名字+FileId（移动后又编辑）
+        QString path;
+        QString confidence;
+        if (findOfflineCandidate(row, &path, &confidence)) {
+            m_db->updateTrackState(row.id, QStringLiteral("FiledAway"), path, false,
                                    QDateTime::currentDateTime().toString(Qt::ISODate));
-            m_db->addTrackingEvent(row.id, row.boxPath, hits.first(),
-                                   QStringLiteral("startup-rescan"), QStringLiteral("strong"));
+            m_db->addTrackingEvent(row.id, row.boxPath, path,
+                                   QStringLiteral("startup-rescan"), confidence);
             ++moved;
         } else {
             m_db->updateTrackState(row.id, QStringLiteral("Unknown"), row.boxPath, false,

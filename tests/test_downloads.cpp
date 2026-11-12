@@ -50,6 +50,8 @@ private slots:
     void trackingFollowsSecondMove();
     void offlineReconcileFindsMovedFile();
     void offlineReconcileDetectsBoxRename();
+    void offlineReconcileUsesNameAndFileId();
+    void manualRelocateFindsUnknown();
     void rulesMatchKindSizeAndPriority();
     void ingestSuggestsThenArchives();
     void autoOrganizeMovesImmediately();
@@ -986,6 +988,126 @@ void TestDownloads::skipRuleLeavesFileInDownloads()
     watcher.stop();
     engine.setEventSource(nullptr);
     engine.stop();
+    db.close();
+}
+
+void TestDownloads::offlineReconcileUsesNameAndFileId()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString boxDir = dir.path() + "/Inbox";
+    const QString archive = dir.path() + "/Archive";
+    QVERIFY(QDir().mkpath(boxDir));
+    QVERIFY(QDir().mkpath(archive));
+
+    // 关机期间：移动 + 编辑（size/mtime 都变了，级别 1 失效；同卷 FileId 仍不变）
+    const QString dest = archive + "/edited.txt";
+    QVERIFY(writeFile(dest, "edited after the move"));
+    const QFileInfo info(dest);
+
+    FileIdentity::Identity identity;
+    QVERIFY(FileIdentity::read(dest, &identity));
+
+    DownloadsDatabase db(QStringLiteral("downloads_test_offline3"));
+    QVERIFY(db.open(dir.path() + "/downloads.db"));
+
+    DownloadRow row;
+    row.sourceId = QStringLiteral("browser");
+    row.srcPath = dir.path() + "/Downloads/edited.txt";
+    row.boxPath = boxDir + "/edited.txt";
+    row.curPath = row.boxPath;
+    row.inBox = true;
+    row.name = QStringLiteral("edited.txt");
+    row.size = 5;              // 旧大小
+    row.mtime = 1000;          // 旧时间
+    row.volumeSerial = identity.volumeSerial;
+    row.fileId = identity.fileId;
+    row.sigQuick = QStringLiteral("deadbeef");   // 与编辑后的内容不符
+    row.pipeState = QStringLiteral("InBox");
+    row.trackState = QStringLiteral("InBox");
+    row.createdAt = QDateTime::currentDateTime().toString(Qt::ISODate);
+    const int id = db.insert(row);
+    QVERIFY(id > 0);
+
+    FileIndex index;
+    FileSnapshot::Builder builder;
+    builder.add(QStringLiteral("edited.txt"), dest, info.size(),
+                info.lastModified().toSecsSinceEpoch(), FileKind::Document);
+    index.setSnapshot(builder.finish());
+
+    TrackingEngine tracking(&db, &index);
+    tracking.setBoxPath(boxDir);
+    tracking.reconcileOffline();
+
+    const auto fixed = db.byId(id);
+    QVERIFY(fixed.has_value());
+    QVERIFY(!fixed->inBox);
+    QCOMPARE(fixed->trackState, QStringLiteral("FiledAway"));
+    QCOMPARE(fixed->curPath, dest);
+
+    const auto events = db.trackingFor(id);
+    QCOMPARE(events.size(), qsizetype(1));
+    QCOMPARE(events.first().at(3), QStringLiteral("exact"));
+
+    db.close();
+}
+
+void TestDownloads::manualRelocateFindsUnknown()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString boxDir = dir.path() + "/Inbox";
+    const QString archive = dir.path() + "/Archive";
+    QVERIFY(QDir().mkpath(boxDir));
+    QVERIFY(QDir().mkpath(archive));
+
+    const QString dest = archive + "/lost-then-found.txt";
+    QVERIFY(writeFile(dest, "found me"));
+    const QFileInfo info(dest);
+
+    FileIdentity::Identity identity;
+    QVERIFY(FileIdentity::read(dest, &identity));
+
+    DownloadsDatabase db(QStringLiteral("downloads_test_relocate"));
+    QVERIFY(db.open(dir.path() + "/downloads.db"));
+
+    DownloadRow row;
+    row.sourceId = QStringLiteral("browser");
+    row.srcPath = dir.path() + "/Downloads/lost-then-found.txt";
+    row.boxPath = boxDir + "/lost-then-found.txt";
+    row.curPath = row.boxPath;
+    row.inBox = false;
+    row.name = QStringLiteral("lost-then-found.txt");
+    row.size = 3;
+    row.mtime = 2000;
+    row.volumeSerial = identity.volumeSerial;
+    row.fileId = identity.fileId;
+    row.sigQuick = QStringLiteral("deadbeef");
+    row.pipeState = QStringLiteral("InBox");
+    row.trackState = QStringLiteral("Unknown");
+    row.createdAt = QDateTime::currentDateTime().toString(Qt::ISODate);
+    const int id = db.insert(row);
+    QVERIFY(id > 0);
+
+    FileIndex index;
+    FileSnapshot::Builder builder;
+    builder.add(QStringLiteral("lost-then-found.txt"), dest, info.size(),
+                info.lastModified().toSecsSinceEpoch(), FileKind::Document);
+    index.setSnapshot(builder.finish());
+
+    TrackingEngine tracking(&db, &index);
+    tracking.setBoxPath(boxDir);
+    QString error;
+    QVERIFY2(tracking.relocate(id, &error), qPrintable(error));
+
+    const auto fixed = db.byId(id);
+    QVERIFY(fixed.has_value());
+    QCOMPARE(fixed->trackState, QStringLiteral("FiledAway"));
+    QCOMPARE(fixed->curPath, dest);
+    const auto events = db.trackingFor(id);
+    QCOMPARE(events.size(), qsizetype(1));
+    QCOMPARE(events.first().at(2), QStringLiteral("manual-rescan"));
+
     db.close();
 }
 

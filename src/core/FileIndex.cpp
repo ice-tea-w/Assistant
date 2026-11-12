@@ -415,6 +415,24 @@ QStringList FileIndex::pathsBySizeMtime(qint64 size, qint64 mtime, int limit) co
     return out;
 }
 
+QStringList FileIndex::pathsByName(const QString &name, int limit) const
+{
+    QStringList out;
+    if (limit <= 0 || name.isEmpty())
+        return out;
+
+    const std::shared_ptr<const FileSnapshot> snap = m_snapshots->current();
+    if (!snap)
+        return out;
+
+    const QString wanted = name.toLower();
+    for (int i = 0; i < snap->size() && out.size() < limit; ++i) {
+        if (snap->lowerAt(i) == wanted)
+            out.append(snap->pathAt(i));
+    }
+    return out;
+}
+
 FileIndex::IndexStats FileIndex::stats() const
 {
     IndexStats s;

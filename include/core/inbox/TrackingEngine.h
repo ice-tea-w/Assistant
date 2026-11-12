@@ -10,6 +10,7 @@ class DownloadsDatabase;
 class FileEventDispatcher;
 class FileIndex;
 class QTimer;
+struct DownloadRow;
 
 /// 去向追踪（治理文档 §2.6，S10）。
 ///
@@ -42,6 +43,9 @@ public:
     /// 启动/索引就绪后的离线对账：box 内改名（级别 0）→ (size,mtime)+quickSig 反查（级别 1）
     /// → `Unknown`。公开出来便于测试与手动修复。
     void reconcileOffline();
+
+    /// 用户手动“重新定位”一条 Unknown/已移出记录：级别 1 + 级别 2（名字 + FileId）。
+    bool relocate(int downloadId, QString *error = nullptr);
 
 signals:
     void changed();
@@ -93,6 +97,10 @@ private:
 
     bool isUnderBox(const QString &path) const;
     QString normalized(const QString &path) const;
+
+    /// 级别 1/2 的离线候选判定；成功时给出唯一路径与 confidence（strong/exact）。
+    bool findOfflineCandidate(const DownloadRow &row, QString *path,
+                              QString *confidence) const;
 
     DownloadsDatabase    *m_db = nullptr;
     FileIndex            *m_index = nullptr;

@@ -3,6 +3,7 @@
 #include "core/FileKind.h"
 #include "core/Logger.h"
 #include "core/inbox/IngestEngine.h"
+#include "core/inbox/TrackingEngine.h"
 #include "database/ClipboardDatabase.h"
 #include "database/DownloadsDatabase.h"
 #include "database/TodoDatabase.h"
@@ -45,6 +46,8 @@ QString stateText(const DownloadRow &row)
     }
     if (row.trackState == QLatin1String("FiledAway"))
         return QStringLiteral("已归档");
+    if (row.trackState == QLatin1String("Deleted"))
+        return QStringLiteral("已删除（手动标记）");
     if (row.trackState == QLatin1String("Unknown"))
         return QStringLiteral("已移出（位置未知）");
     return QStringLiteral("已移出");
@@ -260,6 +263,40 @@ bool InboxBridge::copyContent(int id)
 
     m_lastError.clear();
     emit lastErrorChanged();
+    return true;
+}
+
+bool InboxBridge::relocateItem(int id)
+{
+    if (!m_tracking)
+        return false;
+    QString error;
+    if (!m_tracking->relocate(id, &error)) {
+        m_lastError = error;
+        emit lastErrorChanged();
+        return false;
+    }
+    m_lastError.clear();
+    emit lastErrorChanged();
+    refresh();
+    return true;
+}
+
+bool InboxBridge::markDeleted(int id)
+{
+    if (!m_db)
+        return false;
+    const auto row = m_db->byId(id);
+    if (!row)
+        return false;
+
+    m_db->updateTrackState(id, QStringLiteral("Deleted"),
+                           row->curPath.isEmpty() ? row->boxPath : row->curPath,
+                           false,
+                           QDateTime::currentDateTime().toString(Qt::ISODate));
+    m_lastError.clear();
+    emit lastErrorChanged();
+    refresh();
     return true;
 }
 

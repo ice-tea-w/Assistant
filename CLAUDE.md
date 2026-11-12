@@ -152,8 +152,11 @@ Phase 3 剩余（收尾中，写在这里便于续接）：
       窗口超时落 `Unknown`；离线级别 0（box 内 FileId 改名）与级别 1（`(size,mtime)+quickSig`
       反查，`FileIndex::pathsBySizeMtime`）；`inbox.tracking.windowSec` / `extraWatchDirs` 已接配置与 watcher。
       「最近下载」显示真实归档路径。16 个用例，`ctest` 9/9
-- [ ] **C2b 追踪剩余**：离线级别 2（移动后又编辑，名字+FileId）、USN Journal、`Unknown` 手动定位 UI；
-      跨卷 strong 缺真实 C:→D: e2e
+- [x] **C2b 追踪收尾**（2026-11-12）：离线级别 2（原文件名 + FileId，覆盖“移动后又编辑”）；
+      `TrackingEngine::relocate()` 单条重定位（manual-rescan）；「最近下载」`⋯` 菜单
+      「重新定位（索引反查）」/「标记为已删除」（只改记录，不碰磁盘）。23 个用例，`ctest` 9/9
+- [ ] **C2c 追踪残余**：USN Journal；`Unknown` 的“手动指定位置”文件选择器；
+      跨卷 strong 仍缺真实 C:→D: e2e
 - [x] **C3 S11 核心**（2026-11-12）：`DownloadRules`（kind/size、priority first-match、模板、
       suggest/move/skip/notify）+ `skip` 不接管 + `autoOrganize` 才自动移动；quickSig 查重写 `dup_of`；
       「最近下载」`⋯` 菜单：归档到建议位置 / 加入待办 / 复制内容 / 复制路径；
@@ -222,7 +225,7 @@ Phase 3 剩余（收尾中，写在这里便于续接）：
 | DownloadsDatabase | `include/database/DownloadsDatabase.h`, `src/database/DownloadsDatabase.cpp` | `downloads.db`（独立连接 `downloads`，**权威数据**）：downloads 双状态 + move_journal + tracking_events + rules + sources + app_meta；迁移失败拒绝启动 |
 | IDownloadSource / BrowserSource | `include/core/inbox/IDownloadSource.h`, `src/core/inbox/BrowserSource.cpp` | 下载源适配器（Phase C 只有浏览器）：`FOLDERID_Downloads`、临时后缀、静默期；IM 源留给 S11 |
 | IngestEngine | `include/core/inbox/IngestEngine.h`, `src/core/inbox/IngestEngine.cpp` | 收件箱管线：事件驱动 → A/B/C 完成判定（退避）→ `MoveFileExW` → 登记 FileId/quickSig → journal/对账 → 撤销 |
-| TrackingEngine | `include/core/inbox/TrackingEngine.h`, `src/core/inbox/TrackingEngine.cpp` | 去向追踪：box 移出 → 同卷 FileId（exact）/ 跨卷 size+mtime+quickSig（strong）→ 多级链；超时/多候选落 Unknown；离线级别 0/1 反查 |
+| TrackingEngine | `include/core/inbox/TrackingEngine.h`, `src/core/inbox/TrackingEngine.cpp` | 去向追踪：同卷 FileId（exact）/ 跨卷 quickSig（strong）/ 多级链 / 离线级别 0–2 / 单条手动重定位 |
 | DownloadRules | `include/core/inbox/DownloadRules.h`, `src/core/inbox/DownloadRules.cpp` | 归档规则：kind/size 匹配、priority first-match、`{inbox}/{name}/{yyyy}` 模板；suggest/move/skip/notify |
 | InboxBridge | `include/ui/InboxBridge.h`, `src/ui/InboxBridge.cpp` | 「最近下载」页桥：列表 + 打开/定位/撤销 + 归档建议 / 加入待办 / 复制内容 / 复制路径 |
 | Calculator | `include/core/Calculator.h`, `src/core/Calculator.cpp` | 递归下降解析器, PEMDAS + 一元正负号 + 括号 |

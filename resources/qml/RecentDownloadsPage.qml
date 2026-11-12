@@ -243,6 +243,17 @@ Rectangle {
                         text: "复制路径"
                         onTriggered: inbox.copyPath(modelData.id)
                     }
+                    MenuSeparator { }
+                    MenuItem {
+                        text: "重新定位（索引反查）"
+                        enabled: !modelData.inBox
+                        onTriggered: inbox.relocateItem(modelData.id)
+                    }
+                    MenuItem {
+                        text: "标记为已删除"
+                        enabled: !modelData.inBox && modelData.trackState !== "Deleted"
+                        onTriggered: inbox.markDeleted(modelData.id)
+                    }
                 }
             }
 
