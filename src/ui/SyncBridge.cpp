@@ -595,6 +595,12 @@ QString SyncBridge::pairStatus() const
 {
     if (!m_config)
         return QStringLiteral("未配对");
+    // 主机不需要「对端凭据」，它只负责被连；设备表里有记录就说明已经配对成功了
+    const bool asHost = m_config->syncPeerSecret().isEmpty() && !m_db.allDevices().isEmpty();
+    if (asHost) {
+        return QStringLiteral("主机模式：已配对 %1 台设备，等对方连过来")
+            .arg(m_db.allDevices().size());
+    }
     if (m_config->syncPeerAddress().isEmpty())
         return QStringLiteral("未配对：还没有对端地址");
     if (m_config->syncPeerFingerprint().isEmpty())
@@ -723,10 +729,13 @@ void SyncBridge::startNetServer()
 
     const QList<Sync::Net::ServedRoot> roots = served;
     const quint16 wantPort = quint16(m_config ? m_config->syncPort() : 45871);
+    // 投递直接落进收件箱：对端 push `_inbox/<发送者>/<文件>`，服务端就写到收件箱里，
+    // 不再先攒在同步根下面等人来领（那样用户会在自己的同步范围里看到异物）。
+    const QString deliveryRoot = inboxPath();
     m_netRunning = true;
     setNetStatus(QStringLiteral("正在监听 %1 端口…").arg(wantPort));
 
-    m_netThread = QThread::create([this, identity, roots, wantPort] {
+    m_netThread = QThread::create([this, identity, roots, wantPort, deliveryRoot] {
         auto *server = new Sync::Net::SyncServer(identity, [this](const QString &deviceId) {
             QMutexLocker locker(&m_netMutex);
             return m_netSecrets.value(deviceId);
@@ -752,6 +761,8 @@ void SyncBridge::startNetServer()
                 emit pairChanged();
             }, Qt::QueuedConnection);
         });
+
+        server->setDeliveryRoot(deliveryRoot);
 
         if (!server->listen(wantPort, roots)) {
             const QString err = server->lastError();
@@ -1220,6 +1231,13 @@ void SyncBridge::fetchIncoming()
 {
     if (m_fetchBusy)
         return;
+
+    // 投递现在由服务端直接写进收件箱（`_inbox/<发送者>/<文件>` → 收件箱），
+    // 主机侧不需要「领取」；连接方去拉主机的收件箱反而是错的（那是主机自己的文件）。
+    if (m_netRunning || !hasPeerCredentials()) {
+        setSendStatus(QStringLiteral("对方发来的文件会直接进收件箱，不用手动收取"));
+        return;
+    }
 
     Sync::Net::NetPeer peer;
     if (!peerForDelivery(&peer)) {

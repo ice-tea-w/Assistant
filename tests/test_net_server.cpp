@@ -132,7 +132,7 @@ private slots:
     void indexIsUsedAcrossRestart();
     void pairingIssuesSecretOnce();
     void pairingWrongCodeClosesWindow();
-    void deliveryBoxLivesInFirstRoot();
+    void deliveryBoxLandsInInbox();
 
 private:
     bool startServer(const QString &root);
@@ -378,12 +378,13 @@ void TestNetServer::pingPongRoundTrip()
     QCOMPARE(pong.reqId, quint32(9));
 }
 
-void TestNetServer::deliveryBoxLivesInFirstRoot()
+void TestNetServer::deliveryBoxLandsInInbox()
 {
     QTemporaryDir root;
     QVERIFY(root.isValid());
     const QString workDir = root.filePath(QStringLiteral("work"));
     const QString docsDir = root.filePath(QStringLiteral("docs"));
+    const QString inboxDir = root.filePath(QStringLiteral("inbox"));
     QVERIFY(QDir().mkpath(workDir));
     QVERIFY(QDir().mkpath(docsDir));
 
@@ -393,13 +394,15 @@ void TestNetServer::deliveryBoxLivesInFirstRoot()
     SyncServer server(m_serverIdentity, secret);
     const QList<ServedRoot> roots{{workDir, QStringLiteral("work")},
                                   {docsDir, QStringLiteral("docs")}};
+    // 投递落在收件箱，跟同步根无关：用户不该在自己的同步范围里看到 `_inbox`
+    server.setDeliveryRoot(inboxDir);
     QVERIFY2(server.listen(0, roots), qPrintable(server.lastError()));
 
     TestClient client;
     QVERIFY(client.connectTo(server.port(), m_clientIdentity));
     QVERIFY(authenticate(client, 100));
 
-    // 多根模式下投递不带别名：`_inbox/…` 必须落到第一个根，而不是 BAD_PATH
+    // 多根模式下投递不带别名：`_inbox/…` 必须落到投递目录，而不是 BAD_PATH
     const QByteArray content = QByteArrayLiteral("hello team");
     const QString rel = QStringLiteral("_inbox/dev-test/1760000000_hello.txt");
     QJsonObject put;
@@ -429,8 +432,9 @@ void TestNetServer::deliveryBoxLivesInFirstRoot()
     QCOMPARE(ack.reqId, quint32(202));
     QVERIFY(QJsonDocument::fromJson(ack.payload).object().value(QStringLiteral("ok")).toBool());
 
-    const QString landed = workDir + QStringLiteral("/_inbox/dev-test/1760000000_hello.txt");
+    const QString landed = inboxDir + QStringLiteral("/dev-test/1760000000_hello.txt");
     QCOMPARE(readFile(landed), content);
+    QVERIFY(!QFileInfo::exists(workDir + QStringLiteral("/_inbox")));
     QVERIFY(!QFileInfo::exists(docsDir + QStringLiteral("/_inbox")));
 
     // 领取方靠 List 发现投递：对外只叫 `_inbox/…`，不挂别名
