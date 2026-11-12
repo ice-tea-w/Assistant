@@ -71,6 +71,7 @@ private slots:
     void uploadsLocalFiles();
     void secondSyncIsNoop();
     void downloadsRemoteFile();
+    void skipsDeliveryBox();
 
 private:
     QTemporaryDir       m_root;
@@ -172,6 +173,24 @@ void TestNetEngine::downloadsRemoteFile()
     QVERIFY2(result.status == Sync::SyncResult::Ok, qPrintable(result.message));
     QCOMPARE(result.downloaded, 1);
     QCOMPARE(readFile(m_local + QStringLiteral("/remote.txt")), QByteArray("from remote"));
+}
+
+void TestNetEngine::skipsDeliveryBox()
+{
+    // 两边的投递箱都不该被同步触碰：既不下回本地，也不从本地推上去。
+    writeFile(m_shared + QStringLiteral("/_inbox/host-a/1760000000_msg.txt"), "for me");
+    writeFile(m_local + QStringLiteral("/_inbox/self/1760000001_mine.txt"), "mine");
+
+    const Sync::SyncResult result = m_engine->sync();
+    QVERIFY2(result.status == Sync::SyncResult::Ok, qPrintable(result.message));
+    QCOMPARE(result.uploaded, 0);
+    QCOMPARE(result.downloaded, 0);
+
+    QVERIFY(!QFileInfo::exists(m_local + QStringLiteral("/host-a/1760000000_msg.txt")));
+    QVERIFY(!QFileInfo::exists(m_shared + QStringLiteral("/work/1760000001_mine.txt")));
+
+    QFile::remove(m_shared + QStringLiteral("/_inbox/host-a/1760000000_msg.txt"));
+    QFile::remove(m_local + QStringLiteral("/_inbox/self/1760000001_mine.txt"));
 }
 
 QTEST_MAIN(TestNetEngine)

@@ -118,4 +118,21 @@ QString placeIncoming(const QString &srcPath, const QString &destDir)
     return candidate;
 }
 
+bool isReservedDeliveryPath(const QString &relPath)
+{
+    static const QStringList kReserved = {
+        QStringLiteral("_inbox"),
+        QStringLiteral("_投递"),
+    };
+
+    const QStringList parts = relPath.split(QLatin1Char('/'), Qt::SkipEmptyParts);
+    for (const QString &part : parts) {
+        for (const QString &reserved : kReserved) {
+            if (QString::compare(part, reserved, Qt::CaseInsensitive) == 0)
+                return true;
+        }
+    }
+    return false;
+}
+
 } // namespace Sync

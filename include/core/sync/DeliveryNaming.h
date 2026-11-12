@@ -31,4 +31,10 @@ bool isOwnDelivery(const QString &deliveryName, const QString &device);
 /// 返回落地后的绝对路径；复制失败或源不是普通文件时返回空字符串。
 QString placeIncoming(const QString &srcPath, const QString &destDir);
 
+/// 路径里有没有投递保留段（`_inbox` / `_投递`，任意层级，大小写不敏感）。
+///
+/// 投递箱和同步目录共用同一条通道，判定规则必须两边一致：否则投递进来的文件
+/// 会被当成"对端新增"下载到本地同步目录，下一轮又被当成"本地新增"推回去。
+bool isReservedDeliveryPath(const QString &relPath);
+
 } // namespace Sync

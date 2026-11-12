@@ -99,6 +99,7 @@ private slots:
 
     void deliveryNameRoundTrip();
     void deliveryOwnCheck();
+    void deliveryReservedPaths();
     void deliveryPlaceIncoming();
     void databaseReceived();
     void configWatchInboxRoundTrip();
@@ -767,6 +768,28 @@ void TestSync::deliveryNameRoundTrip()
                                                       QDateTime::fromSecsSinceEpoch(777));
     QVERIFY(newFmt.endsWith(QStringLiteral("_季度 报告_v2.txt")));
     QCOMPARE(Sync::stripDeliveryPrefix(newFmt), QStringLiteral("季度 报告_v2.txt"));
+}
+
+void TestSync::deliveryReservedPaths()
+{
+    struct Case { QString path; bool reserved; };
+    const QList<Case> cases = {
+        {QStringLiteral("_inbox/laptop/1_a.txt"), true},
+        {QStringLiteral("_inbox"), true},
+        {QStringLiteral("_投递/laptop/1_a.txt"), true},
+        {QStringLiteral("work/_inbox/1_a.txt"), true},          // 任意层级
+        {QStringLiteral("work/sub/_投递/1_a.txt"), true},
+        {QStringLiteral("_INBOX/laptop/1_a.txt"), true},        // 大小写不敏感（SMB 侧大小写也可能变）
+        {QStringLiteral("work/a.txt"), false},
+        {QStringLiteral("my_inbox/a.txt"), false},              // 前缀像但不是整段
+        {QStringLiteral("work/_inbox2/a.txt"), false},
+        {QString(), false},
+    };
+
+    for (const Case &c : cases) {
+        QVERIFY2(isReservedDeliveryPath(c.path) == c.reserved,
+                 qPrintable(QStringLiteral("路径 %1 判定错了").arg(c.path)));
+    }
 }
 
 void TestSync::deliveryOwnCheck()

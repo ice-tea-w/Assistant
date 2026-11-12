@@ -417,6 +417,7 @@ add_executable(assistant_net_engine_tests
     include/core/sync/SyncEngine.h
     src/core/sync/SyncEngine.cpp
     src/core/sync/ConflictResolver.cpp
+    src/core/sync/DeliveryNaming.cpp
     src/core/sync/PathGuard.cpp
     src/database/SyncDatabase.cpp
     include/core/net/SyncServer.h
