@@ -88,6 +88,15 @@ Rectangle {
                 }
             }
 
+            // 别的实例刚配对完 / 配置被外部改过时，页面不该一直卡在「未配对」。
+            // refreshPairState 只在配置文件的 mtime 变了时才真读盘，3 秒一次几乎零成本。
+            Timer {
+                interval: 3000
+                running: true
+                repeat: true
+                onTriggered: sync.refreshPairState()
+            }
+
             // ---- 直连（ASYN v2）----
             Rectangle {
                 Layout.fillWidth: true
@@ -614,13 +623,23 @@ Rectangle {
                         }
                     }
 
-                    Text {
-                        visible: !sync.peerPaired
-                        text: "还没和主机配对：文件先存在队列里，配对后自动发出去。"
-                        color: syncPage.accentColor
-                        font.pixelSize: Style.captionSize
-                        wrapMode: Text.WordWrap
+                    RowLayout {
                         Layout.fillWidth: true
+                        spacing: 8
+
+                        Text {
+                            Layout.fillWidth: true
+                            text: sync.pairStatus
+                            color: sync.peerPaired ? syncPage.mutedColor : syncPage.accentColor
+                            font.pixelSize: Style.captionSize
+                            wrapMode: Text.WordWrap
+                        }
+
+                        Button {
+                            text: "刷新配对"
+                            flat: true
+                            onClicked: sync.refreshPairState()
+                        }
                     }
 
                     Text {

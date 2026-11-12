@@ -58,7 +58,7 @@ ApplicationWindow {
     palette.linkVisited: accentColor
 
     // ---- 导航状态：以 key 为准，不以索引对齐 ----
-    property string selectedKey: "todo"
+    property string selectedKey: "sync"
 
     // ---- 插件市场数据源 ----
     // 由 main.cpp 注入的 PluginBridge（context property `plugins`）。

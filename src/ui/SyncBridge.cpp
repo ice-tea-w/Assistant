@@ -591,6 +591,39 @@ bool SyncBridge::pairActive() const { return m_pairActive; }
 QVariantList SyncBridge::pairedDevices() const { return m_pairedDevices; }
 bool SyncBridge::peerPaired() const { return hasPeerCredentials(); }
 
+QString SyncBridge::pairStatus() const
+{
+    if (!m_config)
+        return QStringLiteral("未配对");
+    if (m_config->syncPeerAddress().isEmpty())
+        return QStringLiteral("未配对：还没有对端地址");
+    if (m_config->syncPeerFingerprint().isEmpty())
+        return QStringLiteral("未配对：缺对端证书指纹");
+    if (m_config->syncPeerSecret().isEmpty())
+        return QStringLiteral("未配对：缺设备口令（上次配对可能没走完）");
+    return QStringLiteral("已配对：%1:%2")
+        .arg(m_config->syncPeerAddress())
+        .arg(m_config->syncPort());
+}
+
+void SyncBridge::refreshPairState()
+{
+    if (!m_config)
+        return;
+
+    // 只在配置文件真的被改过时重读：别的进程（另一个实例）刚配对完，
+    // 或者上一轮配对写盘后本进程内存还是旧的，都会让页面一直显示「未配对」。
+    const QFileInfo info(m_config->filePath());
+    const qint64 stamp = info.exists() ? info.lastModified().toMSecsSinceEpoch() : 0;
+    if (stamp != m_configStamp) {
+        m_configStamp = stamp;
+        m_config->load();
+    }
+
+    refreshPairedDevices();
+    emit pairChanged();
+}
+
 bool SyncBridge::hasPeerCredentials() const
 {
     return m_config

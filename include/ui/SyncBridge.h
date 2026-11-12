@@ -54,6 +54,7 @@ class SyncBridge : public QObject
     Q_PROPERTY(bool         pairActive    READ pairActive    NOTIFY pairChanged)
     Q_PROPERTY(QVariantList pairedDevices READ pairedDevices NOTIFY pairedDevicesChanged)
     Q_PROPERTY(bool         peerPaired    READ peerPaired    NOTIFY netChanged)
+    Q_PROPERTY(QString      pairStatus    READ pairStatus    NOTIFY pairChanged)
     // ---- 投递（单文件直发 + 待发队列）----
     Q_PROPERTY(int          outboxCount   READ outboxCount   NOTIFY outboxChanged)
     Q_PROPERTY(QVariantList outboxList    READ outboxList    NOTIFY outboxChanged)
@@ -93,8 +94,13 @@ public:
     bool         pairActive() const;
     QVariantList pairedDevices() const;
     bool         peerPaired() const;
+    /// 人话版的配对状态：缺地址 / 缺指纹 / 缺口令 分别说清楚
+    QString      pairStatus() const;
     int          outboxCount() const;
     QVariantList outboxList() const;
+
+    /// 重新读配置（只在配置文件真的变过时才读盘）+ 刷新已配对列表
+    Q_INVOKABLE void refreshPairState();
 
     Q_INVOKABLE void addSharedDir(const QString &path);
     Q_INVOKABLE void removeSharedDir(const QString &path);
@@ -280,6 +286,7 @@ private:
     QString      m_pairCode;
     bool         m_pairActive = false;
     QVariantList m_pairedDevices;
+    qint64       m_configStamp = -1;   // 配置文件 mtime，refreshPairState 用它决定要不要重读
 
     // ---- 投递 ----
     QVariantList m_outboxList;
