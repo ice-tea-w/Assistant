@@ -139,8 +139,16 @@ Phase 3 剩余（收尾中，写在这里便于续接）：
       删除后从结果消失。§A5 两条验收（新建/改名/删除可见、溢出后收敛）**已满足**
 - [x] **A6a 冷启动先可用**（2026-11-05）：`startAsync()` 先载 `file_index.db` 发布快照（`cacheLoaded`），
       AppBridge 在这条信号上也刷新；随后扫描校正并发 `indexReady`。真机 32953 条 **265 ms** 可查
+- [x] **A6a+ 启动不再全量扫盘**（2026-11-19）：`dirs.mtime`（schema **v3**，存 FILETIME tick）
+  + 三道闸门 —— 距上次扫描不足 **24h** 直接结案（连 worker 都不起）、用户空闲（`GetLastInputInfo`
+  ≥45s）才动手、逐目录 stat 比对 mtime（**一条没变就只 stamp 不枚举**；变了就整棵全扫）。
+  设置页新增「重建索引」（`FileIndex::rebuild()`，忽略闸门强制全量）。真机 6679 条：
+  24h 内启动 **0 次枚举**、隔天无变化判定 ~107 ms、有新文件时全扫 197 ms。
+  详见 `docs/devlog/2026-11-19.md`
 - [ ] **A6b 性能与 frecency**：265 ms/33k 线性外推到 20 万约 1.6 s，**未达 §9 的 <300 ms**；
-      需要异步载入 + 列式/字典编码。frecency（`files.frecency` + 空查询 top-8）未做
+      需要异步载入 + 列式/字典编码。frecency（`files.frecency` + 空查询 top-8）未做。
+      （2026-11-19 实测 20 万条 P50 77–81 ms，比 A4 baseline 35.4 ms 慢 ~2.3× —— Phase B 的
+      per-file 过滤 + 快照多列导致的缓存未命中，见同日 devlog 的"进度"一节）
 - [x] **A7a 检索收尾**（2026-11-05）：`ISearchProvider` + `AppBridge` 的 **k-way merge**（每个 provider 自截 top-20，
       合并上限 50，堆按 score/priority 归并）；计算器改为 provider 内部的"先门禁后解析"；
       **删除 `fileIndex.engine` 开关**（main / ConfigManager / AppBridge 三处），v2 是唯一实现
@@ -315,6 +323,15 @@ Phase 3 剩余（收尾中，写在这里便于续接）：
   `QFileInfo::exists()` 实测 **42 秒**（2026-11-12 主界面随机卡死的根因，见
   `docs/devlog/2026-11-12.md` 的「修主界面卡顿」一节）。共享目录轮询、watcher 注册
   一律走工作线程；`QFileSystemWatcher::addPath` 对 UNC 同样是同步的。
+- **增量扫描不能把「脏目录」当扫描根**：`FileScanner` 的 root 语义是"用户显式指定，
+  必须扫"——不套目录级排除名、不做工程哨兵、不继承 demote。拿它当增量入口，
+  实测把 `Desktop/vcpkg` 这类本该剪掉的树扫进来，6679 行变 19596 行。
+  mtime 只做**闸门**（变了就整棵全扫），不改变任何一条路径的上下文
+  （见 `docs/devlog/2026-11-19.md`）。
+- **目录 mtime 比对不能用「秒」**：秒级截断会把同一秒内的增删判成"没变"
+  （扫描刚结束、用户马上存文件就漏）。`dirs.mtime` 存 **FILETIME tick（100ns）**。
+  另外测试里别把 `file_index.db` 放进被扫目录——索引自己的 `-wal/-shm`
+  会被当成文件扫进快照（`kindFilterAppliesAtQueryTime` 踩过：3 个文件变 6 个）。
 
 ## 文档结构
 
