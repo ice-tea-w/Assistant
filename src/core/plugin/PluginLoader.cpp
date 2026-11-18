@@ -1,7 +1,10 @@
 #include "core/plugin/PluginLoader.h"
 
 #include "core/Logger.h"
+#include "core/plugin/PluginDisposable.h"
+#include "core/plugin/PluginExtensionRegistry.h"
 #include "core/plugin/PluginHost.h"
+#include "core/plugin/PluginServices.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -26,6 +29,16 @@ PluginLoader::~PluginLoader()
 void PluginLoader::setEngine(QQmlEngine *engine)
 {
     m_engine = engine;
+}
+
+void PluginLoader::setExtensionRegistry(PluginExtensionRegistry *registry)
+{
+    m_extensions = registry;
+}
+
+void PluginLoader::setServiceRegistry(PluginServiceRegistry *registry)
+{
+    m_services = registry;
 }
 
 // ---------------------------------------------------------------------------
@@ -83,6 +96,16 @@ bool PluginLoader::load(const PluginManifest &manifest, const QString &pluginDir
     auto *host = new PluginHost(manifest.id, manifest.name, manifest.version, dataDir, this);
     host->setAppVersion(QCoreApplication::applicationVersion());
 
+    // Per-plugin lifecycle group: created before QML runs, so anything the plugin
+    // registers from Component.onCompleted is already tracked.
+    auto *disposal = new DisposalGroup(manifest.id, this);
+    host->setManifest(manifest);
+    host->setExtensionRegistry(m_extensions);
+    host->setServiceRegistry(m_services);
+    host->setDisposalGroup(disposal);
+    if (m_services)
+        host->setAvailableServices(m_services->availableFor(manifest));
+
     context->setContextProperty(QStringLiteral("host"), host);
 
     QObject *object = component->create(context);
@@ -95,6 +118,7 @@ bool PluginLoader::load(const PluginManifest &manifest, const QString &pluginDir
         delete host;
         delete context;
         delete component;
+        delete disposal;
 
         return fail(messages.isEmpty() ? QStringLiteral("QML 实例化失败")
                                        : messages.join(QLatin1Char('\n')));
@@ -107,6 +131,7 @@ bool PluginLoader::load(const PluginManifest &manifest, const QString &pluginDir
     entry.component = component;
     entry.context   = context;
     entry.host      = host;
+    entry.disposal  = disposal;
 
     m_loaded.insert(manifest.id, entry);
     wireHost(m_loaded[manifest.id]);
@@ -136,9 +161,27 @@ void PluginLoader::wireHost(LoadedPlugin &plugin)
 
 void PluginLoader::destroy(LoadedPlugin &plugin)
 {
-    // Pages first: they are children of the same context as the entry object and
-    // may still reference `host` through bindings.
-    // QPointer: QML may already have destroyed them by deleting the parent slot.
+    // 1. Release runtime registrations **first**: a disposer may still want to touch
+    //    the plugin's Qt state (e.g. call a JS cleanup function), and it must be gone
+    //    from the host's registries before the QML objects die.
+    if (plugin.disposal) {
+        const int disposed = plugin.disposal->disposeAll();
+        if (disposed > 0) {
+            Logger::get().info("PluginLoader: disposed {} registration(s) of {}",
+                               disposed, plugin.manifest.id.toStdString());
+        }
+        delete plugin.disposal;
+        plugin.disposal = nullptr;
+    }
+
+    // Safety net: a plugin that registered through a path we do not track still
+    // must not survive its own unload.
+    if (m_extensions)
+        m_extensions->removeAllOf(plugin.manifest.id);
+
+    // 2. Pages: they are children of the same context as the entry object and may
+    //    still reference `host` through bindings.
+    //    QPointer: QML may already have destroyed them by deleting the parent slot.
     for (auto it = plugin.pageItems.begin(); it != plugin.pageItems.end(); ++it)
         delete it.value().data();
     plugin.pageItems.clear();
@@ -205,20 +248,19 @@ QObject *PluginLoader::createPage(const QString &pluginId, const QString &pageId
         }
     }
 
-    const PageContribution *page = nullptr;
-    for (const PageContribution &candidate : it->manifest.pages) {
-        if (candidate.id == pageId) {
-            page = &candidate;
-            break;
-        }
-    }
-
-    if (!page)
+    const QString source = pageSourceOf(*it, pageId);
+    if (source.isEmpty())
         return fail(QStringLiteral("插件 %1 没有页面 %2").arg(pluginId, pageId));
 
-    const QString path = it->dir + QLatin1Char('/') + page->source;
+    // Runtime contributions may carry an absolute file URL; manifest pages are always
+    // plugin-relative. Both are accepted, and the same path-safety rule applies.
+    const bool absolute = source.startsWith(QStringLiteral("file:"))
+                          || QFileInfo(source).isAbsolute();
+    const QString path = absolute ? QUrl(source).toLocalFile()
+                                  : it->dir + QLatin1Char('/') + source;
+
     if (!QFileInfo::exists(path))
-        return fail(QStringLiteral("页面文件不存在：%1").arg(page->source));
+        return fail(QStringLiteral("页面文件不存在：%1").arg(source));
 
     auto *component = new QQmlComponent(m_engine, QUrl::fromLocalFile(path));
 
@@ -322,6 +364,9 @@ QVariantList PluginLoader::navigationEntries() const
         // avoids QHash::operator[] on a const method.
         const LoadedPlugin plugin = m_loaded.value(id);
 
+        // Static contributions (manifest) first, so they win when a plugin registers
+        // the same page id at runtime.
+        QStringList seen;
         for (const PageContribution &page : plugin.manifest.pages) {
             QVariantMap item;
             item.insert(QStringLiteral("pluginId"), id);
@@ -332,11 +377,70 @@ QVariantList PluginLoader::navigationEntries() const
             item.insert(QStringLiteral("source"),
                         QUrl::fromLocalFile(plugin.dir + QLatin1Char('/') + page.source)
                             .toString());
+            item.insert(QStringLiteral("dynamic"), false);
             out.append(item);
+            seen.append(page.id);
+        }
+
+        // Runtime contributions (`host.addExtension("nav.pages", …)`).
+        if (!m_extensions)
+            continue;
+
+        const QVariantList dynamic =
+            m_extensions->contributions(QStringLiteral("nav.pages"));
+        for (const QVariant &entry : dynamic) {
+            const QVariantMap row = entry.toMap();
+            if (row.value(QStringLiteral("pluginId")).toString() != id)
+                continue;
+
+            const QString pageId = row.value(QStringLiteral("pageId")).toString();
+            if (pageId.isEmpty() || seen.contains(pageId))
+                continue;
+
+            const QString source = row.value(QStringLiteral("source")).toString();
+            const bool absolute = source.startsWith(QStringLiteral("file:"))
+                                  || QFileInfo(source).isAbsolute();
+
+            QVariantMap item;
+            item.insert(QStringLiteral("pluginId"), id);
+            item.insert(QStringLiteral("pageId"), pageId);
+            item.insert(QStringLiteral("title"), row.value(QStringLiteral("title")));
+            item.insert(QStringLiteral("icon"), row.value(QStringLiteral("icon")));
+            item.insert(QStringLiteral("key"), id + QLatin1Char(':') + pageId);
+            item.insert(QStringLiteral("source"),
+                        absolute ? QUrl(source).toString()
+                                 : QUrl::fromLocalFile(plugin.dir + QLatin1Char('/') + source)
+                                       .toString());
+            item.insert(QStringLiteral("dynamic"), true);
+            out.append(item);
+            seen.append(pageId);
         }
     }
 
     return out;
+}
+
+QString PluginLoader::pageSourceOf(const LoadedPlugin &plugin, const QString &pageId) const
+{
+    for (const PageContribution &page : plugin.manifest.pages) {
+        if (page.id == pageId)
+            return page.source;
+    }
+
+    if (!m_extensions)
+        return QString();
+
+    const QVariantList dynamic = m_extensions->contributions(QStringLiteral("nav.pages"));
+    for (const QVariant &entry : dynamic) {
+        const QVariantMap row = entry.toMap();
+        if (row.value(QStringLiteral("pluginId")).toString() != plugin.manifest.id)
+            continue;
+        if (row.value(QStringLiteral("pageId")).toString() != pageId)
+            continue;
+        return row.value(QStringLiteral("source")).toString();
+    }
+
+    return QString();
 }
 
 // ---------------------------------------------------------------------------

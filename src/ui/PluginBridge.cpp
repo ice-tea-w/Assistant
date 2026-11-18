@@ -61,6 +61,24 @@ QVariantList PluginBridge::navigationEntries() const
     return m_manager ? m_manager->navigationEntries() : QVariantList{};
 }
 
+QVariantList PluginBridge::commands() const
+{
+    return m_manager ? m_manager->commands() : QVariantList{};
+}
+
+bool PluginBridge::runCommand(const QString &pluginId, const QString &commandId)
+{
+    if (!m_manager)
+        return false;
+
+    QString error;
+    const bool ok = m_manager->runCommand(pluginId, commandId, &error);
+    if (!ok)
+        emit toast(QStringLiteral("error"), error);
+
+    return ok;
+}
+
 bool PluginBridge::isOffline() const
 {
     return m_manager ? m_manager->isOffline() : false;

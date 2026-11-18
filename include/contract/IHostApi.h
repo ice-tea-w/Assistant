@@ -30,11 +30,42 @@ namespace contract {
 ///
 /// 插件用 `host.apiVersion` 读取它；也可以用清单的 `engines.api` 声明区间。
 /// **不要**用它替代 `engines.assistant`：前者管能力面，后者管宿主版本。
-inline constexpr int kApiVersion = 1;
+///
+/// 版本历史：
+///   1 — 6 个只读属性 + log/setting/setSetting/toast/openPath
+///   2 — 扩展点（addExtension/clearExtensions/extensionPoints/onDispose）、
+///       服务注入（services/service）、清单 `inject` 字段
+inline constexpr int kApiVersion = 2;
 
-/// `host.apiVersion` 的 SemVer 形式（`1` → `"1.0.0"`），用于和 `engines.api` 比较。
+/// `host.apiVersion` 的 SemVer 形式（`2` → `"2.0.0"`），用于和 `engines.api` 比较。
 /// 定义在这里而不是调用处，避免两边各拼一次拼歪。
-inline constexpr char kApiVersionString[] = "1.0.0";
+inline constexpr char kApiVersionString[] = "2.0.0";
+
+/// 宿主声明的扩展点 id（`host.addExtension(pointId, …)` 的第一个参数）。
+///
+/// `consumed == false` 的点可以提前公布给作者，但宿主里没有消费者——README 与
+/// 界面都必须如实标注，不能让作者以为注册了就会生效。
+namespace extension {
+
+inline constexpr char kNavPages[]        = "nav.pages";        ///< 左侧导航页面（有消费者）
+inline constexpr char kCommands[]        = "commands";         ///< 可执行命令（有消费者：插件详情页）
+inline constexpr char kSearchProviders[] = "search.providers"; ///< 搜索源（**尚无消费者**，等 A7）
+
+} // namespace extension
+
+/// 宿主提供的服务名（`host.service(name)` / 清单 `inject`）。
+///
+/// 可用性按清单判定：`clipboard` 需要 `permissions: ["clipboard.read"]` 或
+/// `["clipboard.write"]`；其余默认可用。这是权限唯一被真正执行的地方。
+namespace service {
+
+inline constexpr char kSettings[]  = "settings";   ///< 本插件的键值存储
+inline constexpr char kNotify[]    = "notify";     ///< 短提示
+inline constexpr char kLogger[]    = "logger";     ///< 带插件前缀的日志
+inline constexpr char kClipboard[] = "clipboard";  ///< 剪贴板（按权限门控）
+inline constexpr char kOpen[]      = "open";       ///< 打开 URL/文件（复用 openPath 限制）
+
+} // namespace service
 
 /// 清单 `permissions` 里允许出现的名字。
 ///
@@ -75,6 +106,7 @@ inline constexpr char kHttpStatus[]         = "http-status";          ///< 非 2
 inline constexpr char kDiskFull[]           = "disk-full";            ///< 磁盘满
 inline constexpr char kPermission[]         = "permission";           ///< 写盘被拒
 inline constexpr char kLoadFailed[]         = "load-failed";          ///< QML 编译/实例化失败
+inline constexpr char kMissingService[]     = "missing-service";      ///< inject 的服务不可用
 inline constexpr char kNotRemovable[]       = "not-removable";        ///< 内置插件
 inline constexpr char kCancelled[]          = "cancelled";            ///< 用户取消
 inline constexpr char kTooLate[]            = "too-late";             ///< 取消时已提交

@@ -1,10 +1,21 @@
 #pragma once
 
+#include <QHash>
+#include <QJSValue>
 #include <QObject>
+#include <QPointer>
 #include <QString>
+#include <QStringList>
 #include <QVariant>
+#include <QVariantMap>
 
 #include "contract/IHostApi.h"
+#include "core/plugin/PluginManifest.h"
+
+class DisposalGroup;
+class PluginExtensionRegistry;
+class PluginServiceRegistry;
+class QJSValue;
 
 /// The **only** surface a plugin is allowed to touch.
 ///
@@ -39,6 +50,13 @@ class PluginHost : public QObject
     /// API 版本管能力面，产品版本管行为/界面。
     Q_PROPERTY(int apiVersion READ apiVersion CONSTANT)
 
+    /// 本插件**可用**的服务名（已按清单权限过滤）。`service(name)` 只会返回这里有的名字。
+    Q_PROPERTY(QStringList services READ services CONSTANT)
+
+    /// 最近一次 addExtension/service() 失败的原因；成功后清空。
+    /// 这些调用返回 nullptr 而不是抛错，插件据此提示用户。
+    Q_PROPERTY(QString lastError READ lastError NOTIFY lastErrorChanged)
+
 public:
     /// @param dataDir the plugin's writable directory; created on first write
     PluginHost(QString pluginId, QString pluginName, QString version,
@@ -51,10 +69,22 @@ public:
     QString dataDir() const { return m_dataDir; }
     bool isDark() const { return m_isDark; }
     int  apiVersion() const { return contract::kApiVersion; }
+    QStringList services() const { return m_availableServices; }
+    QString lastError() const { return m_lastError; }
 
     /// Set by PluginLoader from the running application; not plugin-controlled.
     void setAppVersion(const QString &appVersion);
     void setDark(bool dark);
+
+    // ---- injected by PluginLoader (host side only) ----
+    void setExtensionRegistry(PluginExtensionRegistry *registry);
+    void setServiceRegistry(PluginServiceRegistry *registry);
+    void setDisposalGroup(DisposalGroup *group);
+    /// Names the plugin may use, already filtered by its manifest permissions.
+    void setAvailableServices(const QStringList &names);
+    /// The manifest of this plugin; service availability is derived from its
+    /// permissions, so the host needs it rather than re-parsing `plugin.json`.
+    void setManifest(const PluginManifest &manifest);
 
     // ---- actions exposed to QML ----
 
@@ -76,8 +106,36 @@ public:
     /// a plugin must not be able to launch arbitrary local executables.
     Q_INVOKABLE bool openPath(const QString &path);
 
+    // ---- 扩展点（插件 API 2 起）----
+
+    /// Declared extension points: [{id, title, consumed}].
+    Q_INVOKABLE QVariantList extensionPoints() const;
+
+    /// Contribute to a point. Returns a handle whose `dispose()` withdraws it;
+    /// the handle is tracked by this plugin's disposal group, so unload also removes
+    /// it. Returns nullptr (and sets lastError) when the point is unknown or the
+    /// payload misses a required key.
+    Q_INVOKABLE QObject *addExtension(const QString &pointId, const QVariantMap &data);
+
+    /// Withdraw everything this plugin contributed to @p pointId.
+    /// @return how many were removed
+    Q_INVOKABLE int clearExtensions(const QString &pointId);
+
+    // ---- 服务（插件 API 2 起）----
+
+    /// A per-plugin view of a host service, or nullptr when unavailable.
+    /// Views are cached: repeated calls return the same object.
+    Q_INVOKABLE QObject *service(const QString &name);
+
+    // ---- 生命周期 ----
+
+    /// Register cleanup that runs on unload/disable, after every extension handle is
+    /// disposed (LIFO). Use it for timers/handlers the host cannot see.
+    Q_INVOKABLE QObject *onDispose(QJSValue callback);
+
 signals:
     void themeChanged();
+    void lastErrorChanged();
 
     /// Relay point: PluginManager forwards this to the UI.
     void toastRequested(const QString &text);
@@ -86,12 +144,22 @@ private:
     bool loadSettings();
     bool saveSettings() const;
 
+    void setLastError(const QString &message);
+
     QString m_pluginId;
     QString m_pluginName;
     QString m_version;
     QString m_dataDir;
     QString m_appVersion;
     bool    m_isDark = false;
+
+    PluginExtensionRegistry *m_extensions = nullptr;
+    PluginServiceRegistry   *m_services   = nullptr;
+    DisposalGroup           *m_disposal   = nullptr;
+    PluginManifest           m_manifest;
+    QStringList              m_availableServices;
+    QHash<QString, QPointer<QObject>> m_serviceViews;
+    QString                  m_lastError;
 
     QVariantMap m_settings;
     bool m_settingsLoaded = false;

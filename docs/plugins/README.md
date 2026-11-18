@@ -157,7 +157,8 @@ hello-1.0.0.zip
 | `engines.assistant` | 建议 | 兼容的宿主版本区间；省略表示"未声明"（只警告不拒绝） |
 | `engines.api` | 建议 | 需要的**插件 API 版本**区间（如 `">=1.0.0"`）；省略表示不声明。与 `engines.assistant` 是两条独立的轴，见 §7.2 |
 | `main` | ✅（qml） | 入口文件，插件内相对路径 |
-| `permissions` | 建议 | 字符串数组，**仅作声明展示**（见 §9） |
+| `permissions` | 建议 | 字符串数组。**服务注入按它门控**（如 `clipboard` 服务需要 `clipboard.*`），其余仍只作声明展示（见 §4.6 / §9） |
+| `inject` | 可选 | 需要的宿主服务名数组；缺任何一个宿主**拒绝启用**并报 `missing-service`（§4.6） |
 | `contributes.pages` | 可选 | 见 §5 |
 | `contributes.commands` | 可选 | **已解析、尚未生效**（§6） |
 | `contributes.searchProviders` | 可选 | **已解析、尚未生效**（§6） |
@@ -190,9 +191,11 @@ hello-1.0.0.zip
 | `host.pluginName` | string | 清单里的 `name` |
 | `host.version` | string | 你自己的版本 |
 | `host.appVersion` | string | 宿主版本（如 `0.3.0`），做版本判断用 |
-| `host.apiVersion` | int | 宿主实现的**插件 API 版本**（当前 `1`）。判断"这个宿主支不支持我要用的方法"用它，不是用 `appVersion` |
+| `host.apiVersion` | int | 宿主实现的**插件 API 版本**（当前 `2`）。判断"这个宿主支不支持我要用的方法"用它，不是用 `appVersion` |
 | `host.dataDir` | string | 你的可写目录绝对路径（首次写时才创建） |
 | `host.isDark` | bool | 当前是否是深色主题；主题切换时触发 `themeChanged` |
+| `host.services` | string[] | **本插件可用**的服务名（已按清单权限过滤，见 §4.6） |
+| `host.lastError` | string | 最近一次 `addExtension` / `service` 失败的原因；成功时清空 |
 
 ### 4.2 方法
 
@@ -203,6 +206,11 @@ hello-1.0.0.zip
 | `host.setSetting(key, value)` | bool | 写持久化键。**返回 false 表示写盘失败，且内存值已回滚** |
 | `host.toast(text)` | — | 请宿主弹一条短提示（宿主决定怎么显示） |
 | `host.openPath(path)` | bool | 打开 https / http / mailto，或**你自己 data 目录内**的文件；其它一律拒绝并返回 false |
+| `host.extensionPoints()` | array | 宿主的扩展点：`[{id, title, consumed}]`（§4.5） |
+| `host.addExtension(point, data)` | 句柄 / null | 注册一个贡献；返回的对象可 `dispose()` 单独撤销。失败返回 null 并设置 `lastError` |
+| `host.clearExtensions(point)` | int | 撤销本插件在该扩展点上的全部贡献 |
+| `host.service(name)` | 对象 / null | 取一个宿主服务（同一插件内是同一实例）；不可用时返回 null |
+| `host.onDispose(fn)` | 句柄 | 注册卸载时要执行的清理（§4.7） |
 
 持久化落在 `host.dataDir/settings.json`，整文件原子写。支持的值类型：bool、整数、double、string、字符串数组、以及嵌套的 list/map（会被转成 JSON）。
 
@@ -236,6 +244,98 @@ Item {
 - 宿主的 `Style` 单例（见 §5.4）。
 
 将来如果要支持更强的能力（真正的文件访问、网络请求封装），会以**新方法**的形式加在这一层，而不是把内部对象暴露出来——否则"以后把插件挪到进程外"就永久不可能了。
+
+---
+
+### 4.5 扩展点（API 2）
+
+宿主声明若干**命名扩展点**，插件在运行时往里注册。注册返回一个句柄，`dispose()` 可以只撤销这一条。
+
+| 扩展点 | 必需字段 | 有消费者吗 | 效果 |
+|---|---|---|---|
+| `nav.pages` | `pageId`, `title`, `source` | ✅ 左侧导航 | 注册后立刻出现在导航里，点击进入你贡献的页面 |
+| `commands` | `id`, `title` | ✅ 插件详情页 | 在「插件市场 → 详情 → 提供的命令」里列出，可点「运行」执行你的 `run` |
+| `search.providers` | `id`, `title` | ❌ **暂无** | 保留给搜索融合层（A7）；现在注册了不会生效 |
+
+```qml
+Component.onCompleted: {
+    // 动态导航页：source 相对插件目录（也可给 file:// 绝对地址）
+    var page = host.addExtension("nav.pages", {
+        pageId: "weather", title: "天气", icon: "🌤", source: "Page.qml"
+    })
+
+    // 可执行命令：run 是普通 JS 函数，宿主点「运行」时调用
+    host.addExtension("commands", {
+        id: "weather.refresh",
+        title: "刷新天气",
+        keyword: "weather",
+        run: function () { host.toast("已刷新") }
+    })
+
+    // 只撤销这一条，其余保留
+    // page.dispose()
+}
+```
+
+- 注册失败（点不存在、缺必需字段）返回 `null`，原因在 `host.lastError`；
+- 撤销后消费者会收到通知（导航/命令列表立即刷新）；
+- **未知的扩展点不会被"宽容接受"**——拼错 id 会直接失败，避免注册了却永远不生效。
+
+### 4.6 服务注入（API 2）
+
+服务是宿主提供的**能力对象**，按名字取，同一插件内同一实例。
+
+| 服务 | 可用条件 | 提供的方法 |
+|---|---|---|
+| `settings` | 总是 | `get(key, fallback)` / `set(key, value)` |
+| `notify` | 总是 | `show(text)` |
+| `logger` | 总是 | `debug/info/warn/error(message)` |
+| `open` | 总是 | `url(value)`（走 `openPath` 的限制） |
+| `clipboard` | 清单声明 `clipboard.read` / `clipboard.write` | `read()` / `write(text)`，未声明的方向返回空/false |
+
+```qml
+var clip = host.service("clipboard")
+if (clip && clip.canWrite)
+    clip.write("来自插件的文本")
+```
+
+**声明依赖**：清单里写 `"inject": ["clipboard"]`，宿主启用插件前会检查；有一个不可用，插件**拒绝启用**并标 `missing-service`（详情里写明缺哪个），而不是加载后再在某个调用点炸。
+
+```json
+"permissions": ["clipboard.read"],
+"inject": ["clipboard", "settings"]
+```
+
+> 这是权限**唯一被真正执行**的地方：没声明 `clipboard.*` 就没有 `clipboard` 服务。
+
+### 4.7 可回收生命周期（API 2）
+
+三种注册都会返回句柄，宿主在**停用/卸载时按注册的逆序统一回收**：
+
+1. `host.addExtension(...)` → 扩展点贡献；
+2. `host.onDispose(fn)` → 你自己的清理；
+3. 插件入口对象与页面对象 → 最后销毁。
+
+```qml
+property var timer: null
+
+Component.onCompleted: {
+    timer = Qt.createQmlObject('import QtQuick; Timer { interval: 1000; repeat: true; running: true }', root)
+    timer.triggered.connect(function () { host.log("debug", "tick") })
+
+    host.onDispose(function () {
+        timer.stop()          // 必须：宿主看不到这个 Timer，只有你知道
+        timer.destroy()
+    })
+}
+```
+
+保证：
+
+- **逆序**（后注册先回收）→ 一个清理可以安全依赖更早注册的东西；
+- **幂等**：`dispose()` 调两次不会重复执行；
+- **不中断**：某个清理抛错只记日志，其余照常回收；
+- **兜底**：即使插件忘了登记，卸载时宿主仍会清掉它在扩展点里的贡献。
 
 ---
 
@@ -319,11 +419,11 @@ Rectangle {
 
 | 贡献点 | 现状 | 预计 |
 |---|---|---|
-| `contributes.commands` | 清单**解析并保存**，但没有任何消费方——命令不会出现在搜索框 | 等搜索融合层（文件子系统 A7）落地后 |
-| `contributes.searchProviders` | 同上，且需要新的 `ISearchProvider` 扩展点 | 同上 |
+| `contributes.commands`（**清单静态**写法） | 解析并保存，但没有消费方——这条静态路径不会被读 | 保持未启用；**改用运行时扩展点** `host.addExtension("commands", …)`（§4.5，已可用） |
+| `contributes.searchProviders` | 同上，且需要新的 `ISearchProvider` 扩展点 | 等搜索融合层（文件子系统 A7） |
 | `contributes.settings.source` | 解析，没有设置页入口 | 后续版本 |
 
-现在能用的是：**导航页**（`contributes.pages`）+ `host` 的全部能力。
+现在能用的是：**导航页**（清单 `contributes.pages` 或运行时 `nav.pages`）、**命令**（运行时 `commands`）、**服务注入**、**生命周期回收**，以及 `host` 的全部基础能力。
 
 ---
 
@@ -358,11 +458,14 @@ Rectangle {
 | `engines.assistant` | "这个宿主**产品**够新吗"（界面/行为） | 宿主要 0.4 才有某个菜单 |
 | `engines.api` | "这个宿主**插件 API** 够新吗"（能力面） | 宿主会不会给我 `host.xxx()` 这个新方法 |
 
-当前 API 版本是 **1**（`host.apiVersion`），比较时按 `1.0.0` 处理：
+当前 API 版本是 **2**（`host.apiVersion`），比较时按 `2.0.0` 处理：
 
 ```json
-"engines": { "assistant": ">=0.3.0 <1.0.0", "api": ">=1.0.0" }
+"engines": { "assistant": ">=0.3.0 <1.0.0", "api": ">=2.0.0" }
 ```
+
+> 用不到扩展点/服务的插件可以继续声明 `>=1.0.0`：那表示"只要 API 1 的那套就够"，
+> 2 满足 1，所以照样能装。声明 `>=2.0.0` 是为了挡住更旧的宿主。
 
 规则：
 
@@ -524,5 +627,6 @@ $env:ASSISTANT_MARKET_URL = "http://127.0.0.1:8000/index.json"
 |---|---|---|---|
 | 2026-10 | 1 | 1 | 首版：`host` 6 属性 5 方法；页面贡献；zip 安装；`commands`/`searchProviders`/`settings` 保留未启用 |
 | 2026-11 | 1 | 1 | 新增 `host.apiVersion` 与 `engines.api`（两条轴分离）；契约常量落在 `include/contract/IHostApi.h` |
+| 2026-11 | 1 | **2** | **扩展点**（`nav.pages` / `commands` 有消费者，`search.providers` 仅声明）、**服务注入**（`settings`/`notify`/`logger`/`open`/`clipboard` + 清单 `inject` 门控）、**可回收生命周期**（注册句柄 + `onDispose`，卸载逆序回收） |
 
 **兼容承诺（预览期）**：`manifestVersion = 1` 下，`host` 的属性/方法只会**新增**，不会删除或改变语义。真要改语义会升 `manifestVersion`，旧插件会被拒绝加载并提示原因；只新增能力则升 `apiVersion`（插件用 `engines.api` 声明需求）。

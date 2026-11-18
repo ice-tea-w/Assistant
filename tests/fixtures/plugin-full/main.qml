@@ -29,6 +29,16 @@ QtObject {
     property bool   openOutsideRefused: false
     property string lastToast: ""
 
+    // ---- 插件 API 2：扩展点 / 服务注入 / 可回收生命周期 ----
+    property var    seenServices: []
+    property string seenPoints: ""
+    property var    settingsService: null
+    property var    clipboardService: null
+    property var    dynamicPageHandle: null
+    property bool   unknownPointRefused: false
+    property string unknownPointError: ""
+    property bool   disposeRegistered: false
+
     // 测试通过 invokeMethod 调它，验证 toast 通道（onCompleted 阶段宿主还没接线）
     function fireToast(text) {
         lastToast = text
@@ -63,5 +73,41 @@ QtObject {
         // openPath：只验"该拒的必须拒"。成功路径会真的拉起系统程序，测试不碰。
         openEmptyRefused   = (host.openPath("") === false)
         openOutsideRefused = (host.openPath("C:/Windows/win.ini") === false)
+
+        // ---- 插件 API 2 ----
+        // 服务注入：宿主会按清单权限过滤，所以这里必须只看到可达的那些。
+        seenServices = host.services
+        settingsService  = host.service("settings")
+        clipboardService = host.service("clipboard")   // 清单声明了 clipboard.read
+
+        // 扩展点：列出声明的点，然后真的注册一个动态导航页 + 一条命令。
+        var points = host.extensionPoints()
+        for (var i = 0; i < points.length; ++i) {
+            if (i > 0) seenPoints += ","
+            seenPoints += points[i].id + (points[i].consumed ? "" : "(no-consumer)")
+        }
+
+        dynamicPageHandle = host.addExtension("nav.pages", {
+            pageId: "canary-dynamic",
+            title: "金丝雀·动态页",
+            icon: "🐤",
+            source: "Page.qml"
+        })
+
+        host.addExtension("commands", {
+            id: "canary.ping",
+            title: "金丝雀 Ping",
+            keyword: "canary",
+            run: function () { host.setSetting("commandRan", true) }
+        })
+
+        // 错误路径：未声明的点必须被拒，并且 lastError 给出原因（而不是静默 null）。
+        var rejected = host.addExtension("no.such.point", {})
+        unknownPointRefused = (rejected === null)
+        unknownPointError   = host.lastError
+
+        // 可回收生命周期：这条回调必须在卸载时执行；测试通过 settings.json 验证。
+        host.onDispose(function () { host.setSetting("disposed", true) })
+        disposeRegistered = true
     }
 }

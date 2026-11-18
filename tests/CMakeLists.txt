@@ -46,6 +46,10 @@ add_executable(assistant_core_tests
     ${REPO_ROOT}/include/core/plugin/PluginLoader.h
     ${REPO_ROOT}/include/core/plugin/PluginManager.h
     ${REPO_ROOT}/include/core/plugin/PluginCatalog.h
+    # 插件 API 2 的 Q_OBJECT 头（扩展点 / 服务注入 / 可回收生命周期）
+    ${REPO_ROOT}/include/core/plugin/PluginDisposable.h
+    ${REPO_ROOT}/include/core/plugin/PluginExtensionRegistry.h
+    ${REPO_ROOT}/include/core/plugin/PluginServices.h
     ${REPO_ROOT}/include/core/plugin/PluginInstaller.h
     ${REPO_ROOT}/src/core/plugin/SemVer.cpp
     ${REPO_ROOT}/src/core/plugin/PluginManifest.cpp
@@ -57,6 +61,10 @@ add_executable(assistant_core_tests
     ${REPO_ROOT}/src/core/plugin/PluginArchive.cpp
     ${REPO_ROOT}/src/core/plugin/PluginCatalog.cpp
     ${REPO_ROOT}/src/core/plugin/PluginInstaller.cpp
+    # 插件 API 2：扩展点 / 服务注入 / 可回收生命周期
+    ${REPO_ROOT}/src/core/plugin/PluginDisposable.cpp
+    ${REPO_ROOT}/src/core/plugin/PluginExtensionRegistry.cpp
+    ${REPO_ROOT}/src/core/plugin/PluginServices.cpp
     ${REPO_ROOT}/src/core/Logger.cpp
 )
 

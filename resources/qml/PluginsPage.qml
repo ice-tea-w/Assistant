@@ -668,6 +668,70 @@ Rectangle {
                     }
                 }
 
+                // 插件贡献的命令（`commands` 扩展点的消费者）
+                // 这是"扩展点真的有人读"的证据：注册了就会出现，点得动。
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 4
+                    visible: page.commandsOf(page.detailId).length > 0
+
+                    Text {
+                        text: "提供的命令"
+                        color: page.mutedColor
+                        font.pixelSize: 11
+                    }
+
+                    Repeater {
+                        model: page.commandsOf(page.detailId)
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+
+                            Text {
+                                Layout.fillWidth: true
+                                text: modelData.title
+                                color: page.textColor
+                                font.pixelSize: 12
+                                elide: Text.ElideRight
+                            }
+
+                            Text {
+                                text: modelData.keyword ? ("/" + modelData.keyword) : ""
+                                color: page.mutedColor
+                                font.pixelSize: 10
+                            }
+
+                            Rectangle {
+                                Layout.preferredWidth: 48
+                                Layout.preferredHeight: 24
+                                radius: Style.radiusSmall
+                                color: runMouse.containsMouse ? page.accentColor : "transparent"
+                                border.width: 1
+                                border.color: page.borderColor
+
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: "运行"
+                                    color: runMouse.containsMouse ? "#ffffff" : page.textColor
+                                    font.pixelSize: 11
+                                }
+
+                                MouseArea {
+                                    id: runMouse
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: {
+                                        if (page.api)
+                                            page.api.runCommand(modelData.pluginId, modelData.id)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 Item { Layout.fillHeight: true }
 
                 // 底部动作
@@ -1135,6 +1199,17 @@ Rectangle {
         case "shell":           return "运行外部程序"
         default:                return p
         }
+    }
+
+    /// 某个插件通过 `commands` 扩展点贡献的命令（只列已加载的插件）。
+    function commandsOf(pluginId) {
+        var out = []
+        var all = api ? (api.commands || []) : []
+        for (var i = 0; i < all.length; ++i) {
+            if (all[i].pluginId === pluginId)
+                out.push(all[i])
+        }
+        return out
     }
 
     Connections {

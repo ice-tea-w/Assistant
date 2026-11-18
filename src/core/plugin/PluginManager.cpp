@@ -15,8 +15,11 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QJSValue>
 #include <QUrl>
 #include <QVariantMap>
+
+#include "core/plugin/PluginHost.h"
 
 namespace {
 
@@ -55,6 +58,57 @@ PluginManager::PluginManager(PluginRegistry *registry, PluginLoader *loader, QOb
     , m_registry(registry)
     , m_loader(loader)
 {
+    // ---- 扩展点（插件 API 2）----
+    // declared here, before any plugin can load: the set of points is host policy,
+    // not something a plugin can invent.
+    m_extensions.declare(QLatin1String(contract::extension::kNavPages),
+                         QStringLiteral("左侧导航页面"),
+                         {QStringLiteral("pageId"), QStringLiteral("title"),
+                          QStringLiteral("source")},
+                         /*consumed=*/true);
+    m_extensions.declare(QLatin1String(contract::extension::kCommands),
+                         QStringLiteral("可执行命令"),
+                         {QStringLiteral("id"), QStringLiteral("title")},
+                         /*consumed=*/true);
+    m_extensions.declare(QLatin1String(contract::extension::kSearchProviders),
+                         QStringLiteral("搜索源"),
+                         {QStringLiteral("id"), QStringLiteral("title")},
+                         /*consumed=*/false);   // 等 A7 的 ISearchProvider
+
+    // ---- 宿主服务（插件 API 2）----
+    using namespace contract;
+
+    m_services.registerService(QLatin1String(service::kSettings),
+        [](PluginHost *host, const PluginManifest &) {
+            return new PluginSettingsService(host);
+        });
+    m_services.registerService(QLatin1String(service::kNotify),
+        [](PluginHost *host, const PluginManifest &) {
+            return new PluginNotifyService(host);
+        });
+    m_services.registerService(QLatin1String(service::kLogger),
+        [](PluginHost *host, const PluginManifest &) {
+            return new PluginLoggerService(host);
+        });
+    m_services.registerService(QLatin1String(service::kOpen),
+        [](PluginHost *host, const PluginManifest &) {
+            return new PluginOpenService(host);
+        });
+    // 唯一按权限门控的服务：没声明 clipboard.read/write 就没有这个服务可用，
+    // 这比"声明了但不拦"更诚实——至少插件拿不到对象。
+    m_services.registerService(QLatin1String(service::kClipboard),
+        [](PluginHost *host, const PluginManifest &manifest) {
+            const bool canRead  = manifest.permissions.contains(
+                QLatin1String(capability::kClipboardRead));
+            const bool canWrite = manifest.permissions.contains(
+                QLatin1String(capability::kClipboardWrite));
+            return new PluginClipboardService(canRead, canWrite, host);
+        },
+        [](const PluginManifest &manifest) {
+            return manifest.permissions.contains(QLatin1String(capability::kClipboardRead))
+                || manifest.permissions.contains(QLatin1String(capability::kClipboardWrite));
+        });
+
     if (m_loader) {
         // Any load/unload changes what the navigation should show.
         connect(m_loader, &PluginLoader::navigationChanged,
@@ -70,7 +124,19 @@ PluginManager::PluginManager(PluginRegistry *registry, PluginLoader *loader, QOb
                     emit toast(QStringLiteral("info"),
                                QStringLiteral("%1：%2").arg(pluginId, text));
                 });
+
+        // Hand the registries down; the loader injects them into every PluginHost.
+        m_loader->setExtensionRegistry(&m_extensions);
+        m_loader->setServiceRegistry(&m_services);
     }
+
+    // A runtime contribution can add or remove a nav entry, so the UI has to re-read.
+    connect(&m_extensions, &PluginExtensionRegistry::changed, this,
+            [this](const QString &pointId) {
+                emit viewChanged();
+                if (pointId == QLatin1String(contract::extension::kNavPages))
+                    emit navigationChanged();
+            });
 }
 
 void PluginManager::setEngine(QQmlEngine *engine)
@@ -411,6 +477,17 @@ bool PluginManager::enablePlugin(const QString &id)
     // （见 include/contract/IHostApi.h）。旧宿主 + 新插件、新宿主 + 旧插件都靠它挡。
     if (!manifest.checkApi(contract::kApiVersion, &error)) {
         setProblem(id, QStringLiteral("incompatible-version"), error);
+        return false;
+    }
+
+    // 服务注入门控：`inject` 里有一个不可用，就别让它加载。
+    // 半配置的插件会在后面某个调用点才炸，比在这里直接拒绝难查得多。
+    const QStringList missing = m_services.unavailableFor(manifest, manifest.inject);
+    if (!missing.isEmpty()) {
+        setProblem(id, QStringLiteral("missing-service"),
+                   QStringLiteral("缺少宿主服务：%1（本机可用：%2）")
+                       .arg(missing.join(QStringLiteral(", ")),
+                            m_services.names().join(QStringLiteral(", "))));
         return false;
     }
 
@@ -764,6 +841,80 @@ QVariantList PluginManager::navigationEntries() const
     if (!m_loader)
         return {};
     return m_loader->navigationEntries();
+}
+
+// ---------------------------------------------------------------------------
+// commands（`commands` 扩展点的消费者）
+// ---------------------------------------------------------------------------
+
+QVariantList PluginManager::commands() const
+{
+    QVariantList out;
+
+    if (!m_loader)
+        return out;
+
+    const QVariantList contributed =
+        m_extensions.contributions(QLatin1String(contract::extension::kCommands));
+
+    for (const QVariant &item : contributed) {
+        const QVariantMap row = item.toMap();
+        const QString pluginId = row.value(QStringLiteral("pluginId")).toString();
+
+        // Only commands whose plugin is actually loaded: a contribution surviving a
+        // half-unloaded plugin would be an entry that cannot run.
+        if (!m_loader->isLoaded(pluginId))
+            continue;
+
+        QVariantMap entry;
+        entry.insert(QStringLiteral("pluginId"), pluginId);
+        entry.insert(QStringLiteral("id"), row.value(QStringLiteral("id")));
+        entry.insert(QStringLiteral("title"), row.value(QStringLiteral("title")));
+        entry.insert(QStringLiteral("keyword"), row.value(QStringLiteral("keyword")));
+        out.append(entry);
+    }
+
+    return out;
+}
+
+bool PluginManager::runCommand(const QString &pluginId, const QString &commandId,
+                               QString *error)
+{
+    const auto fail = [error](const QString &message) {
+        if (error)
+            *error = message;
+        return false;
+    };
+
+    if (!m_loader || !m_loader->isLoaded(pluginId))
+        return fail(QStringLiteral("插件未加载：%1").arg(pluginId));
+
+    const QVariantList contributed =
+        m_extensions.contributions(QLatin1String(contract::extension::kCommands));
+
+    for (const QVariant &item : contributed) {
+        const QVariantMap row = item.toMap();
+        if (row.value(QStringLiteral("pluginId")).toString() != pluginId)
+            continue;
+        if (row.value(QStringLiteral("id")).toString() != commandId)
+            continue;
+
+        const QVariant run = row.value(QStringLiteral("run"));
+        if (!run.canConvert<QJSValue>())
+            return fail(QStringLiteral("命令 %1 没有 run 函数").arg(commandId));
+
+        QJSValue callable = run.value<QJSValue>();
+        if (!callable.isCallable())
+            return fail(QStringLiteral("命令 %1 的 run 不可调用").arg(commandId));
+
+        const QJSValue result = callable.call();
+        if (result.isError())
+            return fail(QStringLiteral("命令 %1 抛错：%2").arg(commandId, result.toString()));
+
+        return true;
+    }
+
+    return fail(QStringLiteral("没有这个命令：%1").arg(commandId));
 }
 
 QObject *PluginManager::acquirePage(const QString &key)

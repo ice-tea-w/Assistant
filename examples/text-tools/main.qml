@@ -15,5 +15,16 @@ QtObject {
 
         host.log("info", "文本工具已加载（第 " + runs + " 次），宿主 " + host.appVersion
                  + "，插件 API " + host.apiVersion)
+
+        // 扩展点演示：在「插件市场 → 详情 → 提供的命令」里会多出这一条，可点「运行」。
+        // 注册句柄由宿主的生命周期组托管，插件卸载时自动撤销，不用手动 dispose。
+        host.addExtension("commands", {
+            id: "texttools.about",
+            title: "关于文本工具",
+            keyword: "text",
+            run: function () {
+                host.toast("文本工具 v" + host.version + " · 插件 API " + host.apiVersion)
+            }
+        })
     }
 }

@@ -1,11 +1,15 @@
 #include "core/plugin/PluginHost.h"
 
 #include "core/Logger.h"
+#include "core/plugin/PluginDisposable.h"
+#include "core/plugin/PluginExtensionRegistry.h"
+#include "core/plugin/PluginServices.h"
 
 #include <QDesktopServices>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QJSValue>
 #include <QSaveFile>
 #include <QUrl>
 #include <QVariantList>
@@ -266,4 +270,150 @@ bool PluginHost::openPath(const QString &path)
     }
 
     return QDesktopServices::openUrl(QUrl::fromLocalFile(target));
+}
+
+// ---------------------------------------------------------------------------
+// 扩展点
+// ---------------------------------------------------------------------------
+
+void PluginHost::setExtensionRegistry(PluginExtensionRegistry *registry)
+{
+    m_extensions = registry;
+}
+
+QVariantList PluginHost::extensionPoints() const
+{
+    if (!m_extensions)
+        return {};
+
+    // Only the metadata: a plugin does not get to see other plugins' contributions.
+    return m_extensions->points();
+}
+
+QObject *PluginHost::addExtension(const QString &pointId, const QVariantMap &data)
+{
+    setLastError(QString());
+
+    if (!m_extensions) {
+        setLastError(QStringLiteral("宿主未提供扩展点"));
+        return nullptr;
+    }
+
+    QString error;
+    PluginDisposable *handle = m_extensions->add(m_pluginId, pointId, data,
+                                                 m_disposal, &error);
+    if (!handle) {
+        setLastError(error.isEmpty() ? QStringLiteral("扩展点注册失败") : error);
+        Logger::get().warn("plugin[{}]: addExtension refused — {}",
+                           m_pluginId.toStdString(), m_lastError.toStdString());
+    }
+
+    return handle;
+}
+
+int PluginHost::clearExtensions(const QString &pointId)
+{
+    if (!m_extensions)
+        return 0;
+
+    return m_extensions->removeContributionsOf(m_pluginId, pointId);
+}
+
+// ---------------------------------------------------------------------------
+// 服务
+// ---------------------------------------------------------------------------
+
+void PluginHost::setServiceRegistry(PluginServiceRegistry *registry)
+{
+    m_services = registry;
+}
+
+void PluginHost::setDisposalGroup(DisposalGroup *group)
+{
+    m_disposal = group;
+}
+
+void PluginHost::setAvailableServices(const QStringList &names)
+{
+    m_availableServices = names;
+}
+
+void PluginHost::setManifest(const PluginManifest &manifest)
+{
+    m_manifest = manifest;
+
+    // Keep the identity fields in sync even when the loader built the host from the
+    // same values — one source, no chance of drift.
+    if (!manifest.id.isEmpty())
+        m_pluginId = manifest.id;
+    if (!manifest.name.isEmpty())
+        m_pluginName = manifest.name;
+    if (!manifest.version.isEmpty())
+        m_version = manifest.version;
+}
+
+QObject *PluginHost::service(const QString &name)
+{
+    setLastError(QString());
+
+    if (!m_availableServices.contains(name)) {
+        setLastError(QStringLiteral("本插件不可用服务：%1").arg(name));
+        return nullptr;
+    }
+
+    if (m_serviceViews.contains(name)) {
+        QObject *cached = m_serviceViews.value(name).data();
+        if (cached)
+            return cached;
+        m_serviceViews.remove(name);
+    }
+
+    if (!m_services) {
+        setLastError(QStringLiteral("宿主未提供服务"));
+        return nullptr;
+    }
+
+    QObject *view = m_services->create(name, this, m_manifest);
+    if (!view) {
+        setLastError(QStringLiteral("服务不可用：%1").arg(name));
+        return nullptr;
+    }
+
+    view->setParent(this);
+    m_serviceViews.insert(name, view);
+    return view;
+}
+
+// ---------------------------------------------------------------------------
+// 生命周期
+// ---------------------------------------------------------------------------
+
+QObject *PluginHost::onDispose(QJSValue callback)
+{
+    setLastError(QString());
+
+    if (!m_disposal) {
+        setLastError(QStringLiteral("宿主未提供生命周期组"));
+        return nullptr;
+    }
+
+    if (!callback.isCallable()) {
+        setLastError(QStringLiteral("onDispose 需要一个函数"));
+        return nullptr;
+    }
+
+    // Copy the value: the callback belongs to the plugin's engine and must stay
+    // callable until disposal, which happens before the object is destroyed.
+    return m_disposal->add([callback]() mutable {
+        callback.call();
+    });
+}
+
+void PluginHost::setLastError(const QString &message)
+{
+    if (m_lastError == message)
+        return;
+
+    m_lastError = message;
+    emit lastErrorChanged();
 }

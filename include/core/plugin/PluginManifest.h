@@ -73,6 +73,13 @@ struct PluginManifest
 
     QStringList permissions;
 
+    /// `inject`: host services this plugin requires (e.g. `["clipboard"]`).
+    ///
+    /// The manager refuses to enable a plugin when one of these is unavailable,
+    /// instead of letting it run half-configured and fail later in a confusing way.
+    /// Empty means "needs nothing beyond the base host API".
+    QStringList inject;
+
     QList<PageContribution>     pages;
     QList<ProviderContribution> providers;
     QList<CommandContribution>  commands;
