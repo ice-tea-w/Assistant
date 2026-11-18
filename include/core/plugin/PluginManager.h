@@ -1,6 +1,8 @@
 #pragma once
 
 #include "core/plugin/PluginManifest.h"
+#include "core/plugin/PluginExtensionRegistry.h"
+#include "core/plugin/PluginServices.h"
 
 #include <QHash>
 #include <QObject>
@@ -46,6 +48,22 @@ public:
 
     /// Optional (M1). Without it, the market half reports empty.
     void setCatalog(PluginCatalog *catalog);
+
+    // ---- extension points & services (plugin API 2) ----
+
+    /// Host-wide registries. Owned here; PluginLoader hands them to every PluginHost.
+    PluginExtensionRegistry *extensions() { return &m_extensions; }
+    PluginServiceRegistry   *services()   { return &m_services; }
+
+    /// Commands contributed by **loaded** plugins, for the UI.
+    /// Each entry: { pluginId, id, title, keyword }.
+    QVariantList commands() const;
+
+    /// Run one contributed command. The command's `run` value must be callable
+    /// (a QML/JS function captured at registration time).
+    /// @return false when unknown, not callable, or the call threw
+    bool runCommand(const QString &pluginId, const QString &commandId,
+                    QString *error = nullptr);
 
     // ---- read side (what the UI consumes) ----
 
@@ -134,6 +152,9 @@ private:
     PluginLoader   *m_loader   = nullptr;
     PluginInstaller *m_installer = nullptr;
     PluginCatalog   *m_catalog   = nullptr;
+
+    PluginExtensionRegistry m_extensions;
+    PluginServiceRegistry   m_services;
 
     mutable QHash<QString, PluginManifest> m_manifests;
 };

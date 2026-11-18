@@ -10,6 +10,9 @@
 #include <QVariantList>
 
 class QQmlEngine;
+class DisposalGroup;
+class PluginExtensionRegistry;
+class PluginServiceRegistry;
 
 /// Creates and destroys plugin QML objects.
 ///
@@ -36,6 +39,12 @@ public:
     /// The engine used to instantiate plugin QML. Must outlive every loaded plugin.
     void setEngine(QQmlEngine *engine);
     QQmlEngine *engine() const { return m_engine; }
+
+    /// Host-wide registries injected into every plugin host. Optional: when unset,
+    /// `host.addExtension()` / `host.service()` report "not provided" and the plugin
+    /// still loads — so the plugin subsystem works before these exist (M0 tests).
+    void setExtensionRegistry(PluginExtensionRegistry *registry);
+    void setServiceRegistry(PluginServiceRegistry *registry);
 
     /// Instantiate `<pluginDir>/<manifest.main>` with a private context.
     ///
@@ -109,6 +118,10 @@ private:
         void          *context   = nullptr;   ///< QQmlContext*
         QObject       *host      = nullptr;   ///< PluginHost*
 
+        /// Owns every registration this plugin made at runtime (extension handles,
+        /// `host.onDispose` callbacks). Disposed before the QML objects are destroyed.
+        DisposalGroup *disposal  = nullptr;
+
         /// pageId -> instantiated QQuickItem, and its QQmlComponent for cleanup.
         /// The item is held through QPointer because QML reparents it into the page
         /// slot, and destroying that slot would delete it as a child — in which case
@@ -120,6 +133,12 @@ private:
     void destroy(LoadedPlugin &plugin);
     void wireHost(LoadedPlugin &plugin);
 
+    /// Resolve a contributed page's source: manifest first, then runtime `nav.pages`
+    /// contributions. Empty when neither declares the page.
+    QString pageSourceOf(const LoadedPlugin &plugin, const QString &pageId) const;
+
     QQmlEngine *m_engine = nullptr;
+    PluginExtensionRegistry *m_extensions = nullptr;
+    PluginServiceRegistry   *m_services   = nullptr;
     QHash<QString, LoadedPlugin> m_loaded;
 };

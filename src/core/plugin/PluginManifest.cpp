@@ -236,7 +236,30 @@ std::optional<PluginManifest> PluginManifest::parse(const QByteArray &raw, QStri
         for (const json &item : perms) {
             if (!item.is_string())
                 return fail(QStringLiteral("permissions 里应为字符串"));
-            m.permissions.append(QString::fromStdString(item.get<std::string>()));
+            const QString name = QString::fromStdString(item.get<std::string>()).trimmed();
+            if (name.isEmpty())
+                return fail(QStringLiteral("permissions 里不能有空字符串"));
+            if (m.permissions.contains(name))
+                return fail(QStringLiteral("permissions 里重复：%1").arg(name));
+            m.permissions.append(name);
+        }
+    }
+
+    // ---- inject（需要的宿主服务）----
+    // 与 permissions 不同：permissions 是"告知用户我会用到什么"，inject 是"缺了就别加载"。
+    if (root.contains("inject")) {
+        const json &injects = root.at("inject");
+        if (!injects.is_array())
+            return fail(QStringLiteral("字段 inject 应为数组"));
+        for (const json &item : injects) {
+            if (!item.is_string())
+                return fail(QStringLiteral("inject 里应为字符串"));
+            const QString name = QString::fromStdString(item.get<std::string>()).trimmed();
+            if (name.isEmpty())
+                return fail(QStringLiteral("inject 里不能有空字符串"));
+            if (m.inject.contains(name))
+                return fail(QStringLiteral("inject 里重复：%1").arg(name));
+            m.inject.append(name);
         }
     }
 

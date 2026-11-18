@@ -287,7 +287,10 @@ Phase 3 剩余（收尾中，写在这里便于续接）：
 | PluginHost | `include/core/plugin/PluginHost.h` | 插件**唯一**可见的宿主面：只读属性 + 自己的 `data/` + toast；不暴露引擎/注册表/管理器 |
 | PluginInstaller | `include/core/plugin/PluginInstaller.h` | 安装流水线 `inspect→download→extract→validate→commit`；zip-slip 防护、sha256 校验、失败清理 |
 | PluginCatalog | `include/core/plugin/PluginCatalog.h` | 市场索引：内置 `seed-index.json` → 本地缓存 → HTTP（`ASSISTANT_MARKET_URL`） |
-| PluginBridge | `include/ui/PluginBridge.h`, `src/ui/PluginBridge.cpp` | 插件市场页 QML↔C++ 桥：列表、安装/取消/卸载、导航条目 |
+| PluginExtensionRegistry | `include/core/plugin/PluginExtensionRegistry.h` | 命名扩展点 + 运行时贡献（`nav.pages` / `commands` 有消费者，`search.providers` 仅声明）；每个贡献可单独撤销 |
+| PluginServiceRegistry | `include/core/plugin/PluginServices.h` | 宿主服务注入：`settings`/`notify`/`logger`/`open`/`clipboard`（clipboard 按清单权限门控），清单 `inject` 缺项则拒绝启用 |
+| PluginDisposable | `include/core/plugin/PluginDisposable.h` | 可回收生命周期：注册句柄 + `onDispose`，卸载时 LIFO 回收、幂等、单个失败不中断 |
+| PluginBridge | `include/ui/PluginBridge.h`, `src/ui/PluginBridge.cpp` | 插件市场页 QML↔C++ 桥：列表、安装/取消/卸载、导航条目、命令运行 |
 | SyncBridge | `include/ui/SyncBridge.h`, `src/ui/SyncBridge.cpp` | 设备同步页的桥：Q_PROPERTY + Q_INVOKABLE，工作线程跑引擎，独立 DB 连接 |
 | SyncEngine | `include/core/sync/SyncEngine.h`, `src/core/sync/SyncEngine.cpp` | 三方差集同步引擎（本地现状 / 上次基线 / 对端清单） |
 | ITransport | `include/core/sync/ITransport.h` | 传输通道接口：`probe` / `listRemote` / `fetch` / `push` / `removeRemote` |

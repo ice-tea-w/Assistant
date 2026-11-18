@@ -1256,6 +1256,199 @@ void testCanaryFullApi()
 }
 
 // ---------------------------------------------------------------------------
+// 插件 API 2：扩展点 / 服务注入 / 可回收生命周期
+// ---------------------------------------------------------------------------
+
+/// 读插件数据目录里的 settings.json（落盘才是真的"活过来了"）。
+QByteArray settingsJsonOf(const QString &pluginDir)
+{
+    QFile file(pluginDir + QStringLiteral("/data/settings.json"));
+    if (!file.open(QIODevice::ReadOnly))
+        return {};
+    return file.readAll();
+}
+
+void testExtensionServicesLifecycle()
+{
+    SECTION("插件 API 2 / 扩展点 + 服务注入 + 回收");
+
+    const QString fixture = QStringLiteral(PLUGIN_TEST_FIXTURES) + QStringLiteral("/plugin-full");
+
+    ScratchDir scratch;
+    if (!scratch.isValid()) { CHECK(false); return; }
+
+    PluginRegistry reg(scratch.pluginRoot());
+    CHECK(reg.load());
+
+    const QString dir = reg.pluginDir(QStringLiteral("com.assistant.canary"));
+    CHECK(copyPluginFiles(fixture, dir));
+
+    QQmlEngine engine;
+    PluginLoader loader;
+    loader.setEngine(&engine);
+    PluginManager mgr(&reg, &loader);
+    mgr.setEngine(&engine);
+
+    CHECK(mgr.discoverUnregistered() == 1);
+    mgr.setEnabled(QStringLiteral("com.assistant.canary"), true);
+
+    CHECK(loader.isLoaded(QStringLiteral("com.assistant.canary")));
+
+    QObject *object = loader.pluginObject(QStringLiteral("com.assistant.canary"));
+    CHECK(object != nullptr);
+    if (!object)
+        return;
+
+    // ---- API 版本 ----
+    CHECK(object->property("seenApi").toInt() == 2);
+    CHECK(contract::kApiVersion == 2);
+
+    // ---- 服务注入：名字按清单权限过滤，对象拿得到 ----
+    const QStringList services = object->property("seenServices").toStringList();
+    CHECK(services.contains(QStringLiteral("settings")));
+    CHECK(services.contains(QStringLiteral("logger")));
+    CHECK(services.contains(QStringLiteral("notify")));
+    CHECK(services.contains(QStringLiteral("open")));
+    CHECK(services.contains(QStringLiteral("clipboard")));   // 清单声明了 clipboard.read
+    CHECK(object->property("settingsService").value<QObject *>() != nullptr);
+    CHECK(object->property("clipboardService").value<QObject *>() != nullptr);
+
+    // ---- 扩展点：声明可见，未知点被拒且给得出原因 ----
+    const QString points = object->property("seenPoints").toString();
+    CHECK(points.contains(QStringLiteral("nav.pages")));
+    CHECK(points.contains(QStringLiteral("commands")));
+    CHECK(points.contains(QStringLiteral("search.providers(no-consumer)")));
+
+    CHECK(object->property("unknownPointRefused").toBool());
+    CHECK(object->property("unknownPointError").toString().contains(QStringLiteral("未声明")));
+
+    // ---- 动态导航页：注册后立刻出现在导航里 ----
+    bool hasDynamic = false;
+    for (const QVariant &item : mgr.navigationEntries()) {
+        const QVariantMap row = item.toMap();
+        if (row.value(QStringLiteral("key")).toString()
+            == QStringLiteral("com.assistant.canary:canary-dynamic")) {
+            hasDynamic = true;
+            CHECK(row.value(QStringLiteral("dynamic")).toBool());
+            CHECK(row.value(QStringLiteral("title")).toString()
+                  == QStringLiteral("金丝雀·动态页"));
+        }
+    }
+    CHECK(hasDynamic);
+
+    // 动态页能真的实例化（走的是同一个插件的 context，`host` 仍然可用）
+    QObject *page = mgr.acquirePage(QStringLiteral("com.assistant.canary:canary-dynamic"));
+    CHECK(page != nullptr);
+
+    // ---- 命令：注册 → 列出 → 执行 ----
+    const QVariantList commands = mgr.commands();
+    CHECK(commands.size() == 1);
+    if (commands.size() == 1) {
+        const QVariantMap cmd = commands.at(0).toMap();
+        CHECK(cmd.value(QStringLiteral("id")).toString() == QStringLiteral("canary.ping"));
+        CHECK(cmd.value(QStringLiteral("pluginId")).toString()
+              == QStringLiteral("com.assistant.canary"));
+    }
+
+    QString error;
+    CHECK(mgr.runCommand(QStringLiteral("com.assistant.canary"),
+                         QStringLiteral("canary.ping"), &error));
+    if (!error.isEmpty())
+        std::printf("  runCommand error: %s\n", error.toUtf8().constData());
+    CHECK(settingsJsonOf(dir).contains("commandRan"));
+
+    // 不存在的命令要失败，不是静默成功
+    CHECK(!mgr.runCommand(QStringLiteral("com.assistant.canary"),
+                          QStringLiteral("nope"), &error));
+    CHECK(!error.isEmpty());
+
+    // ---- 卸载：贡献清空 + onDispose 真的跑了 ----
+    mgr.setEnabled(QStringLiteral("com.assistant.canary"), false);
+
+    CHECK(!loader.isLoaded(QStringLiteral("com.assistant.canary")));
+    CHECK(mgr.commands().isEmpty());
+
+    for (const QVariant &item : mgr.navigationEntries()) {
+        CHECK(item.toMap().value(QStringLiteral("key")).toString()
+              != QStringLiteral("com.assistant.canary:canary-dynamic"));
+    }
+
+    CHECK(settingsJsonOf(dir).contains("disposed"));
+}
+
+void testInjectGating()
+{
+    SECTION("插件 API 2 / inject 缺服务时拒绝启用");
+
+    ScratchDir scratch;
+    if (!scratch.isValid()) { CHECK(false); return; }
+
+    PluginRegistry reg(scratch.pluginRoot());
+    CHECK(reg.load());
+    QQmlEngine engine;
+    PluginLoader loader;
+    loader.setEngine(&engine);
+    PluginManager mgr(&reg, &loader);
+    mgr.setEngine(&engine);
+
+    // 就地造包：这些用例在本文件里位置靠前，makePluginPackage 还没定义。
+    const auto install = [&](const QString &id, const QByteArray &manifest) {
+        const QString pkg = reg.rootDir() + QLatin1Char('/') + id;
+        QDir().mkpath(pkg);
+        writeTextFile(pkg + QStringLiteral("/plugin.json"), manifest);
+        writeTextFile(pkg + QStringLiteral("/main.qml"), QByteArray(kMinimalPluginQml));
+    };
+
+    // 1) 要 clipboard，但没声明权限 → 服务不可用 → 拒绝启用并记 missing-service
+    const QByteArray noPermission = R"({
+        "manifestVersion":1,"id":"com.inject.nope","name":"无权限注入","version":"1.0.0",
+        "main":"main.qml","inject":["clipboard"]
+    })";
+    install(QStringLiteral("com.inject.nope"), noPermission);
+
+    // 2) 要一个宿主根本不存在的服务 → 同样拒绝，且 detail 里点名
+    const QByteArray unknownService = R"({
+        "manifestVersion":1,"id":"com.inject.unknown","name":"未知服务","version":"1.0.0",
+        "main":"main.qml","inject":["telepathy"]
+    })";
+    install(QStringLiteral("com.inject.unknown"), unknownService);
+
+    // 3) 声明了权限 → 可用 → 正常加载
+    const QByteArray withPermission = R"({
+        "manifestVersion":1,"id":"com.inject.ok","name":"有权限注入","version":"1.0.0",
+        "main":"main.qml","permissions":["clipboard.read"],"inject":["clipboard","settings"]
+    })";
+    install(QStringLiteral("com.inject.ok"), withPermission);
+
+    CHECK(mgr.discoverUnregistered() == 3);
+
+    mgr.setEnabled(QStringLiteral("com.inject.nope"), true);
+    CHECK(!loader.isLoaded(QStringLiteral("com.inject.nope")));
+    {
+        const auto entry = reg.get(QStringLiteral("com.inject.nope"));
+        CHECK(entry.has_value());
+        if (entry) {
+            CHECK(entry->problem.code == QStringLiteral("missing-service"));
+            CHECK(entry->problem.detail.contains(QStringLiteral("clipboard")));
+        }
+    }
+
+    mgr.setEnabled(QStringLiteral("com.inject.unknown"), true);
+    CHECK(!loader.isLoaded(QStringLiteral("com.inject.unknown")));
+    {
+        const auto entry = reg.get(QStringLiteral("com.inject.unknown"));
+        CHECK(entry.has_value());
+        if (entry) {
+            CHECK(entry->problem.code == QStringLiteral("missing-service"));
+            CHECK(entry->problem.detail.contains(QStringLiteral("telepathy")));
+        }
+    }
+
+    mgr.setEnabled(QStringLiteral("com.inject.ok"), true);
+    CHECK(loader.isLoaded(QStringLiteral("com.inject.ok")));
+}
+
+// ---------------------------------------------------------------------------
 // 示例插件：保证 examples/ 里的东西永远能装
 // ---------------------------------------------------------------------------
 
@@ -2993,6 +3186,8 @@ int main(int argc, char **argv)
     testLoaderUnloadAll();
     testCanaryFullApi();
     testExampleTextTools();
+    testExtensionServicesLifecycle();
+    testInjectGating();
 
     testManagerDiscovery();
     testManagerRows();

@@ -26,6 +26,8 @@ class PluginBridge : public QObject
     Q_PROPERTY(QVariantList availableList   READ availableList   NOTIFY listsChanged)
     Q_PROPERTY(QVariantList categories      READ categories      NOTIFY listsChanged)
     Q_PROPERTY(QVariantList navigationEntries READ navigationEntries NOTIFY navigationChanged)
+    /// 已加载插件贡献的命令（`commands` 扩展点的消费者）：[{pluginId,id,title,keyword}]
+    Q_PROPERTY(QVariantList commands READ commands NOTIFY listsChanged)
     Q_PROPERTY(bool         isOffline       READ isOffline       NOTIFY catalogChanged)
     Q_PROPERTY(QString      fetchedAtText   READ fetchedAtText   NOTIFY catalogChanged)
     Q_PROPERTY(bool         loading         READ loading         NOTIFY loadingChanged)
@@ -37,6 +39,7 @@ public:
     QVariantList availableList() const;
     QVariantList categories() const;
     QVariantList navigationEntries() const;
+    QVariantList commands() const;
     bool    isOffline() const;
     QString fetchedAtText() const;
     bool    loading() const { return m_loading; }
@@ -55,6 +58,9 @@ public:
     Q_INVOKABLE void setEnabled(const QString &id, bool enabled);
     Q_INVOKABLE void uninstall(const QString &id);
     Q_INVOKABLE void openPluginDir(const QString &id);
+
+    /// Run a command contributed by a loaded plugin. Failures surface as a toast.
+    Q_INVOKABLE bool runCommand(const QString &pluginId, const QString &commandId);
 
     /// Instantiate (cached) a plugin-contributed page and return the QQuickItem.
     /// Ownership stays in C++; QML reparents it into a slot and binds its size.
