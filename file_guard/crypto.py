@@ -671,6 +671,20 @@ def _dpapi_unprotect(data: bytes) -> bytes:
         kernel32.LocalFree(blob_out.pbData)
 
 
+def dpapi_protect(data: bytes) -> bytes:
+    """用当前 Windows 用户的 DPAPI 加密任意字节（供上层保险箱包裹 DEK 使用）。"""
+    if os.name != "nt":
+        raise UnsupportedPlatformError("DPAPI 仅 Windows 可用")
+    return _dpapi_protect(data)
+
+
+def dpapi_unprotect(data: bytes) -> bytes:
+    """DPAPI 解密；换用户/换机器会失败（这是该密钥绑定的预期语义）。"""
+    if os.name != "nt":
+        raise UnsupportedPlatformError("DPAPI 仅 Windows 可用")
+    return _dpapi_unprotect(data)
+
+
 # ---------------------------------------------------------------------------
 # 便捷函数：目录一键加密（设计稿"单文件/文件夹一键加密"）
 # ---------------------------------------------------------------------------

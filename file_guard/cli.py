@@ -56,6 +56,7 @@ from .crypto import (
 from .errors import FileGuardError, PasswordError, describe_os_error
 from .integrity import build_manifest, load_manifest, save_manifest, verify_manifest
 from .scan import SEVERITY_LABEL, SensitiveScanner
+from .vault import Vault
 from .watch import DirectoryWatcher, auto_backup_changes, auto_encrypt_idle
 
 PROG = "file_guard"
@@ -866,6 +867,147 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# 保险箱（DEK + 恢复码 + 文件名加密）
+# ---------------------------------------------------------------------------
+def _vault_for(cfg: Config) -> Vault:
+    return Vault(
+        cfg.home / "vault",
+        iterations=cfg.iterations,
+        log_iterations=cfg.log_iterations,
+        chunk_size=cfg.chunk_size,
+    )
+
+
+def _unlock_vault(args: argparse.Namespace, cfg: Config, vault: Vault) -> bytes:
+    """解锁顺序：--recovery-code / FG_RECOVERY_CODE → DPAPI 免密 → 交互口令。"""
+    code = getattr(args, "recovery_code", None) or os.environ.get("FG_RECOVERY_CODE")
+    if code:
+        return vault.unlock(recovery_code=code)
+    try:
+        return vault.unlock(use_dpapi=True)
+    except FileGuardError:
+        pass  # 没有 DPAPI 保险块，或换了 Windows 用户
+    password = resolve_password(args, cfg)
+    return vault.unlock(password=password)
+
+
+def cmd_vault(args: argparse.Namespace) -> int:
+    cfg = _load_config(args)
+    vault = _vault_for(cfg)
+    action = args.vault_action
+
+    if action == "init":
+        if vault.exists:
+            raise FileGuardError(f"保险箱已存在：{vault.directory}（如需重建请先手动移走）")
+        password = resolve_password(args, cfg, create=True, confirm=True, allow_vault=False)
+        info = vault.init(password, dpapi=not getattr(args, "no_dpapi", False))
+        text = (
+            f"保险箱已创建：{info['directory']}\n"
+            f"DPAPI 免密解锁：{'已启用' if info['dpapi'] else '未启用'}\n\n"
+            f"恢复码（只显示这一次，请抄到离线位置）：\n  {info['recovery_code']}\n\n"
+            "注意：恢复码等于第二把钥匙——泄露它等于泄露保险箱；"
+            "丢失恢复码且忘记口令，数据将无法恢复（本模块不设后门）。"
+        )
+        _emit(args, info, text)
+        return 0
+
+    if not vault.exists:
+        raise FileGuardError(f"保险箱不存在：{vault.directory}（先运行 file_guard vault init）")
+
+    if action == "info":
+        # 能免密就免密（DPAPI）；解不开也不打扰用户，只是文件数显示为 0
+        try:
+            vault.unlock(use_dpapi=True)
+        except FileGuardError:
+            pass
+        payload = vault.info()
+        _emit(args, payload, json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+
+    if action == "add":
+        _unlock_vault(args, cfg, vault)
+        results = []
+        for raw in args.paths:
+            item = vault.add_file(
+                raw,
+                note=getattr(args, "note", ""),
+                remove_source=bool(getattr(args, "remove_source", False)),
+            )
+            results.append(item)
+            if not args.json and not args.quiet:
+                extra = "（源文件已删除）" if item["removed_source"] else ""
+                print(f"[OK] 已放入保险箱：{item['name']} -> {item['container']}"
+                      f"（{_human_size(item['size'])}）{extra}")
+        _emit(args, {"results": results}, f"完成：{len(results)} 个文件已放入保险箱")
+        return 0
+
+    if action == "list":
+        _unlock_vault(args, cfg, vault)
+        files = vault.list_files()
+        if args.json:
+            print(json.dumps(files, ensure_ascii=False, indent=2))
+        elif not args.quiet:
+            if not files:
+                print("保险箱为空")
+            for index, item in enumerate(files, 1):
+                note = f"  # {item['note']}" if item.get("note") else ""
+                print(f"{index:>3}. {item['name']:<36} {_human_size(item['size']):>9}  "
+                      f"{item['ts']}{note}")
+        return 0
+
+    if action == "extract":
+        _unlock_vault(args, cfg, vault)
+        result = vault.extract(
+            args.target,
+            dest_dir=getattr(args, "out", None),
+            overwrite=bool(getattr(args, "force", False)),
+        )
+        _emit(args, result, f"[OK] 已取出 {result['name']} -> {result['restored_to']}")
+        return 0
+
+    if action == "verify":
+        _unlock_vault(args, cfg, vault)
+        result = vault.verify(full=not bool(getattr(args, "quick", False)))
+        text = (
+            ("[OK] 保险箱校验通过" if result["ok"] else "[X] 保险箱校验失败")
+            + f"：清单 {result['files']} 个文件，解密校验 {result['checked']} 个"
+            + ("\n  " + "\n  ".join(result["problems"]) if result["problems"] else "")
+        )
+        _emit(args, result, text)
+        return 0 if result["ok"] else 5
+
+    if action == "passwd":
+        old_password = resolve_password(args, cfg)
+        new_password = args.new_password or os.environ.get("FG_NEW_PASSWORD")
+        if not new_password:
+            if not sys.stdin.isatty():
+                raise PasswordError("非交互环境：请用 --new-password 或 FG_NEW_PASSWORD 提供新口令")
+            new_password = getpass.getpass("请输入新的保险箱口令：")
+            again = getpass.getpass("请再次输入新口令：")
+            if new_password != again:
+                raise PasswordError("两次输入的新口令不一致")
+        result = vault.change_password(old_password, new_password)
+        _emit(
+            args,
+            result,
+            "[OK] 保险箱口令已轮换（只重新包裹 DEK，容器与名称清单没有重加密）",
+        )
+        return 0
+
+    if action == "recovery":
+        password = resolve_password(args, cfg)
+        code = vault.show_recovery_code(password)
+        _emit(
+            args,
+            {"recovery_code": code},
+            f"恢复码：\n  {code}\n\n注意：恢复码等于第二把钥匙，请离线保存；泄露它等于泄露保险箱。",
+        )
+        return 0
+
+    raise FileGuardError(f"未知的 vault 子命令：{action}")
+
+
+# ---------------------------------------------------------------------------
 # argparse
 # ---------------------------------------------------------------------------
 def _common() -> argparse.ArgumentParser:
@@ -1014,6 +1156,40 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("doctor", parents=[common],
                        help="一键自检：数据目录/审计链/备份索引/完整性/磁盘/token")
     p.set_defaults(func=cmd_doctor)
+
+    p = sub.add_parser("vault", parents=[common],
+                       help="保险箱：DEK + 恢复码 + 文件名加密（vault init/add/list/extract/verify/passwd）")
+    vsub = p.add_subparsers(dest="vault_action", required=True)
+    q = vsub.add_parser("init", parents=[common], help="创建保险箱并生成恢复码")
+    q.add_argument("--no-dpapi", action="store_true", help="不启用 DPAPI 免密解锁")
+    q.set_defaults(func=cmd_vault)
+    q = vsub.add_parser("add", parents=[common], help="把文件加密放进保险箱（容器名随机）")
+    q.add_argument("paths", nargs="+")
+    q.add_argument("--remove-source", action="store_true", help="放入成功后删除源文件")
+    q.add_argument("--note", default="", help="给文件加一条备注")
+    q.add_argument("--recovery-code", help="用恢复码解锁（默认口令 / DPAPI）")
+    q.set_defaults(func=cmd_vault)
+    q = vsub.add_parser("list", parents=[common], help="列出保险箱里的文件（原文件名仅解密可见）")
+    q.add_argument("--recovery-code")
+    q.set_defaults(func=cmd_vault)
+    q = vsub.add_parser("extract", parents=[common], help="取出文件并还原原文件名")
+    q.add_argument("target", help="序号（1 起）/ 容器名 / 原文件名")
+    q.add_argument("-o", "--out", help="输出目录（默认 <保险箱>/restored）")
+    q.add_argument("--force", action="store_true", help="覆盖已存在的目标文件")
+    q.add_argument("--recovery-code")
+    q.set_defaults(func=cmd_vault)
+    q = vsub.add_parser("verify", parents=[common], help="校验名称清单哈希链 + 逐个解密容器")
+    q.add_argument("--quick", action="store_true", help="只校验清单链，不解密容器")
+    q.add_argument("--recovery-code")
+    q.set_defaults(func=cmd_vault)
+    q = vsub.add_parser("passwd", parents=[common], help="轮换口令（只重包 DEK，容器不重加密）")
+    q.add_argument("--new-password")
+    q.add_argument("--recovery-code", help="忘记旧口令时用恢复码轮换")
+    q.set_defaults(func=cmd_vault)
+    q = vsub.add_parser("recovery", parents=[common], help="凭口令重新展示恢复码")
+    q.set_defaults(func=cmd_vault)
+    q = vsub.add_parser("info", parents=[common], help="查看保险箱信息")
+    q.set_defaults(func=cmd_vault)
 
     p = sub.add_parser("serve", parents=[common], help="启动本地 HTTP 服务供桌面助手调用")
     p.add_argument("--host", default="127.0.0.1", help="监听地址（默认只允许回环地址）")

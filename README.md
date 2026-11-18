@@ -47,6 +47,13 @@ python -m file_guard doctor
 
 # 9) 监听目录：改动自动增量备份（可选再加 --auto-encrypt 30 做空闲自动加密）
 python -m file_guard watch "合同.docx" --auto-backup
+
+# 10) 保险箱：DEK + 恢复码 + 文件名加密（v0.6 新增，容器的文件名不泄露原文）
+python -m file_guard vault init                       # 生成恢复码（只显示一次）
+python -m file_guard vault add "合同.docx"            # 容器名随机，原名只存加密清单
+python -m file_guard vault list
+python -m file_guard vault extract 1 -o D:\恢复
+python -m file_guard vault passwd --new-password "..."  # 只重包 DEK，容器不重加密
 ```
 
 密码来源优先级：`--password` > `--keyfile` > 环境变量 `FG_PASSWORD` > Windows DPAPI 密码保险箱 > 交互输入。
@@ -63,6 +70,7 @@ python examples/demo.py
 file_guard/
 ├─ file_guard/
 │  ├─ crypto.py      # 底层安全层：PBKDF2 + AES-256-GCM 分块容器 + 密钥文件 + DPAPI 保险箱
+│  ├─ vault.py       # 保险箱：DEK 模型 + 恢复码 + 名称加密 + 口令轮换（v0.6 新增）
 │  ├─ scan.py        # 业务层：敏感文件检测（身份证/银行卡/手机号/合同/密钥/涉密标记）
 │  ├─ audit.py       # 业务层：逐条加密 + HMAC 哈希链审计日志（v2：逐条随机 nonce + meta 签名）
 │  ├─ backup.py      # 业务层：内容寻址增量加密备份、版本回滚、完整性校验
@@ -72,7 +80,7 @@ file_guard/
 │  ├─ service.py     # 本地 HTTP JSON-RPC 服务（独立进程，松耦合，回环 + token + Host/Origin 校验）
 │  ├─ cli.py         # 命令行 / 右键菜单 / 主程序子进程调用入口
 │  └─ config.py      # 目录布局与参数（带类型/范围校验）
-├─ tests/            # 142 个 unittest（含安全评审回归 test_security.py + 新能力 test_extras.py）
+├─ tests/            # 160 个 unittest（含安全评审回归、新能力、保险箱 test_vault.py）
 ├─ examples/demo.py  # 无依赖也能看的完整演示（需要本目录做 sys.path）
 ├─ scripts/install-context-menu.ps1   # Windows 右键菜单注册脚本（需手动执行）
 ├─ scripts/run_acceptance.py          # 临时验收脚本：不接主程序，整链路跑一遍并出报告
@@ -82,6 +90,7 @@ file_guard/
 ├─ docs/安全评审与加固.md              # 安全评审报告：问题清单 / 影响 / 修复 / 残余风险
 ├─ docs/框架临时验证报告.md            # 上次临时验收的结果（52 项，含耗时与人工确认项）
 ├─ docs/代码讲解提纲.md                # 怎么讲这套代码：5/15/30 分钟讲法 + 演示脚本 + Q&A
+├─ docs/保险箱-名称加密与恢复码.md      # DEK/恢复码/名称加密的设计、CLI、API、安全边界
 ├─ docs/多用户与冲突处理报告.md        # 两个用户改同一文件：权限边界 / 冲突保护 / 版本 diff
 ├─ docs/兼容性与体验优化报告.md        # 跨机还原 / 进度 / 友好错误 / 云盘占位兼容
 ├─ docs/运行截图/                      # 真实运行效果截图（PNG）+ 原始输出（TXT）+ 重出图说明
@@ -103,6 +112,7 @@ file_guard/
 | 多用户冲突保护 | `backup.restore(allow_conflict=...)`、`restore --allow-conflict` | 还原前检测目标是否被他人改过且未入档：默认拒绝并自动快照当前内容，确认后才覆盖 |
 | 备份版本差异 | `backup.diff`、`backup diff`、RPC `backup.diff` | 比较两个版本：文本给 unified diff，二进制/超大文件只报大小+哈希，可定位"改了哪些内容" |
 | 跨机/异地还原 | `restore --dest-root`、`--strip-prefix` | 旧机器绝对路径映射到新根目录，配合备份库整体拷贝即可异地恢复 |
+| 保险箱（名称加密 + 恢复码） | `vault.py`、`file_guard vault *` | DEK 模型（DPAPI 包裹）+ 恢复码 + 随机容器名 + 加密名称清单；改口令只重包 DEK，容器不重加密 |
 | 云盘占位兼容 | `fsutil.is_cloud_placeholder`、`scan --include-cloud` | 默认跳过 OneDrive「仅在线」文件正文，避免扫描触发大规模云端下载 |
 | 长任务不阻塞 UI/主程序 | `service.JobManager`（`job.submit/status/cancel/list`） | 扫描/备份可丢后台线程，轮询进度；扫描可中途取消；同时最多 4 个任务 |
 | 装好先自检 | `cli doctor` | 一次检查数据目录、审计链、备份索引、模块完整性、磁盘、token，输出 JSON 便于主程序展示 |
@@ -170,12 +180,13 @@ curl -X POST http://127.0.0.1:8765/rpc ^
 
 ```bash
 python -m unittest discover -s tests -v
-# Ran 142 tests ... OK (skipped=1)
+# Ran 160 tests ... OK (skipped=1)
 ```
 
 覆盖：AES-GCM 往返/篡改/截断/错误密码/原子写、日志链篡改与并发追加、扫描规则与误报、备份去重与版本回滚、DPAPI、HTTP 鉴权与 RPC、CLI 端到端，
 `tests/test_security.py` 里的 33 条安全回归（nonce 复用、目录联结越界、zip 炸弹、恶意索引路径、回滚/篡改检测、Host/Origin 校验等），
-以及 `tests/test_extras.py` 的新能力用例（统一社会信用代码校验、监听自动备份、服务异步任务、doctor 自检）。
+以及 `tests/test_extras.py` 的新能力用例（统一社会信用代码校验、监听自动备份、服务异步任务、doctor 自检），
+和 `tests/test_vault.py` 的保险箱用例（名称加密、恢复码、DPAPI 免密、口令轮换、清单/容器篡改检出）。
 最后 1 条跳过的是符号链接用例（当前账户未开开发者模式；目录联结用例可正常运行）。
 
 ### 6.1 临时验收（不接主程序，确认框架）
