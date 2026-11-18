@@ -17,7 +17,9 @@ class QSqlDatabase;
 /// schema 版本：
 ///  - v1 = §3.5 的三张表（dirs / files / roots）+ 两个索引；
 ///  - v2 = 治理字段增补（`cat_mask` / `flags` / `root_id` / `origin_id`）+ `idx_files_sizemtime`
-///    —— 这是迁移框架的第一个真实用例，**A3 就要跑通**，不等"以后需要再加"。
+///    —— 这是迁移框架的第一个真实用例，**A3 就要跑通**，不等"以后需要再加"；
+///  - v3 = `dirs.mtime`（2026-11-19）：目录 mtime 是"这棵子树有没有变"的唯一廉价判据，
+///    增量扫描靠它把每次启动的全量枚举降到"每个目录一次 stat"。
 ///
 /// ⚠️ **线程亲和**：`QSqlDatabase` 的连接属于创建它的线程，所以 `open()` / `close()`
 /// 必须**在同一个线程内成对调用**。当前由扫描 worker 线程持有（见 `FileIndex.cpp`）——
@@ -36,6 +38,13 @@ public:
         uint8_t  flags    = 0;   ///< FileFlags 位（v2 列）
         uint16_t rootId   = 0;   ///< 扫描根序号（v2 列）
         uint16_t originId = 0;   ///< 来源（Phase C 的下载 box；当前恒 0）
+    };
+
+    /// 目录行（v3）：增量扫描用它判断"这棵子树要不要重新枚举"。
+    struct DirRow
+    {
+        QString path;
+        qint64  mtime = 0;   ///< Unix 秒；0 = 还没 stamp 过（首次增量时必然判脏）
     };
 
     /// 三方差集（§3.5）：`diskSet` vs `dbSet`，交集内按 `(size, mtime)` 判 changed。
@@ -64,6 +73,16 @@ public:
 
     QVector<FileRow> loadAll() const;
     int rowCount() const;
+
+    /// v3：全部目录 + 上次 stamp 的 mtime（增量扫描的输入）。
+    QVector<DirRow> loadDirs() const;
+
+    /// v3：批量写回目录 mtime（单事务）。路径不存在时插入，存在则更新。
+    bool stampDirMtimes(const QHash<QString, qint64> &mtimes);
+
+    /// roots 表里最近一次扫描时间（没有记录时返回 0）。
+    /// 24h 策略靠它判断"这次启动要不要真的扫"。
+    qint64 lastScanAt() const;
 
     /// 写入差集：**单事务 + 批量**，每 1000 条一行批（避免 WAL 无限膨胀）。
     bool applyDiff(const Diff &diff);

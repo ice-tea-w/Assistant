@@ -205,8 +205,8 @@ int runMigrate()
 
         q.exec(QStringLiteral("PRAGMA user_version"));
         q.next();
-        report(q.value(0).toInt() == 2,
-               QStringLiteral("user_version == 2（实际 %1）").arg(q.value(0).toInt()));
+        report(q.value(0).toInt() == 3,
+               QStringLiteral("user_version == 3（实际 %1）").arg(q.value(0).toInt()));
 
         QStringList columns;
         q.exec(QStringLiteral("PRAGMA table_info(files)"));
@@ -218,6 +218,14 @@ int runMigrate()
         }
         report(columns.contains(QStringLiteral("frecency")),
                QStringLiteral("原有列没被重建掉（frecency）"));
+
+        // v3：目录 mtime（增量扫描判据）
+        QStringList dirColumns;
+        q.exec(QStringLiteral("PRAGMA table_info(dirs)"));
+        while (q.next())
+            dirColumns << q.value(1).toString();
+        report(dirColumns.contains(QStringLiteral("mtime")),
+               QStringLiteral("v3：dirs.mtime 存在"));
 
         QStringList indexes;
         q.exec(QStringLiteral("PRAGMA index_list(files)"));

@@ -35,6 +35,10 @@ public:
     Q_INVOKABLE void toggleWindow();
     Q_INVOKABLE void openMainPanel();
 
+    /// 设置页「重建文件索引」：忽略 24h 与空闲闸门，立刻全量扫一次。
+    /// 扫完照常发 `indexReady`，界面上的条目数会自己更新。
+    Q_INVOKABLE void rebuildFileIndex();
+
     /// Set the history database (owned by main; AppBridge does not take ownership).
     void setHistoryDatabase(HistoryDatabase *db);
 

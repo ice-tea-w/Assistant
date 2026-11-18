@@ -374,6 +374,17 @@ void AppBridge::setHistoryDatabase(HistoryDatabase *db)
     m_historyDb = db;
 }
 
+void AppBridge::rebuildFileIndex()
+{
+    if (!m_fileIndex) {
+        Logger::get().warn("AppBridge: 重建索引被忽略（没有文件索引）");
+        return;
+    }
+    Logger::get().info("AppBridge: 用户请求重建文件索引（全量，忽略 24h 阈值）");
+    setStatus(QStringLiteral("正在重建文件索引…"));
+    m_fileIndex->rebuild();
+}
+
 void AppBridge::setFileIndex(FileIndex *index)
 {
     m_fileIndex = index;

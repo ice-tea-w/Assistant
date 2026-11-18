@@ -351,6 +351,8 @@ int main(int argc, char *argv[])
     // 常驻主面板：独立 engine，初始隐藏，由 🏠 按钮 / 托盘菜单触发显示。
     QQmlApplicationEngine panelEngine;
     panelEngine.rootContext()->setContextProperty("config", &config);
+    // 主面板也要用 backend：设置页「重建文件索引」是 AppBridge 的 Q_INVOKABLE
+    panelEngine.rootContext()->setContextProperty("backend", &backend);
     panelEngine.rootContext()->setContextProperty("panel", &panel);
     panelEngine.rootContext()->setContextProperty("sync", &syncBridge);
     panelEngine.rootContext()->setContextProperty("inbox", &inboxBridge);

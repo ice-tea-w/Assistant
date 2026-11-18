@@ -103,6 +103,18 @@ bool migrateToV2(QSqlDatabase &db)
     return true;
 }
 
+/// v2 → v3：目录 mtime（增量扫描的判据）
+bool migrateToV3(QSqlDatabase &db)
+{
+    QString err;
+
+    // 只加列：旧行 mtime = 0，第一次增量会把它当成"脏"，扫一次就 stamp 上来。
+    if (!execSql(db, QStringLiteral("ALTER TABLE dirs ADD COLUMN mtime INTEGER NOT NULL DEFAULT 0"), &err))
+        return false;
+
+    return true;
+}
+
 } // namespace
 
 FileIndexDatabase::FileIndexDatabase(QString connectionName)
@@ -184,6 +196,7 @@ bool FileIndexDatabase::ensureSchema()
     DatabaseMigrator migrator(QStringLiteral("file_index"), {
         { 1, QStringLiteral("建 dirs/files/roots 与两个索引"), &createSchemaV1 },
         { 2, QStringLiteral("加 cat_mask/flags/root_id/origin_id + idx_files_sizemtime"), &migrateToV2 },
+        { 3, QStringLiteral("dirs 加 mtime（增量扫描判据）"), &migrateToV3 },
     });
 
     if (migrator.run(*m_db))
@@ -231,6 +244,92 @@ int FileIndexDatabase::rowCount() const
     if (!q.exec(QStringLiteral("SELECT COUNT(*) FROM files")) || !q.next())
         return 0;
     return q.value(0).toInt();
+}
+
+QVector<FileIndexDatabase::DirRow> FileIndexDatabase::loadDirs() const
+{
+    QVector<DirRow> rows;
+    if (!isOpen())
+        return rows;
+
+    QSqlQuery q(*m_db);
+    if (!q.exec(QStringLiteral("SELECT path, mtime FROM dirs"))) {
+        Logger::get().warn("FileIndexDatabase: loadDirs 失败 — {}",
+                           q.lastError().text().toStdString());
+        return rows;
+    }
+
+    while (q.next()) {
+        DirRow row;
+        row.path  = q.value(0).toString();
+        row.mtime = q.value(1).toLongLong();
+        rows.append(std::move(row));
+    }
+    return rows;
+}
+
+bool FileIndexDatabase::stampDirMtimes(const QHash<QString, qint64> &mtimes)
+{
+    if (!isOpen() || mtimes.isEmpty())
+        return true;
+
+    // 一条 UPSERT 兼顾"新目录插入"与"已存在目录更新"：
+    // 增量扫描可能发现库里还没有的目录（旧库残留 / 首次 stamp），所以不能只 UPDATE。
+    QSqlQuery q(*m_db);
+    if (!q.prepare(QStringLiteral(
+            "INSERT INTO dirs(path, mtime) VALUES(:p, :m) "
+            "ON CONFLICT(path) DO UPDATE SET mtime = :m"))) {
+        m_lastError = q.lastError().text();
+        return false;
+    }
+
+    if (!m_db->transaction()) {
+        m_lastError = m_db->lastError().text();
+        return false;
+    }
+
+    int inBatch = 0;
+    for (auto it = mtimes.constBegin(); it != mtimes.constEnd(); ++it) {
+        q.bindValue(QStringLiteral(":p"), it.key());
+        q.bindValue(QStringLiteral(":m"), it.value());
+        if (!q.exec()) {
+            m_lastError = q.lastError().text();
+            m_db->rollback();
+            return false;
+        }
+        if (++inBatch >= 1000) {
+            if (!m_db->commit()) {
+                m_lastError = m_db->lastError().text();
+                m_db->rollback();
+                return false;
+            }
+            if (!m_db->transaction()) {
+                m_lastError = m_db->lastError().text();
+                return false;
+            }
+            inBatch = 0;
+        }
+    }
+
+    if (!m_db->commit()) {
+        m_lastError = m_db->lastError().text();
+        m_db->rollback();
+        return false;
+    }
+    return true;
+}
+
+qint64 FileIndexDatabase::lastScanAt() const
+{
+    if (!isOpen())
+        return 0;
+
+    QSqlQuery q(*m_db);
+    if (!q.exec(QStringLiteral("SELECT MAX(last_scan) FROM roots")) || !q.next())
+        return 0;
+    if (q.value(0).isNull())
+        return 0;
+    return q.value(0).toLongLong();
 }
 
 void FileIndexDatabase::preloadDirIds()

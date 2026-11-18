@@ -240,6 +240,17 @@ Rectangle {
                     }
                 }
 
+                // 2026-11-19：平时启动不再全量扫盘（24h + 空闲闸门 + 目录 mtime 增量），
+                // 所以必须有一个"我现在就要最新的"出口。
+                Button {
+                    text: "重建索引"
+
+                    onClicked: {
+                        backend.rebuildFileIndex()
+                        settingsPage.fileStatus = "已开始重建（全量扫描；期间仍可用旧索引搜索）"
+                    }
+                }
+
                 Text {
                     text: settingsPage.fileStatus
                     color: mutedColor

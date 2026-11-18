@@ -449,7 +449,11 @@ void TestFileGovernance::kindFilterAppliesAtQueryTime()
 
     FileIndex index;
     index.setRoots({dir.path()});
-    index.setDatabasePath(dir.path() + "/file_index.db");
+    // DB 放在被扫目录之外：索引自己的 WAL 文件也是文件，放在里面会被扫进快照
+    // （2026-11-19 起校正扫描是延后触发的，DB 一定已经建好，必然被看到）
+    QTemporaryDir dbDir;
+    QVERIFY(dbDir.isValid());
+    index.setDatabasePath(dbDir.path() + "/file_index.db");
     index.startAsync();
 
     QTRY_VERIFY_WITH_TIMEOUT(index.isReady(), 15000);

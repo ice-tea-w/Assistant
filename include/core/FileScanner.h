@@ -48,6 +48,12 @@ struct Options
     const ExcludeRuleSet *rules = nullptr;
     /// Phase B：给每个文件打 `catMask`。为空则 `catMask = 0`（未归类）。
     const FileClassifier *classifier = nullptr;
+
+    /// 可选输出：这次真的打开过的目录（普通形式）。
+    ///
+    /// 增量扫描用它给**每一个**目录 stamp mtime —— 只 stamp "有文件的目录"会让
+    /// 空目录永远停在 mtime=0，下次必然判脏，增量就退化成每次全扫。
+    QVector<QString> *visitedDirs = nullptr;
 };
 
 struct Entry

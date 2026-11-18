@@ -52,10 +52,22 @@ public:
 
     /// 启动索引：**立即返回**，扫描在 worker 线程进行，扫完原子发布快照。
     /// 重复调用（含扫描期间调用）安全：扫描中再调会记一个"待重扫"。
+    ///
+    /// 2026-11-19 起的校正策略：冷启动先把 DB 快照发布出去（立即可查），
+    /// 然后**只在距上次扫描满 24 小时、且用户空闲时**跑一次增量校正
+    /// （逐目录 stat mtime，只重扫变了的子树）。不足 24h 时一条都不枚举。
     void startAsync();
 
-    /// 手动重建（配置变更后）。当前等价于 startAsync()。
+    /// 采集规则/根目录变更后的重扫（**强制全量**，不等 24h、不看空闲）。
     void refresh();
+
+    /// 设置页「重建索引」：忽略 24h 与空闲判断，立刻全量扫一次。
+    /// 与 `refresh()` 的区别只是"不排队等当前扫描"的语义更直接。
+    void rebuild();
+
+    /// 测试/验收用：关掉"等用户空闲再扫"的闸门（24h 策略仍然生效）。
+    /// 生产路径不要关 —— 它就是为了不跟用户抢磁盘。
+    void setScanDeferEnabled(bool enabled);
 
     /// 查询当前快照，返回至多 @p limit 条文件结果（best first）。
     /// 空查询/索引未就绪时返回空 —— 文件**从不**出现在空查询的默认列表里。
@@ -127,11 +139,20 @@ signals:
     /// 消费者可以立刻查询；扫描完成后会再发一次 `indexReady`。
     void cacheLoaded(int entries, qint64 ms);
 
+    /// 本轮**没有**扫描（24h 内 / 目录全未变）：缓存快照继续有效，`indexReady` 仍会发。
+    void scanSkipped(const QString &reason);
+
     void indexStateChanged();
 
 private:
     void onScanFinished();
-    void startScan();
+    void startScan(bool forceFull);
+
+    /// 24h + 空闲双闸门：决定"现在扫不扫"，不满足就定时回来看。
+    void scheduleAutoScan();
+    void tryStartScheduledScan();
+    /// 单发定时器的懒创建（闸门重试与"明天再来"共用）
+    QTimer *ensureScanTimer();
 
     /// 在 GUI 线程收批；必要时抛给一次性线程做补丁。
     void startColdLoad();
@@ -150,8 +171,15 @@ private:
     bool   m_scanning       = false;
     bool   m_pendingRefresh = false;
     qint64 m_msLastScan     = 0;
+    qint64 m_lastScanAt     = 0;   ///< roots.last_scan（冷启动时读，供 24h 闸门判定）
     int    m_entryLimit     = 0;   ///< 0 = 用 §3.3 的默认硬上限
     int    m_dbRows         = 0;
+
+    // ---- 校正调度（24h + 空闲）----
+    QTimer *m_scanTimer       = nullptr;  ///< 空闲闸门的重试定时器（单发）
+    bool    m_pendingScanForce = false;   ///< 下一轮要跑全量（rebuild/refresh）
+    bool    m_scanDefer        = true;    ///< 是否启用"等空闲"闸门（测试会关掉）
+    qint64  m_scanWaitMs      = 0;        ///< 已经等空闲等了多久（兜底上限用）
 
     // ---- A5b 增量 ----
     QStringList                m_roots;

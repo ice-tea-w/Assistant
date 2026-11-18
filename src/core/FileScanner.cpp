@@ -324,6 +324,8 @@ Stats scan(const QStringList &roots,
         }
 
         ++stats.dirsVisited;
+        if (options.visitedDirs)
+            options.visitedDirs->append(rootNormal);
         stack.push_back(std::move(rootFrame));
 
         while (!stack.empty()) {
@@ -391,6 +393,8 @@ Stats scan(const QStringList &roots,
                 }
 
                 ++stats.dirsVisited;
+                if (options.visitedDirs)
+                    options.visitedDirs->append(childNormal);
                 stack.push_back(std::move(child));
                 continue;
             }
