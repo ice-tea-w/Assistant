@@ -1,0 +1,45 @@
+$ python -m file_guard init --home .\tmp\home --no-vault --iterations 1000
+初始化完成：.\tmp\home
+密码保险箱：未启用
+
+$ python -m file_guard info .\tmp\合同.docx.fgc
+{
+  "version": 1,
+  "iterations": 1000,
+  "chunk_size": 1048576,
+  "plaintext_size": 37546,
+  "flags": 0,
+  "file": "E:\\PyCharm 2026.2.3\\projects\\file_guard\\fg-shots-dzoq32vn\\合同.docx.fgc",
+  "file_size": 37642
+}
+
+$ python -m file_guard verify .\tmp\合同.docx.fgc --home .\tmp\home
+校验通过：.\tmp\合同.docx.fgc（sha256=9cd0ddc11786dd595abed9421cccd34a9989261ffc020fccf0cf0c33495ac5ca）
+
+$ python -m file_guard scan 合同.docx --home .\tmp\home --min-risk medium
+扫描完成：1 个文件，用时 0.0s，跳过 0 个
+风险分布：高危 0 / 中危 1 / 低危 0 / 无风险 0
+
+风险文件（按分值排序，最多显示 20 条）：
+  [中]  41  合同.docx  —— 手机号、文件名含“合同”、涉密/内部标记、邮箱地址
+
+$ python -m file_guard log list --limit 5 --home .\tmp\home
+2026-10-29T16:37:18+08:00  encrypt  合同.docx
+    生成 .\tmp\合同.docx.fgc
+2026-10-29T16:37:19+08:00  settings -
+    初始化文件安全模块
+2026-10-29T16:37:19+08:00  scan     -
+    扫描 1 个文件，高危 0 个
+
+$ python -m file_guard log verify --home .\tmp\home
+[OK] 日志完整性校验通过：3 条，链头 19b629a12bc5561c...
+
+$ python -m file_guard backup add .\tmp\note.txt --home .\tmp\home
+[OK] 已备份 .\tmp\note.txt -> 版本 1（44.0B）
+完成：备份 1 项，跳过 0 项
+
+$ python -m file_guard backup list .\tmp\note.txt --home .\tmp\home
+v1   2026-10-29T16:37:20+08:00      44.0B  499a0b8b947c...  .\tmp\note.txt
+
+$ python -m file_guard backup restore .\tmp\note.txt --dest .\tmp\note-还原.txt --home .\tmp\home
+[OK] 已还原 .\tmp\note.txt（版本 1）-> .\tmp\note-还原.txt
