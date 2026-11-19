@@ -100,6 +100,7 @@ SyncEngine::SyncEngine(QObject *parent)
 
 void SyncEngine::setDatabase(SyncDatabase *db)            { m_db = db; }
 void SyncEngine::setDeviceName(const QString &name)       { m_deviceName = name; }
+void SyncEngine::setBaselineDevice(const QString &deviceId) { m_baselineDevice = deviceId; }
 void SyncEngine::setTransports(const QList<std::shared_ptr<ITransport>> &list) { m_transports = list; }
 
 void SyncEngine::setRoots(const QList<SyncRoot> &roots)
@@ -261,7 +262,7 @@ SyncResult SyncEngine::sync()
 
     // 2. 拉对端清单
     const QList<RemoteFileInfo> remoteList = channel->listRemote();
-    const QList<QString> baselinePaths = m_db->allBaselinePaths();
+    const QList<QString> baselinePaths = m_db->allBaselinePaths(m_baselineDevice);
 
     if (remoteList.isEmpty() && !baselinePaths.isEmpty()) {
         // 安全阀：清单为空但本地有基线。正常含义是"对端删光了"，但更常见的原因是
@@ -329,7 +330,7 @@ SyncResult SyncEngine::sync()
 
         const FileState L = local.value(relPath, FileState{});
         FileState S;
-        if (const std::optional<FileState> b = m_db->baseline(relPath))
+        if (const std::optional<FileState> b = m_db->baseline(relPath, m_baselineDevice))
             S = *b;
         FileState R = remote.value(relPath, FileState{});
 
@@ -365,7 +366,7 @@ SyncResult SyncEngine::sync()
             const QString abs = localAbsFor(relPath);
             if (!abs.isEmpty() && channel->push(abs, relPath)) {
                 freshValid = false;
-                m_db->upsertBaseline(relPath, L, now, QStringLiteral("push"));
+                m_db->upsertBaseline(relPath, L, now, QStringLiteral("push"), m_baselineDevice);
                 ++result.uploaded;
                 result.bytesMoved += qMax<qint64>(L.size, 0);
                 emit fileHandled(relPath, QStringLiteral("upload"));
@@ -382,7 +383,7 @@ SyncResult SyncEngine::sync()
                 FileState got = R;
                 got.size  = fi.size();
                 got.mtime = fi.lastModified().toSecsSinceEpoch();
-                m_db->upsertBaseline(relPath, got, now, QStringLiteral("pull"));
+                m_db->upsertBaseline(relPath, got, now, QStringLiteral("pull"), m_baselineDevice);
                 ++result.downloaded;
                 result.bytesMoved += qMax<qint64>(got.size, 0);
                 emit fileHandled(relPath, QStringLiteral("download"));
@@ -394,9 +395,9 @@ SyncResult SyncEngine::sync()
 
         case SyncAction::UpdateBaseline: {
             if (L.exists())
-                m_db->upsertBaseline(relPath, L, now, QStringLiteral("push"));
+                m_db->upsertBaseline(relPath, L, now, QStringLiteral("push"), m_baselineDevice);
             else
-                m_db->removeBaseline(relPath);
+                m_db->removeBaseline(relPath, m_baselineDevice);
             emit fileHandled(relPath, QStringLiteral("skip"));
             break;
         }
@@ -411,7 +412,7 @@ SyncResult SyncEngine::sync()
                 ++result.failed;
                 break;
             }
-            m_db->removeBaseline(relPath);
+            m_db->removeBaseline(relPath, m_baselineDevice);
             ++result.deleted;
             emit fileHandled(relPath, QStringLiteral("delete"));
             break;
@@ -420,7 +421,7 @@ SyncResult SyncEngine::sync()
         case SyncAction::DeleteRemote: {
             if (channel->removeRemote(relPath)) {
                 freshValid = false;
-                m_db->removeBaseline(relPath);
+                m_db->removeBaseline(relPath, m_baselineDevice);
                 ++result.deleted;
                 emit fileHandled(relPath, QStringLiteral("delete"));
             } else {
@@ -441,7 +442,7 @@ SyncResult SyncEngine::sync()
             if (L.exists() && !R.exists()) {
                 if (channel->push(localAbs, relPath)) {
                     freshValid = false;
-                    m_db->upsertBaseline(relPath, L, now, QStringLiteral("push"));
+                    m_db->upsertBaseline(relPath, L, now, QStringLiteral("push"), m_baselineDevice);
                     ++result.uploaded;
                     emit fileHandled(relPath, QStringLiteral("conflict"));
                 } else {
@@ -452,7 +453,7 @@ SyncResult SyncEngine::sync()
             if (!L.exists() && R.exists()) {
                 const QString dest = localAbsFor(relPath);
                 if (!dest.isEmpty() && channel->fetch(relPath, dest)) {
-                    m_db->upsertBaseline(relPath, R, now, QStringLiteral("pull"));
+                    m_db->upsertBaseline(relPath, R, now, QStringLiteral("pull"), m_baselineDevice);
                     ++result.downloaded;
                     emit fileHandled(relPath, QStringLiteral("conflict"));
                 } else {
@@ -478,14 +479,14 @@ SyncResult SyncEngine::sync()
                 // 少了后一步，下一轮会判成"对端又改了"把胜者覆盖掉。
                 if (channel->fetch(relPath, copyAbs) && channel->push(localAbs, relPath)) {
                     freshValid = false;
-                    m_db->upsertBaseline(relPath, L, now, QStringLiteral("push"));
+                    m_db->upsertBaseline(relPath, L, now, QStringLiteral("push"), m_baselineDevice);
                     ++result.uploaded;
                     ok = true;
                 }
             } else {
                 QFile::remove(copyAbs);
                 if (QFile::copy(localAbs, copyAbs) && channel->fetch(relPath, localAbs)) {
-                    m_db->upsertBaseline(relPath, R, now, QStringLiteral("pull"));
+                    m_db->upsertBaseline(relPath, R, now, QStringLiteral("pull"), m_baselineDevice);
                     ++result.downloaded;
                     ok = true;
                 }

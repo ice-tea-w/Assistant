@@ -58,6 +58,8 @@ public:
     void setRoots(const QList<SyncRoot> &roots);
     void setLocalRoot(const QString &root);    // 便捷：只同步一个文件夹，别名取目录名
     void setDeviceName(const QString &name);   // 用于冲突副本命名
+    /// 本轮同步的对端设备。基线按设备分开存 —— 空串表示"没有设备维度"的兼容槽位。
+    void setBaselineDevice(const QString &deviceId);
 
     /// 传入全部候选通道。sync() 内部按 priority() 升序依次 probe()，
     /// 取第一个可用者执行本次同步（见 §3.3）。
@@ -82,6 +84,7 @@ private:
     SyncDatabase *m_db = nullptr;
     QList<SyncRoot> m_roots;
     QString       m_deviceName;
+    QString       m_baselineDevice;
     QList<std::shared_ptr<ITransport>> m_transports;
 };
 

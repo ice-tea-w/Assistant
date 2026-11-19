@@ -84,6 +84,7 @@ private slots:
 
     void databaseBaseline();
     void baselineIsPerDevice();
+    void engineWritesBaselinePerDevice();
     void databaseConflicts();
     void databaseDevices();
     void devicesSchemaMigrates();
@@ -640,6 +641,37 @@ void TestSync::engineTwoDevicesSequential()
     // A 再同步一次应当收敛：不重复制造冲突
     r = ea->sync();
     QCOMPARE(r.conflicts, 0);
+}
+
+void TestSync::engineWritesBaselinePerDevice()
+{
+    QTemporaryDir dirA, shared, dbDir;
+    QVERIFY(dirA.isValid() && shared.isValid() && dbDir.isValid());
+
+    SyncDatabase db(QStringLiteral("eng_per_device"));
+    QVERIFY(db.open(dbDir.path() + "/a.db"));
+
+    auto engine = makeEngine(dirA.path(), QStringLiteral("共享"), shared.path(), &db);
+    engine->setBaselineDevice(QStringLiteral("dev-B"));
+
+    writeFile(dirA.path() + "/note.txt", "v1");
+    SyncResult r = engine->sync();
+    QCOMPARE(int(r.status), int(SyncResult::Ok));
+    QCOMPARE(r.uploaded, 1);
+
+    // 基线记在 dev-B 名下，兼容槽位（空串）里没有东西
+    QVERIFY(!db.allBaselinePaths(QStringLiteral("dev-B")).isEmpty());
+    QVERIFY(db.allBaselinePaths().isEmpty());
+
+    // 换设备再跑一轮：看不到 dev-B 的基线，但 L 与 R 已经一致，
+    // 所以这一轮只补基线、不重传（UpdateBaseline 的语义）
+    engine->setBaselineDevice(QStringLiteral("dev-C"));
+    r = engine->sync();
+    QCOMPARE(int(r.status), int(SyncResult::Ok));
+    QCOMPARE(r.uploaded, 0);
+    QVERIFY(!db.allBaselinePaths(QStringLiteral("dev-C")).isEmpty());
+    QCOMPARE(db.allBaselinePaths(QStringLiteral("dev-B")).size(),
+             db.allBaselinePaths(QStringLiteral("dev-C")).size());
 }
 
 void TestSync::engineSkipsWhenRemoteEmpty()
