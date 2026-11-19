@@ -82,6 +82,8 @@ public:
 
     QSslSocket &socket() { return m_socket; }
 
+    void disconnectFromServer() { m_socket.disconnectFromHost(); }
+
 private:
     template <typename Predicate>
     bool pumpUntil(Predicate pred, int timeoutMs)
@@ -135,11 +137,14 @@ private slots:
     void pairingWrongCodeClosesWindow();
     void deliveryBoxLandsInInbox();
     void outboxLandsInOutboxRoot();
+    void lockIsExclusive();
 
 private:
     bool startServer(const QString &root);
     Identity makeIdentity(const QString &name);
     bool authenticate(TestClient &client, quint32 baseId);
+    bool authenticateAs(TestClient &client, quint32 baseId, const QString &deviceId,
+                        const QByteArray &secret);
     QHash<QString, QString> listAll(SyncServer &server, bool *ok);
 
     QTemporaryDir m_dir;
@@ -578,8 +583,32 @@ bool TestNetServer::authenticate(TestClient &client, quint32 baseId)
     return client.read(&ack) && ack.type == FrameType::HelloAck;
 }
 
-QHash<QString, QString> TestNetServer::listAll(SyncServer &server, bool *ok)
+bool TestNetServer::authenticateAs(TestClient &client, quint32 baseId, const QString &deviceId,
+                                   const QByteArray &secret)
 {
+    QJsonObject hello;
+    hello.insert(QStringLiteral("deviceId"), deviceId);
+    if (!client.send(makeJsonFrame(FrameType::Hello, baseId, hello)))
+        return false;
+
+    Frame challenge;
+    if (!client.read(&challenge) || challenge.type != FrameType::Challenge)
+        return false;
+
+    Frame auth;
+    auth.type    = FrameType::Auth;
+    auth.flags   = quint16(FrameFlag::FlagBlob);
+    auth.reqId   = baseId + 1;
+    auth.payload = challengeResponse(secret, challenge.payload, deviceId,
+                                     m_serverIdentity.fingerprint);
+    if (!client.send(auth))
+        return false;
+
+    Frame ack;
+    return client.read(&ack) && ack.type == FrameType::HelloAck;
+}
+
+QHash<QString, QString> TestNetServer::listAll(SyncServer &server, bool *ok){
     QHash<QString, QString> result;
     *ok = false;
 
@@ -883,6 +912,58 @@ void TestNetServer::pairingWrongCodeClosesWindow()
 
     // 窗口关掉后，即使配对码正确也进不去
     QCOMPARE(tryPair(code, 20), QStringLiteral("PAIRING_CLOSED"));
+}
+
+void TestNetServer::lockIsExclusive()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    writeFile(root.path() + "/a.txt", QByteArray("aaa"));
+
+    // 任何 deviceId 都用同一份口令，方便同时模拟两台设备
+    SyncServer server(m_serverIdentity,
+                      [this](const QString &) { return m_deviceSecret; });
+    QVERIFY2(server.listen(0, root.path()), qPrintable(server.lastError()));
+    QVERIFY(server.port() > 0);
+
+    TestClient a;
+    QVERIFY(a.connectTo(server.port(), m_clientIdentity));
+    QVERIFY(authenticateAs(a, 100, QStringLiteral("dev-a1"), m_deviceSecret));
+
+    TestClient b;
+    QVERIFY(b.connectTo(server.port(), m_clientIdentity));
+    QVERIFY(authenticateAs(b, 200, QStringLiteral("dev-b1"), m_deviceSecret));
+
+    const auto lockResult = [](TestClient &client, quint32 reqId) {
+        if (!client.send(makeJsonFrame(FrameType::Lock, reqId, QJsonObject())))
+            return QJsonObject{ { QStringLiteral("_send"), false } };
+        Frame reply;
+        if (!client.read(&reply) || reply.type != FrameType::LockAck)
+            return QJsonObject{ { QStringLiteral("_type"), int(reply.type) } };
+        return QJsonDocument::fromJson(reply.payload).object();
+    };
+
+    // A 拿到锁
+    QJsonObject ack = lockResult(a, 300);
+    QCOMPARE(ack.value(QStringLiteral("ok")).toBool(), true);
+
+    // B 拿不到，回执里带着当前持有者
+    ack = lockResult(b, 400);
+    QCOMPARE(ack.value(QStringLiteral("ok")).toBool(), false);
+    QCOMPARE(ack.value(QStringLiteral("holder")).toString(), QStringLiteral("dev-a1"));
+
+    // A 放锁后 B 能拿到
+    QVERIFY(a.send(makeJsonFrame(FrameType::Unlock, 500, QJsonObject())));
+    Frame unlockAck;
+    QVERIFY(a.read(&unlockAck) && unlockAck.type == FrameType::UnlockAck);
+    ack = lockResult(b, 600);
+    QCOMPARE(ack.value(QStringLiteral("ok")).toBool(), true);
+
+    // 持锁方掉线 → 锁立刻释放，A 不用等 TTL
+    b.disconnectFromServer();
+    QTRY_VERIFY_WITH_TIMEOUT(server.readyConnections() <= 1, 3000);
+    ack = lockResult(a, 700);
+    QCOMPARE(ack.value(QStringLiteral("ok")).toBool(), true);
 }
 
 QTEST_MAIN(TestNetServer)

@@ -390,8 +390,66 @@ void SyncServer::onDisconnected(QSslSocket *socket)
     if (it == m_connections.end())
         return;
     dropPartFile(*it.value());   // 半途断开的 Put 不留下 .assistant-part
+    if (m_lockSocket == socket)  // 持锁方掉线 → 立刻放开，别让对端等到 TTL
+        releaseLock();
     m_connections.erase(it);
     socket->deleteLater();
+}
+
+bool SyncServer::lockExpired() const
+{
+    if (m_lockHolder.isEmpty())
+        return true;
+    return QDateTime::currentMSecsSinceEpoch() > m_lockDeadlineMs;
+}
+
+void SyncServer::releaseLock()
+{
+    if (m_lockHolder.isEmpty())
+        return;
+    qInfo("SyncServer: 释放写锁（原持有者 %s）", qUtf8Printable(m_lockHolder));
+    m_lockHolder.clear();
+    m_lockSocket = nullptr;
+    m_lockDeadlineMs = 0;
+}
+
+void SyncServer::handleLock(Connection &conn, const Frame &frame)
+{
+    if (lockExpired())
+        releaseLock();
+
+    if (!m_lockHolder.isEmpty() && m_lockHolder != conn.deviceId) {
+        QJsonObject ack;
+        ack.insert(QStringLiteral("ok"), false);
+        ack.insert(QStringLiteral("holder"), m_lockHolder);
+        ack.insert(QStringLiteral("retryAfterMs"),
+                   int(qMax<qint64>(0, m_lockDeadlineMs - QDateTime::currentMSecsSinceEpoch())));
+        send(conn, static_cast<quint8>(FrameType::LockAck), frame.reqId,
+             QJsonDocument(ack).toJson(QJsonDocument::Compact));
+        return;
+    }
+
+    m_lockHolder = conn.deviceId;
+    m_lockSocket = conn.socket;
+    m_lockDeadlineMs = QDateTime::currentMSecsSinceEpoch() + m_lockTtlMs;
+
+    QJsonObject ack;
+    ack.insert(QStringLiteral("ok"), true);
+    ack.insert(QStringLiteral("holder"), m_lockHolder);
+    send(conn, static_cast<quint8>(FrameType::LockAck), frame.reqId,
+         QJsonDocument(ack).toJson(QJsonDocument::Compact));
+}
+
+void SyncServer::handleUnlock(Connection &conn, const Frame &frame)
+{
+    const bool mine = (m_lockHolder == conn.deviceId && m_lockSocket == conn.socket);
+    if (mine)
+        releaseLock();
+
+    QJsonObject ack;
+    ack.insert(QStringLiteral("ok"), true);
+    send(conn, static_cast<quint8>(FrameType::UnlockAck), frame.reqId,
+         QJsonDocument(ack).toJson(QJsonDocument::Compact));
 }
 
 void SyncServer::onReadyRead(QSslSocket *socket)
@@ -487,7 +545,16 @@ void SyncServer::handleFrame(Connection &conn, const Frame &frame)
         handleDelete(conn, frame);
         break;
     case FrameType::Ping:
+        // Ping 顺带续租：持锁方还活着，别让 TTL 把它踢掉
+        if (m_lockSocket == conn.socket)
+            m_lockDeadlineMs = QDateTime::currentMSecsSinceEpoch() + m_lockTtlMs;
         send(conn, static_cast<quint8>(FrameType::Pong), frame.reqId, QByteArray());
+        break;
+    case FrameType::Lock:
+        handleLock(conn, frame);
+        break;
+    case FrameType::Unlock:
+        handleUnlock(conn, frame);
         break;
     default:
         sendError(conn, frame.reqId, QStringLiteral("UNSUPPORTED"),

@@ -155,6 +155,13 @@ private:
     void recordAuthFailure(const QString &peer);
     void clearAuthFailures(const QString &peer);
 
+    // ---- 写会话锁（设计 §3.5）：同一时刻只允许一台设备跑一轮同步 ----
+    void handleLock(Connection &conn, const struct Frame &frame);
+    void handleUnlock(Connection &conn, const struct Frame &frame);
+    /// 持锁者的连接是否还活着 + TTL 是否没过；过期就当锁没了
+    bool lockExpired() const;
+    void releaseLock();
+
     QString indexPath() const;
     void loadIndex();
     bool saveIndex();
@@ -184,6 +191,13 @@ private:
     QString                      m_deviceId;
     QString                      m_lastError;
     QHash<QSslSocket *, std::shared_ptr<Connection>> m_connections;
+
+    /// 独占写会话的持有者与到期时间（毫秒）。holder 为空 = 没人持锁。
+    QString                      m_lockHolder;
+    QSslSocket                  *m_lockSocket = nullptr;
+    qint64                       m_lockDeadlineMs = 0;
+    /// 一轮同步最长的时间预算，Ping 会续租
+    int                          m_lockTtlMs = 120 * 1000;
 
     /// `.assistant-sync/index.json` 的内存镜像：relPath → size/mtime/hash。
     /// 命中条件是 size + mtime 都没变（与 FolderTransport 的 manifest 同一套失效规则）。
