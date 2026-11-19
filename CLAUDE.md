@@ -113,10 +113,15 @@ cmake --build build --config Debug
       `NetTransport::remoteRoots()` 收下；`SyncBridge::refreshRemoteRoots()` / `alignAliasesToRemote()`
       按**目录名**匹配把本机别名对齐到对端；配对成功自动读 + 自动对齐（`m_alignAfterPairing`），
       页面「同步范围」卡多一行提示 + 「读取对端文件夹」「对齐别名」，配对窗口开着时有「复制配对码」
-- [ ] 直连剩余：主机拉取对端目录差异（主机「立即同步」仍灰，现在只能直推单文件）、
-      `LocalDirTransport`（host 本地根与共享根对称）、直连卡片真机肉眼走查、两台机器真跑、
-      双实例投递走查（停主机后发送 → 队列保留 → 重开主机自动补发）、C 阶段删 `FolderTransport` /
-      `DeliveryNaming`（仅剩 `isReservedDeliveryPath` 在用时不要一起删）/ SMB 命令与用例
+- [x] 对称发起 + 远端锁（2026-11-19 同日）：`sync_state` 主键改 `(device_id, rel_path)`
+      （`migrateLegacyBaseline()` 把旧表改名保留），`SyncEngine::setBaselineDevice()` 让每轮
+      基线按对端隔离；服务端 `Lock/Unlock` + TTL 120 s + Ping 续租 + 掉线即释放；
+      `NetTransport::tryLock()` 走真实帧，拿不到时文案「对端正在被 X 同步」；
+      `syncNow()` 主机模式改为反连每台有地址的设备、串行各跑一轮 —— **主机「立即同步」不再置灰**
+- [ ] 直连剩余：`LocalDirTransport`（host 本地根与共享根对称）、直连卡片真机肉眼走查、
+      两台机器真跑（含主机反向发起）、双实例投递走查（停主机后发送 → 队列保留 → 重开主机自动补发）、
+      C 阶段删 `FolderTransport` / `DeliveryNaming`（仅剩 `isReservedDeliveryPath` 在用时不要一起删）/
+      SMB 命令与用例；锁泄漏只有 TTL 兜底、设备多时串行慢、地址过期无自动重发现
 
 Phase 3 剩余（收尾中，写在这里便于续接）：
 - [x] 热键自定义（设置页捕获组合键 → `PanelBridge::applyHotkey` → `HotkeyManager::reRegister`，失败自动回滚原热键）
