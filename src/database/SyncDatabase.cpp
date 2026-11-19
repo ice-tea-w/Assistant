@@ -2,6 +2,7 @@
 #include "core/Logger.h"
 
 #include <QDateTime>
+#include <QSet>
 #include <QSqlError>
 #include <QSqlQuery>
 #include <QVariant>
@@ -41,7 +42,9 @@ const char *kSchema[] = {
         fingerprint  TEXT NOT NULL,
         secret       BLOB NOT NULL,
         paired_at    INTEGER NOT NULL,
-        last_seen_at INTEGER NOT NULL DEFAULT 0
+        last_seen_at INTEGER NOT NULL DEFAULT 0,
+        last_address TEXT NOT NULL DEFAULT '',
+        last_port    INTEGER NOT NULL DEFAULT 0
     ))",
 
     R"(CREATE TABLE IF NOT EXISTS outbox (
@@ -128,6 +131,29 @@ bool SyncDatabase::createSchema()
     for (const char *sql : kSchema) {
         if (!q.exec(QString::fromUtf8(sql))) {
             Logger::get().error("SyncDatabase: schema error — {}", q.lastError().text().toStdString());
+            return false;
+        }
+    }
+
+    // 老库的 devices 表没有这两列（新表建的时候就有）；CREATE TABLE IF NOT EXISTS
+    // 不会补列，所以这里单独补一次。
+    const QList<QPair<QString, QString>> kDeviceColumns = {
+        {QStringLiteral("last_address"), QStringLiteral("TEXT NOT NULL DEFAULT ''")},
+        {QStringLiteral("last_port"), QStringLiteral("INTEGER NOT NULL DEFAULT 0")},
+    };
+    QSet<QString> have;
+    QSqlQuery info(m_db);
+    if (info.exec(QStringLiteral("PRAGMA table_info(devices)"))) {
+        while (info.next())
+            have.insert(info.value(1).toString());
+    }
+    for (const auto &col : kDeviceColumns) {
+        if (have.contains(col.first))
+            continue;
+        if (!q.exec(QStringLiteral("ALTER TABLE devices ADD COLUMN %1 %2")
+                        .arg(col.first, col.second))) {
+            Logger::get().error("SyncDatabase: 补列 {} 失败 — {}",
+                                col.first.toStdString(), q.lastError().text().toStdString());
             return false;
         }
     }
@@ -305,8 +331,8 @@ bool SyncDatabase::upsertDevice(const DeviceRecord &rec)
 {
     QSqlQuery q(m_db);
     q.prepare(QStringLiteral(
-        "INSERT INTO devices (device_id, fingerprint, secret, paired_at, last_seen_at) "
-        "VALUES (?, ?, ?, ?, ?) "
+        "INSERT INTO devices (device_id, fingerprint, secret, paired_at, last_seen_at, "
+        "last_address, last_port) VALUES (?, ?, ?, ?, ?, ?, ?) "
         "ON CONFLICT(device_id) DO UPDATE SET fingerprint=excluded.fingerprint, "
         "secret=excluded.secret, paired_at=excluded.paired_at, last_seen_at=excluded.last_seen_at"));
     q.addBindValue(rec.deviceId);
@@ -314,6 +340,9 @@ bool SyncDatabase::upsertDevice(const DeviceRecord &rec)
     q.addBindValue(rec.secret);
     q.addBindValue(rec.pairedAt);
     q.addBindValue(rec.lastSeenAt);
+    // 默认构造的 QString 是 null，绑进去是 SQL NULL，会被 NOT NULL 拒（outbox 踩过同一个坑）
+    q.addBindValue(rec.lastAddress.isNull() ? QStringLiteral("") : rec.lastAddress);
+    q.addBindValue(int(rec.lastPort));
     if (!q.exec()) {
         Logger::get().warn("SyncDatabase: upsertDevice {} failed — {}",
                            rec.deviceId.toStdString(), q.lastError().text().toStdString());
@@ -326,7 +355,7 @@ std::optional<DeviceRecord> SyncDatabase::device(const QString &deviceId) const
 {
     QSqlQuery q(m_db);
     q.prepare(QStringLiteral(
-        "SELECT device_id, fingerprint, secret, paired_at, last_seen_at "
+        "SELECT device_id, fingerprint, secret, paired_at, last_seen_at, last_address, last_port "
         "FROM devices WHERE device_id = ?"));
     q.addBindValue(deviceId);
     if (!q.exec() || !q.next())
@@ -338,6 +367,8 @@ std::optional<DeviceRecord> SyncDatabase::device(const QString &deviceId) const
     rec.secret      = q.value(2).toByteArray();
     rec.pairedAt    = q.value(3).toLongLong();
     rec.lastSeenAt  = q.value(4).toLongLong();
+    rec.lastAddress = q.value(5).toString();
+    rec.lastPort    = quint16(q.value(6).toInt());
     return rec;
 }
 
@@ -346,7 +377,7 @@ QList<DeviceRecord> SyncDatabase::allDevices() const
     QList<DeviceRecord> out;
     QSqlQuery q(m_db);
     if (!q.exec(QStringLiteral(
-            "SELECT device_id, fingerprint, secret, paired_at, last_seen_at "
+            "SELECT device_id, fingerprint, secret, paired_at, last_seen_at, last_address, last_port "
             "FROM devices ORDER BY paired_at DESC")))
         return out;
 
@@ -357,6 +388,8 @@ QList<DeviceRecord> SyncDatabase::allDevices() const
         rec.secret      = q.value(2).toByteArray();
         rec.pairedAt    = q.value(3).toLongLong();
         rec.lastSeenAt  = q.value(4).toLongLong();
+        rec.lastAddress = q.value(5).toString();
+        rec.lastPort    = quint16(q.value(6).toInt());
         out.append(rec);
     }
     return out;
@@ -377,6 +410,26 @@ bool SyncDatabase::touchDevice(const QString &deviceId, qint64 seenAt)
     q.addBindValue(seenAt);
     q.addBindValue(deviceId);
     return q.exec();
+}
+
+bool SyncDatabase::updateDeviceEndpoint(const QString &deviceId, const QString &address, quint16 port)
+{
+    if (deviceId.isEmpty() || address.isEmpty() || port == 0)
+        return false;
+    QSqlQuery q(m_db);
+    q.prepare(QStringLiteral(
+        "UPDATE devices SET last_address = ?, last_port = ?, last_seen_at = ? "
+        "WHERE device_id = ?"));
+    q.addBindValue(address);
+    q.addBindValue(int(port));
+    q.addBindValue(QDateTime::currentSecsSinceEpoch());
+    q.addBindValue(deviceId);
+    if (!q.exec()) {
+        Logger::get().warn("SyncDatabase: updateDeviceEndpoint {} failed — {}",
+                           deviceId.toStdString(), q.lastError().text().toStdString());
+        return false;
+    }
+    return q.numRowsAffected() > 0;
 }
 
 // ---- outbox ----

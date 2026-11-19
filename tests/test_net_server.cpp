@@ -128,6 +128,7 @@ private slots:
     void authThenListPages();
     void unknownDeviceIsRejected();
     void pingPongRoundTrip();
+    void helloReportsReachableEndpoint();
     void authFailuresLockPeer();
     void indexIsUsedAcrossRestart();
     void pairingIssuesSecretOnce();
@@ -377,6 +378,50 @@ void TestNetServer::pingPongRoundTrip()
     QVERIFY(client.read(&pong));
     QCOMPARE(pong.type, FrameType::Pong);
     QCOMPARE(pong.reqId, quint32(9));
+}
+
+void TestNetServer::helloReportsReachableEndpoint()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    QVERIFY(startServer(root.path()));
+
+    auto secret = [this](const QString &deviceId) {
+        return deviceId == QStringLiteral("dev-test") ? m_deviceSecret : QByteArray();
+    };
+    SyncServer server(m_serverIdentity, secret);
+    QVERIFY2(server.listen(0, root.path()), qPrintable(server.lastError()));
+
+    QSignalSpy spy(&server, &SyncServer::peerReachable);
+
+    TestClient client;
+    QVERIFY(client.connectTo(server.port(), m_clientIdentity));
+
+    QJsonObject hello;
+    hello.insert(QStringLiteral("deviceId"), QStringLiteral("dev-test"));
+    hello.insert(QStringLiteral("listenPort"), 45999);   // 对端自报在听哪个端口
+    QVERIFY(client.send(makeJsonFrame(FrameType::Hello, 1, hello)));
+    Frame challenge;
+    QVERIFY(client.read(&challenge));
+
+    Frame auth;
+    auth.type    = FrameType::Auth;
+    auth.flags   = quint16(FrameFlag::FlagBlob);
+    auth.reqId   = 2;
+    auth.payload = challengeResponse(m_deviceSecret, challenge.payload,
+                                     QStringLiteral("dev-test"), m_serverIdentity.fingerprint);
+    QVERIFY(client.send(auth));
+
+    Frame ack;
+    QVERIFY(client.read(&ack));
+    QCOMPARE(ack.type, FrameType::HelloAck);
+
+    // 认证通过后才知道"这个 deviceId 从哪来、听哪个端口" → 主机据此反连
+    QTRY_COMPARE(spy.count(), 1);
+    const QList<QVariant> args = spy.takeFirst();
+    QCOMPARE(args.at(0).toString(), QStringLiteral("dev-test"));
+    QCOMPARE(args.at(1).toString(), QStringLiteral("127.0.0.1"));
+    QCOMPARE(args.at(2).value<quint16>(), quint16(45999));
 }
 
 void TestNetServer::deliveryBoxLandsInInbox()

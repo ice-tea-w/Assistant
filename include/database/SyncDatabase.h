@@ -32,6 +32,9 @@ struct DeviceRecord
     QByteArray secret;
     qint64     pairedAt    = 0;
     qint64     lastSeenAt  = 0;
+    /// 上次观察到的可达地址（对方连进来时记下，用于反向推送/反向拉取）
+    QString    lastAddress;
+    quint16    lastPort    = 0;
 };
 
 /// 待发队列（对应 outbox 表一行）。
@@ -88,6 +91,8 @@ public:
     QList<DeviceRecord> allDevices() const;
     bool removeDevice(const QString &deviceId);
     bool touchDevice(const QString &deviceId, qint64 seenAt);
+    /// 记下对端的可达地址（它连进来时顺带上报的监听端口）
+    bool updateDeviceEndpoint(const QString &deviceId, const QString &address, quint16 port);
 
     // ---- outbox（待发队列 / 单文件直发）----
     bool enqueueOutbox(OutboxItem &item);            // 成功后回填 id

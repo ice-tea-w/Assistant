@@ -244,6 +244,8 @@ private:
     bool    hasPeerCredentials() const;
     /// 按配置拼出直连对端；凭据不全时返回 false
     bool    peerForDelivery(Sync::Net::NetPeer *peer) const;
+    /// 按 devices 表里记下的可达地址拼出对端（反向推送用）；没有地址就返回 false
+    bool    peerForDevice(const QString &deviceId, Sync::Net::NetPeer *peer) const;
     /// 投递落点：`_inbox/<设备名>-<deviceId 前 8 位>/<时间戳>_<原名>`
     QString deliveryRelPath(const QString &localPath) const;
 
@@ -283,6 +285,10 @@ private:
     QHash<QString, QByteArray> m_netSecrets;
     bool         m_netRunning = false;
     QString      m_netAddress;
+    /// 本轮直推的目标设备（空 = 按配置里的主机）
+    QString      m_sendTargetDevice;
+    /// 本机实际监听端口（0 = 没在听）；上报给对端用于反向连接
+    quint16      m_netListenPort = 0;
     QVariantList m_netAddresses;
     QString      m_netStatus;
     QString      m_pairCode;

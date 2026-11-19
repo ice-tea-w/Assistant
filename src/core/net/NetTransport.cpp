@@ -122,6 +122,8 @@ bool NetTransport::ensureConnected()
     const quint32 helloId = m_nextReqId++;
     QJsonObject hello;
     hello.insert(QStringLiteral("deviceId"), m_peer.deviceId);
+    // 顺带告诉对端我这边在哪个端口听，它才可能反连回来（主机→客户端）
+    hello.insert(QStringLiteral("listenPort"), int(m_peer.localListenPort));
     if (!sendFrame(FrameType::Hello, helloId, toJson(hello), quint16(FrameFlag::FlagJson))) {
         disconnectPeer();
         return false;

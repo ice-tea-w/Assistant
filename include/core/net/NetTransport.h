@@ -21,6 +21,8 @@ struct NetPeer
     QString    expectedFingerprint;   // 对端证书 SHA-256，小写 hex；不匹配即拒绝连接
     QString    deviceId;              // 本机在服务端的身份
     QByteArray deviceSecret;          // 配对时交换的 32 字节口令
+    /// 本机自己的监听端口（0 = 没在监听）。上报给对端，它才能反连回来推东西。
+    quint16    localListenPort = 0;
     int        timeoutMs = 10000;
 };
 

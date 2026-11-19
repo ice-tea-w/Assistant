@@ -78,6 +78,11 @@ public:
     void setOutboxRoot(const QString &absPath);
     QString outboxRoot() const;
 
+    /// 本机 deviceId：配对结果里带上它，对方才能在自己的 devices 表里记下这台主机，
+    /// 从而认证主机反连过来的连接。
+    void setDeviceId(const QString &deviceId);
+    QString deviceId() const;
+
     /// 已认证成功的连接数（测试与界面用）。
     int readyConnections() const;
 
@@ -175,6 +180,8 @@ private:
     QString                      m_deliveryRoot;
     /// 发件箱落地目录（空 = 投递目录下的 `.outbox`）
     QString                      m_outboxRoot;
+    /// 本机 deviceId（交给配对成功的对方）
+    QString                      m_deviceId;
     QString                      m_lastError;
     QHash<QSslSocket *, std::shared_ptr<Connection>> m_connections;
 

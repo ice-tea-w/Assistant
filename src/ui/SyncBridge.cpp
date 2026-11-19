@@ -153,6 +153,13 @@ bool SyncBridge::init(const QString &dbPath)
     ensureDeviceId();
     refreshPairedDevices();
     startWatchers();
+
+    // 对称连接的前提：两边都得监听。以前只有"主机"才点这个按钮，结果主机
+    // 永远没有对方的可达地址，只能干等。这里有同步根就自动开监听（端口占用时
+    // 会在 netStatus 里报出来，不影响其它功能）。
+    if (!m_roots.isEmpty() && !m_netRunning)
+        startNetServer();
+
     setStatus(m_roots.isEmpty() || !hasPeerCredentials()
                   ? QStringLiteral("请先添加要同步的文件夹，并与主机配对")
                   : QStringLiteral("尚未同步"));
@@ -741,10 +748,11 @@ void SyncBridge::startNetServer()
     // 不再先攒在同步根下面等人来领（那样用户会在自己的同步范围里看到异物）。
     const QString deliveryRoot = inboxPath();
     const QString outboxRoot   = outboxDir();
+    const QString myDeviceId   = ensureDeviceId();
     m_netRunning = true;
     setNetStatus(QStringLiteral("正在监听 %1 端口…").arg(wantPort));
 
-    m_netThread = QThread::create([this, identity, roots, wantPort, deliveryRoot, outboxRoot] {
+    m_netThread = QThread::create([this, identity, roots, wantPort, deliveryRoot, outboxRoot, myDeviceId] {
         auto *server = new Sync::Net::SyncServer(identity, [this](const QString &deviceId) {
             QMutexLocker locker(&m_netMutex);
             return m_netSecrets.value(deviceId);
@@ -773,6 +781,19 @@ void SyncBridge::startNetServer()
 
         server->setDeliveryRoot(deliveryRoot);
         server->setOutboxRoot(outboxRoot);
+        server->setDeviceId(myDeviceId);   // 配对结果里交给对方，供它反连时认证
+
+        // 认证通过的设备会自报监听端口：把"我看到的地址 + 它的端口"落库，
+        // 之后这台机器就能反过来连它（主机→客户端）。
+        QObject::connect(server, &Sync::Net::SyncServer::peerReachable, this,
+                         [this](const QString &deviceId, const QString &address, quint16 port) {
+                             if (!m_db.updateDeviceEndpoint(deviceId, address, port))
+                                 return;
+                             Logger::get().info("SyncBridge: 设备 {} 可达地址 {}:{}",
+                                                deviceId.toStdString(), address.toStdString(),
+                                                int(port));
+                             refreshPairedDevices();
+                         }, Qt::QueuedConnection);
 
         if (!server->listen(wantPort, roots)) {
             const QString err = server->lastError();
@@ -794,6 +815,7 @@ void SyncBridge::startNetServer()
         const QString fingerprint = identity.fingerprint;
         QMetaObject::invokeMethod(this, [this, actualPort, fingerprint] {
             m_netAddresses = addressCandidates(actualPort);
+            m_netListenPort = actualPort;   // 后续 Hello 会把它报给对端，用于反向连接
             const QString host = localIpv4().isEmpty() ? m_deviceName : localIpv4();
             m_netAddress = QStringLiteral("%1:%2").arg(host).arg(actualPort);
             setNetStatus(QStringLiteral("正在监听 %1 · 本机指纹 %2")
@@ -1029,6 +1051,23 @@ void SyncBridge::pairWithPeer(const QString &address, const QString &code)
             m_config->setSyncPort(int(peer.port));
             m_config->setSyncPeerFingerprint(outcome.serverFingerprint);
             m_config->setSyncPeerSecret(QString::fromLatin1(outcome.deviceSecret.toBase64()));
+
+            // 反向认证的前提：本机也要记一条"主机"，否则主机反连回来时认不出它
+            if (!outcome.hostDeviceId.isEmpty() && !outcome.deviceSecret.isEmpty()) {
+                DeviceRecord hostRec;
+                hostRec.deviceId    = outcome.hostDeviceId;
+                hostRec.fingerprint = outcome.serverFingerprint;
+                hostRec.secret      = outcome.deviceSecret;
+                hostRec.pairedAt    = QDateTime::currentSecsSinceEpoch();
+                hostRec.lastSeenAt  = hostRec.pairedAt;
+                m_db.upsertDevice(hostRec);
+                {
+                    QMutexLocker locker(&m_netMutex);
+                    m_netSecrets.insert(hostRec.deviceId, hostRec.secret);
+                }
+                refreshPairedDevices();
+            }
+
             setNetStatus(QStringLiteral("已配对到 %1:%2，同步会走直连").arg(peer.host).arg(peer.port));
             emit pairingFinished(true, QStringLiteral("配对成功"));
         }, Qt::QueuedConnection);
@@ -1083,7 +1122,26 @@ bool SyncBridge::peerForDelivery(Sync::Net::NetPeer *peer) const
     peer->expectedFingerprint = m_config->syncPeerFingerprint();
     peer->deviceSecret        = QByteArray::fromBase64(m_config->syncPeerSecret().toLatin1());
     peer->deviceId            = const_cast<SyncBridge *>(this)->ensureDeviceId();
+    peer->localListenPort     = m_netListenPort;
     return !peer->deviceSecret.isEmpty();
+}
+
+bool SyncBridge::peerForDevice(const QString &deviceId, Sync::Net::NetPeer *peer) const
+{
+    if (!peer || deviceId.isEmpty())
+        return false;
+
+    const std::optional<DeviceRecord> rec = m_db.device(deviceId);
+    if (!rec || rec->lastAddress.isEmpty() || rec->lastPort == 0 || rec->secret.isEmpty())
+        return false;
+
+    peer->host                = rec->lastAddress;
+    peer->port                = rec->lastPort;
+    peer->expectedFingerprint = rec->fingerprint;
+    peer->deviceSecret        = rec->secret;
+    peer->deviceId            = const_cast<SyncBridge *>(this)->ensureDeviceId();
+    peer->localListenPort     = m_netListenPort;
+    return true;
 }
 
 QString SyncBridge::deliveryRelPath(const QString &localPath) const
@@ -1132,6 +1190,39 @@ void SyncBridge::queueSend(const QStringList &paths)
             setSendStatus(QStringLiteral("还没和任何设备配对：先让对方的连接方来配对，再发文件"));
             return;
         }
+        // 对方连过来过、地址记下了 → 直接推过去，不用等它来取
+        for (const DeviceRecord &dev : devices) {
+            Sync::Net::NetPeer probe;
+            if (!peerForDevice(dev.deviceId, &probe))
+                continue;
+
+            int queued = 0;
+            for (const QString &raw : paths) {
+                const QFileInfo info(toLocalPath(raw.trimmed()));
+                if (!info.isFile()) {
+                    setSendStatus(QStringLiteral("跳过（不是文件）：%1").arg(info.filePath()));
+                    continue;
+                }
+                OutboxItem item;
+                item.localPath     = info.absoluteFilePath();
+                item.relPath       = deliveryRelPath(item.localPath);
+                item.size          = info.size();
+                item.createdAt     = QDateTime::currentSecsSinceEpoch();
+                item.nextAttemptAt = 0;
+                if (!m_db.enqueueOutbox(item))
+                    continue;
+                ++queued;
+            }
+            if (queued > 0) {
+                m_sendTargetDevice = dev.deviceId;
+                refreshOutbox();
+                Logger::get().info("SyncBridge/投递: 直推 {} 个给 {}", queued,
+                                   dev.deviceId.toStdString());
+                sendQueuedNow();
+            }
+            return;
+        }
+
         const QString recipient = devices.first().deviceId;
         const QString dir = QDir(outboxDir()).filePath(recipient);
         if (!QDir().mkpath(dir)) {
@@ -1217,15 +1308,17 @@ void SyncBridge::sendQueuedNow()
     }
 
     Sync::Net::NetPeer peer;
-    if (!peerForDelivery(&peer)) {
+    const bool havePeer = !m_sendTargetDevice.isEmpty()
+                              ? peerForDevice(m_sendTargetDevice, &peer)
+                              : peerForDelivery(&peer);
+    if (!havePeer) {
         // 主机只负责被连：它没有对端地址可推，队列里的文件也就永远发不出去，
         // 所以这里必须说清"为什么"和"怎么办"，不能只说没配对（主机明明配过设备）。
-        if (!m_db.allDevices().isEmpty()) {
-            setSendStatus(QStringLiteral(
-                "主机模式：这台机器只接收，暂时不能向外发送（主机→客户端还没做）"));
-        } else {
-            setSendStatus(QStringLiteral("还没和主机配对，文件先留在队列里，配对后自动发出"));
-        }
+        setSendStatus(m_db.allDevices().isEmpty()
+                          ? QStringLiteral("还没和主机配对，文件先留在队列里，配对后自动发出")
+                          : QStringLiteral("还没有「%1」的可达地址：等它连过来一次（或点「立即同步」）"
+                                           "才能反过来发给它")
+                                .arg(m_sendTargetDevice));
         return;
     }
 
@@ -1274,6 +1367,7 @@ void SyncBridge::sendQueuedNow()
             }
 
             m_flushBusy = false;
+            m_sendTargetDevice.clear();   // 本轮结束，下一轮重新按配置/可达地址选目标
             setSending(false);
             refreshOutbox();
             setSendStatus(QStringLiteral("发送完成：成功 %1，失败 %2").arg(sent).arg(failed));

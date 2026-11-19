@@ -82,6 +82,7 @@ public:
     QByteArray   nonce;
     QString      deviceId;
     QString      peer;      // 对端 IP，认证失败限速按它计数
+    quint16      listenPort = 0;   // 对端自报的监听端口（0 = 它没在听）
     QString      clientName;
     QString      clientFingerprint;   // 客户端自报，仅作标识
 
@@ -298,6 +299,16 @@ QString SyncServer::outboxRoot() const
     return m_outboxRoot;
 }
 
+void SyncServer::setDeviceId(const QString &deviceId)
+{
+    m_deviceId = deviceId;
+}
+
+QString SyncServer::deviceId() const
+{
+    return m_deviceId;
+}
+
 QString SyncServer::effectiveOutboxRoot() const
 {
     if (!m_outboxRoot.isEmpty())
@@ -496,9 +507,10 @@ void SyncServer::handleHello(Connection &conn, const Frame &frame)
         return;
     }
 
-    conn.deviceId = deviceId;
-    conn.nonce    = randomBytes(kChallengeSize);
-    conn.state    = Connection::State::AwaitAuth;
+    conn.deviceId   = deviceId;
+    conn.listenPort = quint16(qBound(0, obj.value(QStringLiteral("listenPort")).toInt(), 65535));
+    conn.nonce      = randomBytes(kChallengeSize);
+    conn.state = Connection::State::AwaitAuth;
 
     send(conn, static_cast<quint8>(FrameType::Challenge), frame.reqId, conn.nonce);
 }
@@ -530,6 +542,19 @@ void SyncServer::handleAuth(Connection &conn, const Frame &frame)
     send(conn, static_cast<quint8>(FrameType::HelloAck), frame.reqId, toJson(ack));
 
     emit clientAuthenticated(conn.deviceId);
+
+    // 对端报了监听端口，就把"我看到的地址 + 它的端口"交上去落库：
+    // 之后要给它发文件，直接连这个地址，不用它先来找我。
+    if (conn.listenPort > 0) {
+        QString address = conn.peer;
+        // 回环/双栈连接里对端地址常是 IPv4 映射形式 `::ffff:127.0.0.1`，落库前还原
+        const QString mapped = QStringLiteral("::ffff:");
+        if (address.startsWith(mapped, Qt::CaseInsensitive))
+            address = address.mid(mapped.size());
+        const QHostAddress host(address);
+        if (!host.isNull())
+            emit peerReachable(conn.deviceId, address, conn.listenPort);
+    }
 }
 
 void SyncServer::handlePairHello(Connection &conn, const Frame &frame)
@@ -592,6 +617,8 @@ void SyncServer::handlePairProof(Connection &conn, const Frame &frame)
     QJsonObject result;
     result.insert(QStringLiteral("ok"), true);
     result.insert(QStringLiteral("deviceId"), device.deviceId);
+    // 主机自己的 deviceId：客户端要靠它认证主机反连过来的连接
+    result.insert(QStringLiteral("hostDeviceId"), m_deviceId);
     result.insert(QStringLiteral("serverFingerprint"), m_identity.fingerprint);
     result.insert(QStringLiteral("protocol"), kVersion);
     result.insert(QStringLiteral("secret"),

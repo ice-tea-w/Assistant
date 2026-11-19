@@ -13,6 +13,7 @@ struct PairingOutcome
 {
     bool       ok = false;
     QString    deviceId;
+    QString    hostDeviceId;      // 主机的 deviceId：记进 devices 才能认证它反连过来
     QString    serverFingerprint;
     QByteArray deviceSecret;
     QString    error;

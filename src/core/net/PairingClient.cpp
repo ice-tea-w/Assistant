@@ -173,6 +173,7 @@ PairingOutcome pairWithHost(const NetPeer &peer, const QString &code,
 
     outcome.ok                = true;
     outcome.deviceId          = obj.value(QStringLiteral("deviceId")).toString();
+    outcome.hostDeviceId      = obj.value(QStringLiteral("hostDeviceId")).toString();
     outcome.serverFingerprint = obj.value(QStringLiteral("serverFingerprint")).toString();
     outcome.deviceSecret      = secret;
     if (outcome.serverFingerprint.isEmpty())
