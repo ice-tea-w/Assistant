@@ -103,7 +103,13 @@ cmake --build build --config Debug
       （否则投递文件会被当同步内容来回传）；桥新增 `queueSend` / `sendQueuedNow` / `removeQueuedItem`，
       页面「发送文件」卡常显（选择文件 / 立即发送 / 收件箱）。投递是**客户端→主机**单向：
       对端一 push 就落进主机收件箱，不需要「领取」；`fetchIncoming()` 因此对主机早退
-- [ ] 直连剩余：主机→客户端投递（需客户端也监听，或保留 `_inbox` 暂存 + 领取）、
+- [x] 反向连接第一步（2026-11-19）：`Hello` 带 `listenPort`，服务端认证通过时
+      `emit peerReachable(deviceId, address, port)`；`devices` 表加 `last_address` / `last_port`
+      （老库用 `PRAGMA table_info` + `ALTER TABLE` 补列）→ 主机也有了对端的可达地址；
+      配对成功时**双方各写一条 `devices`**（`PairResult` 带 `hostDeviceId`，否则主机反连会
+      `AUTH_FAILED`）；新增 `peerForDevice()`，主机发文件时能直推就直推、不能才退回发件箱
+      `_outbox/`；`init()` 里有同步根就自动开监听（以前只有"主机"点按钮，对端永远不可达）
+- [ ] 直连剩余：主机拉取对端目录差异（主机「立即同步」仍灰，现在只能直推单文件）、
       `LocalDirTransport`（host 本地根与共享根对称）、直连卡片真机肉眼走查、两台机器真跑、
       双实例投递走查（停主机后发送 → 队列保留 → 重开主机自动补发）、C 阶段删 `FolderTransport` /
       `DeliveryNaming`（仅剩 `isReservedDeliveryPath` 在用时不要一起删）/ SMB 命令与用例
