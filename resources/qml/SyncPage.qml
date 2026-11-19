@@ -21,6 +21,8 @@ Rectangle {
 
     // 自检结果（点「自检」后填充，多行）
     property string selfText: ""
+    // 对齐别名的结果（"已按对端对齐 1 个别名" / "别名已经一致，不用改"）
+    property string rootsAlignResult: ""
 
     ScrollView {
         anchors.fill: parent
@@ -233,6 +235,12 @@ Rectangle {
                             }
                         }
 
+                        Button {
+                            visible: sync.pairActive
+                            text: "复制配对码"
+                            onClicked: sync.copyToClipboard(String(sync.pairCode))
+                        }
+
                         Text {
                             Layout.fillWidth: true
                             wrapMode: Text.WordWrap
@@ -437,6 +445,41 @@ Rectangle {
                             text: "添加文件夹…"
                             onClicked: rootDialog.open()
                         }
+                    }
+
+                    // 对端开放的文件夹：连一次就能读回来，不用手抄别名
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+                        visible: sync.peerPaired
+
+                        Text {
+                            Layout.fillWidth: true
+                            text: sync.remoteRootsHint.length > 0
+                                  ? sync.remoteRootsHint
+                                  : "还没读取对端的文件夹"
+                            color: syncPage.mutedColor
+                            font.pixelSize: 12
+                            wrapMode: Text.WordWrap
+                        }
+
+                        Button {
+                            text: "读取对端文件夹"
+                            onClicked: sync.refreshRemoteRoots()
+                        }
+
+                        Button {
+                            text: "对齐别名"
+                            enabled: sync.remoteRoots.length > 0
+                            onClicked: syncPage.rootsAlignResult = sync.alignAliasesToRemote()
+                        }
+                    }
+
+                    Text {
+                        visible: syncPage.rootsAlignResult.length > 0
+                        text: syncPage.rootsAlignResult
+                        color: syncPage.accentColor
+                        font.pixelSize: 12
                     }
                 }
             }

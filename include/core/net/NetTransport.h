@@ -47,6 +47,14 @@ public:
     bool removeRemote(const QString &relPath) override;
     QStringList remoteAliases() const override;
 
+    /// 服务端开放的文件夹（认证时 HelloAck 一并带来）：alias 为空表示单根无前缀
+    struct RemoteRoot
+    {
+        QString alias;
+        QString name;
+    };
+    QList<RemoteRoot> remoteRoots() const;
+
     QString lastError() const;
 
 private:
@@ -63,6 +71,7 @@ private:
     FrameDecoder m_decoder;
     QString      m_lastError;
     QStringList  m_aliases;
+    QList<RemoteRoot> m_remoteRoots;
     quint32      m_nextReqId = 1;
     bool         m_authenticated = false;
 };

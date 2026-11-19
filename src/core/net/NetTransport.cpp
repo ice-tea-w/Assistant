@@ -164,9 +164,23 @@ bool NetTransport::ensureConnected()
         return fail(text);
     }
 
+    // 服务端在 HelloAck 里带了开放文件夹（alias + 目录名），记下来供界面自动对齐
+    m_remoteRoots.clear();
+    const QJsonObject ackObj = QJsonDocument::fromJson(ack.payload).object();
+    for (const QJsonValue &value : ackObj.value(QStringLiteral("roots")).toArray()) {
+        const QJsonObject item = value.toObject();
+        m_remoteRoots.append({item.value(QStringLiteral("alias")).toString(),
+                              item.value(QStringLiteral("name")).toString()});
+    }
+
     m_authenticated = true;
     m_lastError.clear();
     return true;
+}
+
+QList<NetTransport::RemoteRoot> NetTransport::remoteRoots() const
+{
+    return m_remoteRoots;
 }
 
 bool NetTransport::sendFrame(FrameType type, quint32 reqId, const QByteArray &payload, quint16 flags)

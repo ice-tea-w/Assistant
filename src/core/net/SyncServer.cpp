@@ -539,6 +539,15 @@ void SyncServer::handleAuth(Connection &conn, const Frame &frame)
     QJsonObject ack;
     ack.insert(QStringLiteral("serverFingerprint"), m_identity.fingerprint);
     ack.insert(QStringLiteral("protocol"), kVersion);
+    // 把"我开放了哪些文件夹"一并交出去：对端据此对齐别名，不用手抄
+    QJsonArray rootArray;
+    for (const ServedRoot &root : m_roots) {
+        QJsonObject item;
+        item.insert(QStringLiteral("alias"), root.alias);
+        item.insert(QStringLiteral("name"), QFileInfo(root.localPath).fileName());
+        rootArray.append(item);
+    }
+    ack.insert(QStringLiteral("roots"), rootArray);
     send(conn, static_cast<quint8>(FrameType::HelloAck), frame.reqId, toJson(ack));
 
     emit clientAuthenticated(conn.deviceId);

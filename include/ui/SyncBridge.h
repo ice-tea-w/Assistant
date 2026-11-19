@@ -55,6 +55,9 @@ class SyncBridge : public QObject
     Q_PROPERTY(QVariantList pairedDevices READ pairedDevices NOTIFY pairedDevicesChanged)
     Q_PROPERTY(bool         peerPaired    READ peerPaired    NOTIFY netChanged)
     Q_PROPERTY(QString      pairStatus    READ pairStatus    NOTIFY pairChanged)
+    // ---- 对端的同步范围（配对后自动读取，省掉手抄别名）----
+    Q_PROPERTY(QVariantList remoteRoots  READ remoteRoots  NOTIFY remoteRootsChanged)
+    Q_PROPERTY(QString      remoteRootsHint READ remoteRootsHint NOTIFY remoteRootsChanged)
     // ---- 投递（单文件直发 + 待发队列）----
     Q_PROPERTY(int          outboxCount   READ outboxCount   NOTIFY outboxChanged)
     Q_PROPERTY(QVariantList outboxList    READ outboxList    NOTIFY outboxChanged)
@@ -96,12 +99,17 @@ public:
     bool         peerPaired() const;
     /// 人话版的配对状态：缺地址 / 缺指纹 / 缺口令 分别说清楚
     QString      pairStatus() const;
+    QVariantList remoteRoots() const;
+    QString      remoteRootsHint() const;
     int          outboxCount() const;
     QVariantList outboxList() const;
 
     /// 重新读配置（只在配置文件真的变过时才读盘）+ 刷新已配对列表
     Q_INVOKABLE void refreshPairState();
-
+    /// 连一次对端，把它的同步范围（alias + 目录名）读回来
+    Q_INVOKABLE void refreshRemoteRoots();
+    /// 按对端的 alias 对齐本机同步范围；返回人话结果（"已对齐 2 个" / "没有可对齐的"）
+    Q_INVOKABLE QString alignAliasesToRemote();
     Q_INVOKABLE void addSharedDir(const QString &path);
     Q_INVOKABLE void removeSharedDir(const QString &path);
     Q_INVOKABLE void syncNow();
@@ -199,6 +207,7 @@ signals:
     void pairedDevicesChanged();
     /// 连接方配对结果（QML 用来弹提示）
     void pairingFinished(bool ok, const QString &message);
+    void remoteRootsChanged();
     void fileHandled(const QString &relPath, const QString &action);
     void syncFinished(int uploaded, int downloaded, int conflicts);
     /// 从投递区领取了文件（count 个，落在 inboxDir）
@@ -294,6 +303,9 @@ private:
     QString      m_pairCode;
     bool         m_pairActive = false;
     QVariantList m_pairedDevices;
+    QVariantList m_remoteRoots;        // 对端开放文件夹：{alias, name}
+    QString      m_remoteRootsHint;    // 一行摘要，给 QML 直接显示
+    bool         m_alignAfterPairing = false;   // 配对后自动对齐别名（省一次点击）
     qint64       m_configStamp = -1;   // 配置文件 mtime，refreshPairState 用它决定要不要重读
 
     // ---- 投递 ----

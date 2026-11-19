@@ -97,6 +97,7 @@ private slots:
     void probeRejectsFingerprintMismatch();
     void probeRejectsUnknownDevice();
     void listRemoteReturnsFiles();
+    void remoteRootsExposeAliases();
     void fetchWritesFile();
     void pushUploadsFile();
     void removeRemoteMovesToTrash();
@@ -196,6 +197,19 @@ void TestNetTransport::listRemoteReturnsFiles()
     QCOMPARE(paths, QStringList({QStringLiteral("docs/a.txt"), QStringLiteral("docs/b.txt")}));
 
     QCOMPARE(transport.remoteAliases(), QStringList({QStringLiteral("docs")}));
+}
+
+void TestNetTransport::remoteRootsExposeAliases()
+{
+    // 认证时 HelloAck 会带回服务端开放的文件夹，界面据此自动对齐别名
+    Sync::Net::NetTransport transport(peer());
+    QVERIFY2(transport.probe(), qPrintable(transport.lastError()));
+
+    const QList<Sync::Net::NetTransport::RemoteRoot> roots = transport.remoteRoots();
+    QCOMPARE(roots.size(), 1);
+    // 测试夹具用单根 listen(0, root)，没有别名前缀，所以 alias 为空、name 是目录名
+    QVERIFY(roots.first().alias.isEmpty());
+    QCOMPARE(roots.first().name, QStringLiteral("shared"));
 }
 
 void TestNetTransport::fetchWritesFile()

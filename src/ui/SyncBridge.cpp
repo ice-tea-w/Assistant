@@ -627,6 +627,106 @@ QString SyncBridge::pairStatus() const
         .arg(m_config->syncPort());
 }
 
+QVariantList SyncBridge::remoteRoots() const
+{
+    return m_remoteRoots;
+}
+
+QString SyncBridge::remoteRootsHint() const
+{
+    return m_remoteRootsHint;
+}
+
+void SyncBridge::refreshRemoteRoots()
+{
+    if (!m_config || !hasPeerCredentials())
+        return;
+
+    Sync::Net::NetPeer peer;
+    if (!peerForDelivery(&peer))
+        return;
+
+    setSendStatus(QStringLiteral("正在读取对端的同步范围…"));
+    auto *worker = QThread::create([this, peer] {
+        Sync::Net::NetTransport transport(peer);
+        const bool ok = transport.probe();   // 认证通过后 HelloAck 里就有 roots
+        QList<Sync::Net::NetTransport::RemoteRoot> roots;
+        QString error;
+        if (ok) {
+            roots = transport.remoteRoots();
+        } else {
+            error = transport.lastError();
+        }
+        QMetaObject::invokeMethod(this, [this, ok, roots, error] {
+            if (!ok) {
+                m_remoteRoots.clear();
+                m_remoteRootsHint = QStringLiteral("读取对端文件夹失败：%1").arg(error);
+                emit remoteRootsChanged();
+                return;
+            }
+            QVariantList list;
+            QStringList parts;
+            for (const auto &root : roots) {
+                QVariantMap item;
+                item.insert(QStringLiteral("alias"), root.alias);
+                item.insert(QStringLiteral("name"), root.name);
+                list.append(item);
+                parts << (root.alias.isEmpty() ? root.name
+                                               : QStringLiteral("%1（%2）").arg(root.alias, root.name));
+            }
+            m_remoteRoots = list;
+            m_remoteRootsHint = parts.isEmpty()
+                                    ? QStringLiteral("对端没有开放任何文件夹")
+                                    : QStringLiteral("对端开放：%1").arg(parts.join(QStringLiteral("、")));
+            emit remoteRootsChanged();
+            if (m_alignAfterPairing) {
+                m_alignAfterPairing = false;
+                setSendStatus(alignAliasesToRemote());
+            } else {
+                setSendStatus(QStringLiteral("已读取对端的同步范围"));
+            }
+        }, Qt::QueuedConnection);
+    });
+    connect(worker, &QThread::finished, this, [worker] { worker->deleteLater(); });
+    worker->start();
+}
+
+QString SyncBridge::alignAliasesToRemote()
+{
+    if (m_remoteRoots.isEmpty())
+        return QStringLiteral("先「读取对端文件夹」再对齐");
+    if (m_roots.isEmpty())
+        return QStringLiteral("本机还没有同步范围可对齐");
+
+    int changed = 0;
+    for (int i = 0; i < m_roots.size(); ++i) {
+        QVariantMap root = m_roots.at(i).toMap();
+        const QString localName = QFileInfo(root.value(QStringLiteral("localPath")).toString()).fileName();
+        for (const QVariant &raw : m_remoteRoots) {
+            const QVariantMap remote = raw.toMap();
+            // 按目录名匹配：两边叫同一个文件夹，才是同一个逻辑范围
+            if (remote.value(QStringLiteral("name")).toString().compare(localName, Qt::CaseInsensitive) != 0)
+                continue;
+            const QString alias = remote.value(QStringLiteral("alias")).toString();
+            if (root.value(QStringLiteral("alias")).toString() == alias)
+                break;
+            root.insert(QStringLiteral("alias"), alias);
+            m_roots[i] = root;
+            ++changed;
+            break;
+        }
+    }
+
+    if (changed > 0) {
+        if (m_config)
+            m_config->setSyncRoots(m_roots);
+        emit rootsChanged();
+        refreshChannel();
+        return QStringLiteral("已按对端对齐 %1 个别名").arg(changed);
+    }
+    return QStringLiteral("别名已经一致，不用改");
+}
+
 void SyncBridge::refreshPairState()
 {
     if (!m_config)
@@ -1070,6 +1170,10 @@ void SyncBridge::pairWithPeer(const QString &address, const QString &code)
 
             setNetStatus(QStringLiteral("已配对到 %1:%2，同步会走直连").arg(peer.host).arg(peer.port));
             emit pairingFinished(true, QStringLiteral("配对成功"));
+            // 配对完顺手把对端开放了哪些文件夹读回来，并直接对齐别名：
+            // 这两步本来要用户点两下，能自动就不该让人点
+            m_alignAfterPairing = true;
+            refreshRemoteRoots();
         }, Qt::QueuedConnection);
     });
     connect(worker, &QThread::finished, this, [worker] { worker->deleteLater(); });
