@@ -3,21 +3,21 @@
 <head>
 <meta charset="utf-8">
 <link rel="stylesheet" href="hipo.css">
-<title>Assistant · HIPO 功能层次图</title>
+<title>桌面助手 · 功能层次图</title>
 </head>
 <body>
 <div class="sheet hierarchy">
   <div class="header">
     <div>
-      <div class="kicker">HIPO · Hierarchy Chart · 2026-11-19</div>
-      <h1>Assistant 桌面助手 · 功能层次图</h1>
-      <div class="subtitle">按功能分解，而不是按部署分层；安全模块按 file_guard 的 M3 规划绘制，虚线不代表已实现。</div>
+      <div class="kicker">功能层次图 · 2026-11-19</div>
+      <h1>桌面助手 · 功能层次图</h1>
+      <div class="subtitle">按功能分解，而不是按部署分层；安全模块按文件卫士原型规划绘制，虚线不代表已实现。</div>
     </div>
     <div class="legend">
       <span class="item"><span class="sw"></span>已落地</span>
       <span class="item"><span class="sw partial"></span>部分 / 在建</span>
       <span class="item"><span class="sw planned"></span>规划（未接产品）</span>
-      <span class="item"><span class="sw fg"></span>file_guard 参考</span>
+      <span class="item"><span class="sw fg"></span>参考原型</span>
     </div>
   </div>
 
@@ -30,131 +30,131 @@
   </svg>
 
   <div class="root">
-    <div class="n">0 · ROOT</div>
-    <div class="t">Assistant 桌面助手</div>
+    <div class="n">0 · 根节点</div>
+    <div class="t">桌面助手</div>
     <div class="s">Windows 单机 · Qt6 / QML · 本地优先 · 插件可扩展</div>
   </div>
 
   <section class="col" style="left:40px">
     <div class="colhead"><div class="num">1</div><div class="name">交互与命令</div><span class="tag ok">已落地</span></div>
     <div class="subs">
-      <div class="sub"><span class="no">1.1</span><span class="txt">搜索浮窗 MainWindow</span></div>
-      <div class="sub"><span class="no">1.2</span><span class="txt">主面板 MainPanel</span></div>
-      <div class="sub"><span class="no">1.3</span><span class="txt">托盘 + 全局热键</span></div>
-      <div class="sub"><span class="no">1.4</span><span class="txt">六个 Bridge</span></div>
+      <div class="sub"><span class="no">1.1</span><span class="txt">搜索浮窗</span></div>
+      <div class="sub"><span class="no">1.2</span><span class="txt">主面板</span></div>
+      <div class="sub"><span class="no">1.3</span><span class="txt">托盘与全局热键</span></div>
+      <div class="sub"><span class="no">1.4</span><span class="txt">六个桥接器</span></div>
     </div>
   </section>
 
   <section class="col" style="left:250px">
     <div class="colhead"><div class="num">2</div><div class="name">检索与文件</div><span class="tag ok">已落地</span></div>
     <div class="subs">
-      <div class="sub"><span class="no">2.1</span><span class="txt">QueryParser</span></div>
-      <div class="sub"><span class="no">2.2</span><span class="txt">ScoreEngine · QueryEngine</span></div>
-      <div class="sub"><span class="no">2.3</span><span class="txt">FileIndex 门面</span></div>
-      <div class="sub"><span class="no">2.4</span><span class="txt">FileScanner</span></div>
-      <div class="sub"><span class="no">2.5</span><span class="txt">FileSnapshot · COW</span></div>
-      <div class="sub"><span class="no">2.6</span><span class="txt">FileWatcher · 分发器</span></div>
+      <div class="sub"><span class="no">2.1</span><span class="txt">查询解析器</span></div>
+      <div class="sub"><span class="no">2.2</span><span class="txt">评分引擎 · 查询引擎</span></div>
+      <div class="sub"><span class="no">2.3</span><span class="txt">文件索引门面</span></div>
+      <div class="sub"><span class="no">2.4</span><span class="txt">文件扫描器</span></div>
+      <div class="sub"><span class="no">2.5</span><span class="txt">文件快照 · 快照管理器</span></div>
+      <div class="sub"><span class="no">2.6</span><span class="txt">文件监听器 · 事件分发器</span></div>
     </div>
   </section>
 
   <section class="col" style="left:460px">
     <div class="colhead"><div class="num">3</div><div class="name">收件箱与治理</div><span class="tag ok">已落地</span></div>
     <div class="subs">
-      <div class="sub"><span class="no">3.1</span><span class="txt">IngestEngine</span></div>
-      <div class="sub"><span class="no">3.2</span><span class="txt">TrackingEngine</span></div>
-      <div class="sub"><span class="no">3.3</span><span class="txt">DownloadRules</span></div>
-      <div class="sub"><span class="no">3.4</span><span class="txt">FileIdentity</span></div>
-      <div class="sub"><span class="no">3.5</span><span class="txt">RecycleBin</span></div>
+      <div class="sub"><span class="no">3.1</span><span class="txt">收件箱引擎</span></div>
+      <div class="sub"><span class="no">3.2</span><span class="txt">去向追踪引擎</span></div>
+      <div class="sub"><span class="no">3.3</span><span class="txt">下载归档规则</span></div>
+      <div class="sub"><span class="no">3.4</span><span class="txt">文件物理身份</span></div>
+      <div class="sub"><span class="no">3.5</span><span class="txt">回收站</span></div>
     </div>
   </section>
 
   <section class="col partial" style="left:670px">
     <div class="colhead"><div class="num">4</div><div class="name">设备同步</div><span class="tag partial">部分 · 直连</span></div>
     <div class="subs">
-      <div class="sub"><span class="no">4.1</span><span class="txt">SyncEngine</span></div>
-      <div class="sub"><span class="no">4.2</span><span class="txt">SyncServer · NetTransport</span></div>
-      <div class="sub"><span class="no">4.3</span><span class="txt">Identity · DeviceAuth</span></div>
-      <div class="sub"><span class="no">4.4</span><span class="txt">ConflictResolver · PathGuard</span></div>
-      <div class="sub"><span class="no">4.5</span><span class="txt">Outbox · SyncDatabase</span></div>
+      <div class="sub"><span class="no">4.1</span><span class="txt">同步引擎</span></div>
+      <div class="sub"><span class="no">4.2</span><span class="txt">同步服务端 · 网络通道</span></div>
+      <div class="sub"><span class="no">4.3</span><span class="txt">设备身份 · 设备认证</span></div>
+      <div class="sub"><span class="no">4.4</span><span class="txt">冲突裁决器 · 路径守卫</span></div>
+      <div class="sub"><span class="no">4.5</span><span class="txt">待发队列 · 同步数据库</span></div>
     </div>
   </section>
 
   <section class="col" style="left:880px">
     <div class="colhead"><div class="num">5</div><div class="name">数据洞察</div><span class="tag ok">已落地 · 内置</span></div>
     <div class="subs">
-      <div class="sub"><span class="no">5.1</span><span class="txt">MetricsService</span></div>
-      <div class="sub"><span class="no">5.2</span><span class="txt">MetricsBridge</span></div>
-      <div class="sub"><span class="no">5.3</span><span class="txt">InsightPage · ChartKit</span></div>
+      <div class="sub"><span class="no">5.1</span><span class="txt">指标服务</span></div>
+      <div class="sub"><span class="no">5.2</span><span class="txt">指标桥</span></div>
+      <div class="sub"><span class="no">5.3</span><span class="txt">数据看板页 · 图表组件</span></div>
     </div>
   </section>
 
   <section class="col" style="left:1090px">
-    <div class="colhead"><div class="num">6</div><div class="name">插件扩展</div><span class="tag ok">已落地 · API 2</span></div>
+    <div class="colhead"><div class="num">6</div><div class="name">插件扩展</div><span class="tag ok">已落地 · 第 2 版</span></div>
     <div class="subs">
-      <div class="sub"><span class="no">6.1</span><span class="txt">PluginManager</span></div>
-      <div class="sub"><span class="no">6.2</span><span class="txt">PluginRegistry</span></div>
-      <div class="sub"><span class="no">6.3</span><span class="txt">PluginLoader · Host</span></div>
-      <div class="sub"><span class="no">6.4</span><span class="txt">PluginInstaller</span></div>
-      <div class="sub"><span class="no">6.5</span><span class="txt">PluginCatalog</span></div>
+      <div class="sub"><span class="no">6.1</span><span class="txt">插件管理器</span></div>
+      <div class="sub"><span class="no">6.2</span><span class="txt">插件注册表</span></div>
+      <div class="sub"><span class="no">6.3</span><span class="txt">插件加载器 · 插件宿主</span></div>
+      <div class="sub"><span class="no">6.4</span><span class="txt">插件安装器</span></div>
+      <div class="sub"><span class="no">6.5</span><span class="txt">插件市场目录</span></div>
       <div class="sub"><span class="no">6.6</span><span class="txt">扩展点 · 服务 · 回收</span></div>
     </div>
   </section>
 
   <section class="col security" style="left:1300px">
     <div class="colhead">
-      <div class="num">7 · M3 · 按 file_guard 规划</div>
+      <div class="num">7 · 安全模块 · 按文件卫士规划</div>
       <div class="name">文件安全（规划，未接产品）</div>
-      <span class="tag planned">规划</span><span class="tag fg" style="margin-left:4px">FG 参考</span>
+      <span class="tag planned">规划</span><span class="tag fg" style="margin-left:4px">参考</span>
     </div>
-    <div class="sec-label" style="left:0">M3-p1 · 判定与账本</div>
-    <div class="sec-label" style="left:202px">M3-p2 · 保护（保险箱）</div>
+    <div class="sec-label" style="left:0">安全一期 · 判定与账本</div>
+    <div class="sec-label" style="left:202px">安全二期 · 保护（保险箱）</div>
     <div class="secgrid">
-      <div class="sub planned"><span class="no">7.1</span><span class="txt">SecurityCenter</span></div>
-      <div class="sub fg"><span class="no">7.7</span><span class="txt">IntegrityLedger</span><span class="tag fg">FG</span></div>
+      <div class="sub planned"><span class="no">7.1</span><span class="txt">安全中心</span></div>
+      <div class="sub fg"><span class="no">7.7</span><span class="txt">完整性账本</span><span class="tag fg">参</span></div>
 
-      <div class="sub planned"><span class="no">7.2</span><span class="txt">FileOpGateway</span></div>
-      <div class="sub fg"><span class="no">7.8</span><span class="txt">AuditLog · HMAC 链</span><span class="tag fg">FG</span></div>
+      <div class="sub planned"><span class="no">7.2</span><span class="txt">文件操作网关</span></div>
+      <div class="sub fg"><span class="no">7.8</span><span class="txt">审计日志（哈希链）</span><span class="tag fg">参</span></div>
 
-      <div class="sub planned"><span class="no">7.3</span><span class="txt">IFilePolicy · PolicyEngine</span></div>
-      <div class="sub planned"><span class="no">7.9</span><span class="txt">SecurityDatabase 权威库</span></div>
+      <div class="sub planned"><span class="no">7.3</span><span class="txt">文件策略接口 · 策略引擎</span></div>
+      <div class="sub planned"><span class="no">7.9</span><span class="txt">安全数据库（权威）</span></div>
 
-      <div class="sub planned"><span class="no">7.4</span><span class="txt">ApprovalSession</span></div>
-      <div class="sub fg"><span class="no">7.10</span><span class="txt">Vault · KeyVault(DPAPI)</span><span class="tag fg">FG</span></div>
+      <div class="sub planned"><span class="no">7.4</span><span class="txt">审批会话</span></div>
+      <div class="sub fg"><span class="no">7.10</span><span class="txt">保险箱 · 密钥保险箱</span><span class="tag fg">参</span></div>
 
-      <div class="sub planned"><span class="no">7.5</span><span class="txt">FileOperator 受控执行器</span></div>
-      <div class="sub fg"><span class="no">7.11</span><span class="txt">AesGcm · NameCipher</span><span class="tag fg">FG</span></div>
+      <div class="sub planned"><span class="no">7.5</span><span class="txt">受控文件执行器</span></div>
+      <div class="sub fg"><span class="no">7.11</span><span class="txt">内容加密 · 文件名加密</span><span class="tag fg">参</span></div>
 
       <div class="sub shared"><span class="no">7.6</span><span class="txt">事件分发器</span><span class="tag gray">复用</span></div>
-      <div class="sub fg"><span class="no">7.12</span><span class="txt">备份库 BackupStore</span><span class="tag fg">FG</span></div>
+      <div class="sub fg"><span class="no">7.12</span><span class="txt">备份库</span><span class="tag fg">参</span></div>
     </div>
-    <div class="secfoot"><span class="tag fg">FG</span>FileGuard sidecar（CLI / HTTP / stdio）—— 参考实现，未接产品；目标态是 C++ M3，不是 Python 运行时</div>
+    <div class="secfoot"><span class="tag fg">参</span>文件卫士旁路进程（命令行 / 本地接口 / 标准输入输出）—— 参考实现，未接产品；目标态是 C++ 安全模块，不是 Python 运行时</div>
   </section>
 
   <section class="col" style="left:1730px">
     <div class="colhead"><div class="num">8</div><div class="name">平台支撑</div><span class="tag ok">已落地</span></div>
     <div class="subs">
-      <div class="sub"><span class="no">8.1</span><span class="txt">ConfigManager</span></div>
-      <div class="sub"><span class="no">8.2</span><span class="txt">Logger</span></div>
-      <div class="sub"><span class="no">8.3</span><span class="txt">DatabaseMigrator</span></div>
-      <div class="sub"><span class="no">8.4</span><span class="txt">SQLite ×N 独立连接</span></div>
-      <div class="sub"><span class="no">8.5</span><span class="txt">Win32 / 系统 API</span></div>
-      <div class="sub"><span class="no">8.6</span><span class="txt">qrc · Style · Font</span></div>
+      <div class="sub"><span class="no">8.1</span><span class="txt">配置管理器</span></div>
+      <div class="sub"><span class="no">8.2</span><span class="txt">日志器</span></div>
+      <div class="sub"><span class="no">8.3</span><span class="txt">数据库迁移器</span></div>
+      <div class="sub"><span class="no">8.4</span><span class="txt">本地数据库 ×N（独立连接）</span></div>
+      <div class="sub"><span class="no">8.5</span><span class="txt">Windows 系统接口</span></div>
+      <div class="sub"><span class="no">8.6</span><span class="txt">资源 · 样式 · 字体</span></div>
     </div>
   </section>
 
   <div class="contracts">
-    <div class="contract-title"><span>共享契约 · include/contract</span><span class="line"></span><span>C1–C4 是跨模块解耦面，不是可执行模块</span></div>
+    <div class="contract-title"><span>共享契约 · 契约头文件</span><span class="line"></span><span>契约 1–4 是跨模块解耦面，不是可执行模块</span></div>
     <div class="contract-row">
-      <div class="contract" style="border-style:dashed"><div class="c">C1 · 目标</div><div class="t">FileRef</div><div class="d">id / path / size / mtime / catMask / flags</div></div>
-      <div class="contract"><div class="c">C2 · 已落地</div><div class="t">FileSystemEvent</div><div class="d">Added / Removed / Renamed / Modified / Overflow</div></div>
-      <div class="contract" style="border-style:dashed"><div class="c">C3 · 目标</div><div class="t">FileOpGateway 类型</div><div class="d">OpRequest / Decision / OpResult(opId)</div></div>
-      <div class="contract"><div class="c">C4 · API 2</div><div class="t">IHostApi</div><div class="d">插件 host 面 / 扩展点 / 服务注入 / 生命周期</div></div>
+      <div class="contract" style="border-style:dashed"><div class="c">契约 1 · 目标</div><div class="t">文件引用</div><div class="d">编号 / 路径 / 大小 / 修改时间 / 类型掩码 / 标志</div></div>
+      <div class="contract"><div class="c">契约 2 · 已落地</div><div class="t">文件系统事件</div><div class="d">新增 / 删除 / 改名 / 修改 / 溢出</div></div>
+      <div class="contract" style="border-style:dashed"><div class="c">契约 3 · 目标</div><div class="t">文件操作网关类型</div><div class="d">操作请求 / 授权判定 / 操作结果（操作编号）</div></div>
+      <div class="contract"><div class="c">契约 4 · 第 2 版</div><div class="t">插件宿主接口</div><div class="d">插件宿主面 / 扩展点 / 服务注入 / 生命周期</div></div>
     </div>
   </div>
 
   <div class="note">
-    <div><b>读法：</b>编号是模块层次，不是调用顺序；跨域调用只经 Bridge 和 <b>main.cpp 组合根</b>，能力域之间不互相 include。</div>
-    <div><b>边界：</b>7.x 全部是目标设计；当前 C++ 产品没有 <b>security.db / vault.bin / FileOpGateway</b> 实现，file_guard 仍在 <b>tools/file_guard/</b> 归档。</div>
+    <div><b>读法：</b>编号是模块层次，不是调用顺序；跨域调用只经桥接器和 <b>main.cpp 组合根</b>，能力域之间互不引用。</div>
+    <div><b>边界：</b>7.x 全部是目标设计；当前 C++ 产品没有安全数据库 / 保险箱文件 / 文件操作网关实现，文件卫士仍在 <b>tools/file_guard/</b> 归档。</div>
   </div>
 </div>
 </body>

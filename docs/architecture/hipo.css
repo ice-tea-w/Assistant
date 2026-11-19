@@ -35,7 +35,7 @@ body {
   overflow: hidden;
 }
 .sheet.hierarchy { height: 820px; }
-.sheet.ipo { height: 1480px; }
+.sheet.ipo { width: 100%; min-width: 1960px; height: 1480px; }
 
 .header {
   height: 92px;
@@ -248,7 +248,7 @@ h1 {
 .grid {
   padding: 12px 44px 30px;
   display: grid;
-  grid-template-columns: repeat(3, 600px);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 18px 20px;
 }
 .card {
@@ -286,3 +286,5 @@ h1 {
 .store { flex: none; font-size: 8.4px; color: var(--ink3); border-top: 1px dashed var(--line); padding-top: 4px; margin-top: 2px; }
 .store b { color: var(--ink2); font-weight: 600; }
 .footnote { padding: 0 44px; font-size: 9.5px; color: var(--ink3); line-height: 1.55; }
+
+@media (min-width: 2000px) { body { width: 100%; } .sheet.ipo { width: 100%; } }

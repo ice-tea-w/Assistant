@@ -3,148 +3,148 @@
 <head>
 <meta charset="utf-8">
 <link rel="stylesheet" href="hipo.css">
-<title>Assistant · HIPO IPO Charts</title>
+<title>桌面助手 · 输入 / 处理 / 输出</title>
 </head>
 <body>
 <div class="sheet ipo">
   <div class="header">
     <div>
-      <div class="kicker">HIPO · IPO Charts · 2026-11-19</div>
-      <h1>Assistant 桌面助手 · 输入 / 处理 / 输出</h1>
-      <div class="subtitle">每个一级模块一张 IPO 卡；7.x 按 file_guard 的 M3 规划绘制，红色虚线表示未接产品。</div>
+      <div class="kicker">输入 / 处理 / 输出 · 2026-11-19</div>
+      <h1>桌面助手 · 输入 / 处理 / 输出</h1>
+      <div class="subtitle">每个一级模块一张卡；7.x 按文件卫士原型的安全模块规划绘制，红色虚线表示未接产品。</div>
     </div>
     <div class="legend">
       <span class="item"><span class="sw"></span>已落地</span>
       <span class="item"><span class="sw partial"></span>部分 / 在建</span>
       <span class="item"><span class="sw planned"></span>规划（未接产品）</span>
-      <span class="item"><span class="sw fg"></span>file_guard 参考</span>
+      <span class="item"><span class="sw fg"></span>参考原型</span>
     </div>
   </div>
 
   <div class="grid">
     <article class="card">
-      <div class="card-head"><span class="card-no">1</span><div><div class="card-title">交互与命令</div><div class="card-sub">MainWindow · MainPanel · Tray · Hotkey · Bridges</div></div><span class="tag ok">已落地</span></div>
+      <div class="card-head"><span class="card-no">1</span><div><div class="card-title">交互与命令</div><div class="card-sub">搜索浮窗 · 主面板 · 托盘 · 全局热键 · 桥接器</div></div><span class="tag ok">已落地</span></div>
       <div class="body">
-        <div class="irow"><div class="ilab">I</div><div class="itext">键鼠 / 全局热键 / IME；<code>config</code>；六个 Bridge 暴露的模型（backend / panel / sync / inbox / plugins / metrics）。</div></div>
-        <div class="irow"><div class="ilab">P</div><div class="itext">事件路由 · 搜索防抖与 IME 拦截 · 首击选中/二击执行 · 主题与布局 · 面板导航 · 窗口 dock。</div></div>
-        <div class="irow"><div class="ilab">O</div><div class="itext">QML 页面与列表 · <code>backend.executeCommand</code> · 托盘/窗口状态 · 用户可见的 toast/错误。</div></div>
+        <div class="irow"><div class="ilab">I</div><div class="itext">键鼠 / 全局热键 / 输入法；配置；六个桥接器暴露的模型（检索 / 面板 / 同步 / 收件箱 / 插件 / 指标）。</div></div>
+        <div class="irow"><div class="ilab">P</div><div class="itext">事件路由 · 搜索防抖与输入法拦截 · 首击选中 / 二击执行 · 主题与布局 · 面板导航 · 窗口停靠。</div></div>
+        <div class="irow"><div class="ilab">O</div><div class="itext">界面页面与列表 · 执行命令 · 托盘 / 窗口状态 · 用户可见的提示或错误。</div></div>
       </div>
-      <div class="store"><b>Store：</b>config.json（读）；不直接写业务库</div>
+      <div class="store"><b>存储：</b>配置文件（读）；不直接写业务库</div>
     </article>
 
     <article class="card">
-      <div class="card-head"><span class="card-no">2</span><div><div class="card-title">检索与文件</div><div class="card-sub">QueryParser · QueryEngine · FileIndex · Scanner · Snapshot</div></div><span class="tag ok">已落地</span></div>
+      <div class="card-head"><span class="card-no">2</span><div><div class="card-title">检索与文件</div><div class="card-sub">查询解析器 · 查询引擎 · 文件索引 · 扫描器 · 快照</div></div><span class="tag ok">已落地</span></div>
       <div class="body">
-        <div class="irow"><div class="ilab">I</div><div class="itext">查询文本；扫描 roots / 排除规则；<code>FileSystemEvent</code>；<code>file_index.db</code> 旧快照。</div></div>
-        <div class="irow"><div class="ilab">P</div><div class="itext">parse（AND / -否定 / 短语 / kind）→ 过滤 → 打分 → top-K；Win32 DFS 扫描 → 三方差集；COW 发布快照。</div></div>
-        <div class="irow"><div class="ilab">O</div><div class="itext"><code>SearchResult</code> 列表 · <code>IndexStats</code> · 索引增量事件 · 扫描耗时/剪枝计数。</div></div>
+        <div class="irow"><div class="ilab">I</div><div class="itext">查询文本；扫描根目录 / 排除规则；文件系统事件；文件索引旧快照。</div></div>
+        <div class="irow"><div class="ilab">P</div><div class="itext">解析（与 / 非 / 短语 / 类型）→ 过滤 → 评分 → 取前 K；递归扫描 → 三方差集；写时复制发布快照。</div></div>
+        <div class="irow"><div class="ilab">O</div><div class="itext">搜索结果列表 · 索引统计 · 索引增量事件 · 扫描耗时 / 剪枝计数。</div></div>
       </div>
-      <div class="store"><b>Store：</b>file_index.db（派生，可重建）· logs</div>
+      <div class="store"><b>存储：</b>文件索引数据库（派生，可重建）· 日志</div>
     </article>
 
     <article class="card">
-      <div class="card-head"><span class="card-no">3</span><div><div class="card-title">收件箱与治理</div><div class="card-sub">IngestEngine · TrackingEngine · DownloadRules · RecycleBin</div></div><span class="tag ok">已落地</span></div>
+      <div class="card-head"><span class="card-no">3</span><div><div class="card-title">收件箱与治理</div><div class="card-sub">收件箱引擎 · 去向追踪引擎 · 下载归档规则 · 回收站</div></div><span class="tag ok">已落地</span></div>
       <div class="body">
-        <div class="irow"><div class="ilab">I</div><div class="itext">下载/IM 目录 watcher 事件；<code>FileId + quickSig</code>；归档规则；配置。</div></div>
-        <div class="irow"><div class="ilab">P</div><div class="itext">完成判定 A/B/C → 移入 box → journal intent/done → 去向追踪 → 规则归档 / 查重 / 撤销。</div></div>
-        <div class="irow"><div class="ilab">O</div><div class="itext">downloads 行与状态 · 收件箱文件 · 托盘通知 · 归位路径 · 回收站删除结果。</div></div>
+        <div class="irow"><div class="ilab">I</div><div class="itext">下载 / 即时通讯目录监听事件；文件编号 + 快速签名；归档规则；配置。</div></div>
+        <div class="irow"><div class="ilab">P</div><div class="itext">完成判定 A/B/C → 移入收件箱 → 记录意向/完成 → 去向追踪 → 规则归档 / 查重 / 撤销。</div></div>
+        <div class="irow"><div class="ilab">O</div><div class="itext">下载记录与状态 · 收件箱文件 · 托盘通知 · 归位路径 · 回收站删除结果。</div></div>
       </div>
-      <div class="store"><b>Store：</b>downloads.db（权威）· Inbox 目录 · 回收站</div>
+      <div class="store"><b>存储：</b>下载数据库（权威）· 收件箱目录 · 回收站</div>
     </article>
 
     <article class="card partial">
-      <div class="card-head"><span class="card-no">4</span><div><div class="card-title">设备同步</div><div class="card-sub">SyncEngine · SyncServer · NetTransport · Identity</div></div><span class="tag partial">部分 · 直连</span></div>
+      <div class="card-head"><span class="card-no">4</span><div><div class="card-title">设备同步</div><div class="card-sub">同步引擎 · 同步服务端 · 网络通道 · 设备身份</div></div><span class="tag partial">部分 · 直连</span></div>
       <div class="body">
-        <div class="irow"><div class="ilab">I</div><div class="itext">同步 roots / 别名；对端清单；配对凭据（deviceSecret/fingerprint）；本地文件；outbox。</div></div>
-        <div class="irow"><div class="ilab">P</div><div class="itext">三方差集（本地/基线/对端）→ 冲突副本 → 单向 TLS + HMAC 挑战应答 → 分页传输 → 投递。</div></div>
-        <div class="irow"><div class="ilab">O</div><div class="itext">远端 Put/Delete · 冲突副本 · outbox 重试 · 同步状态/进度 · 收件箱投递。</div></div>
+        <div class="irow"><div class="ilab">I</div><div class="itext">同步根目录 / 别名；对端清单；配对凭据（设备密钥 / 指纹）；本地文件；待发队列。</div></div>
+        <div class="irow"><div class="ilab">P</div><div class="itext">三方差集（本地 / 基线 / 对端）→ 冲突副本 → 单向 TLS + 挑战应答 → 分页传输 → 投递。</div></div>
+        <div class="irow"><div class="ilab">O</div><div class="itext">远端写入 / 删除 · 冲突副本 · 待发重试 · 同步状态 / 进度 · 收件箱投递。</div></div>
       </div>
-      <div class="store"><b>Store：</b>sync.db（权威）· identity/ · 远端共享根</div>
+      <div class="store"><b>存储：</b>同步数据库（权威）· 设备身份目录 · 远端共享根</div>
     </article>
 
     <article class="card">
-      <div class="card-head"><span class="card-no">5</span><div><div class="card-title">数据洞察</div><div class="card-sub">MetricsService · MetricsBridge · InsightPage · ChartKit</div></div><span class="tag ok">已落地 · 内置</span></div>
+      <div class="card-head"><span class="card-no">5</span><div><div class="card-title">数据洞察</div><div class="card-sub">指标服务 · 指标桥 · 数据看板页 · 图表组件</div></div><span class="tag ok">已落地 · 内置</span></div>
       <div class="body">
-        <div class="irow"><div class="ilab">I</div><div class="itext">七个 SQLite 库 + <code>QStorageInfo</code>；range = 7/30/90 天；手动/60s 刷新。</div></div>
-        <div class="irow"><div class="ilab">P</div><div class="itext">只读聚合 → 30s 缓存 → 补零日期桶 → 生成 KPI / 柱 / 环 / 热力 / 横条序列。</div></div>
-        <div class="irow"><div class="ilab">O</div><div class="itext">磁盘 KPI · 下载堆叠柱 · 14 周活跃度 · 文件类型 TopN · 空状态。</div></div>
+        <div class="irow"><div class="ilab">I</div><div class="itext">七个本地数据库 + 系统磁盘信息；时间范围 7/30/90 天；手动 / 60 秒刷新。</div></div>
+        <div class="irow"><div class="ilab">P</div><div class="itext">只读聚合 → 30 秒缓存 → 日期补零 → 生成关键指标 / 柱 / 环 / 热力 / 横条序列。</div></div>
+        <div class="irow"><div class="ilab">O</div><div class="itext">磁盘关键指标 · 下载堆叠柱 · 14 周活跃度 · 文件类型前 N · 空状态。</div></div>
       </div>
-      <div class="store"><b>Store：</b>只读 history/downloads/todo/notes/clipboard/file_index/sync；不写库</div>
+      <div class="store"><b>存储：</b>只读历史 / 下载 / 待办 / 笔记 / 剪贴板 / 文件索引 / 同步；不写库</div>
     </article>
 
     <article class="card">
-      <div class="card-head"><span class="card-no">6</span><div><div class="card-title">插件扩展</div><div class="card-sub">Manager · Registry · Loader/Host · Installer · API 2</div></div><span class="tag ok">已落地 · API 2</span></div>
+      <div class="card-head"><span class="card-no">6</span><div><div class="card-title">插件扩展</div><div class="card-sub">插件管理器 · 注册表 · 加载器 / 宿主 · 安装器 · 第 2 版接口</div></div><span class="tag ok">已落地 · 第 2 版</span></div>
       <div class="body">
-        <div class="irow"><div class="ilab">I</div><div class="itext">manifest / zip / 市场 index；enable/disable；扩展点注册；<code>inject</code> 服务声明。</div></div>
-        <div class="irow"><div class="ilab">P</div><div class="itext">inspect→download→extract→validate→commit；加载 QML 页面；服务注入；LIFO dispose；卸载先撤贡献。</div></div>
-        <div class="irow"><div class="ilab">O</div><div class="itext">导航页 / 命令 · 插件页面 · toast · <code>plugins.json</code> 状态 · 问题卡片（坏插件不崩宿主）。</div></div>
+        <div class="irow"><div class="ilab">I</div><div class="itext">插件清单 / 压缩包 / 市场索引；启用 / 停用；扩展点注册；服务声明。</div></div>
+        <div class="irow"><div class="ilab">P</div><div class="itext">检查 → 下载 → 解压 → 校验 → 提交；加载页面；注入服务；后进先出回收；卸载先撤贡献。</div></div>
+        <div class="irow"><div class="ilab">O</div><div class="itext">导航页 / 命令 · 插件页面 · 提示 · 插件清单状态 · 问题卡片（坏插件不崩宿主）。</div></div>
       </div>
-      <div class="store"><b>Store：</b>plugins/&lt;id&gt; · plugins.json · 每插件 data/</div>
+      <div class="store"><b>存储：</b>插件目录 · 插件清单 · 每个插件的数据目录</div>
     </article>
 
     <article class="card planned">
-      <div class="card-head"><span class="card-no">7.1</span><div><div class="card-title">安全 · 判定与网关</div><div class="card-sub">M3-p1 · SecurityCenter · FileOpGateway · IFilePolicy</div></div><span class="tag planned">规划</span></div>
+      <div class="card-head"><span class="card-no">7.1</span><div><div class="card-title">安全 · 判定与网关</div><div class="card-sub">安全一期 · 安全中心 · 文件操作网关 · 文件策略</div></div><span class="tag planned">规划</span></div>
       <div class="body">
-        <div class="irow"><div class="ilab">I</div><div class="itext"><code>OpRequest{actor, ref, op}</code>；<code>FileRef</code>；策略规则；审批结果；文件上下文。</div></div>
-        <div class="irow"><div class="ilab">P</div><div class="itext">宿主解析 actor → 重新解析目标（junction/路径）→ PolicyEngine 判定 → 必要时 ApprovalSession → 再次校验。</div></div>
-        <div class="irow"><div class="ilab">O</div><div class="itext"><code>Decision{Allow|Deny|Ask}</code> · <code>OpResult{opId}</code> · 审计 intent · 事件分发。</div></div>
+        <div class="irow"><div class="ilab">I</div><div class="itext">操作请求（操作者 / 文件引用 / 操作类型）；文件引用；策略规则；审批结果；文件上下文。</div></div>
+        <div class="irow"><div class="ilab">P</div><div class="itext">宿主解析操作者 → 重新解析目标（目录联接 / 路径）→ 策略引擎判定 → 必要时审批 → 再次校验。</div></div>
+        <div class="irow"><div class="ilab">O</div><div class="itext">授权判定（允许 / 拒绝 / 转审批）· 操作结果（操作编号）· 审计意向 · 事件分发。</div></div>
       </div>
-      <div class="store"><b>Store：</b>security.db（目标权威库）· FileSystemEvent；<b>当前未实现</b></div>
+      <div class="store"><b>存储：</b>安全数据库（目标权威库）· 文件系统事件；<b>当前未实现</b></div>
     </article>
 
     <article class="card planned">
-      <div class="card-head"><span class="card-no">7.2</span><div><div class="card-title">安全 · 完整性与账本</div><div class="card-sub">M3-p1 · IntegrityLedger · AuditLog · SecurityDatabase</div></div><span class="tag planned">规划</span><span class="tag fg">FG</span></div>
+      <div class="card-head"><span class="card-no">7.2</span><div><div class="card-title">安全 · 完整性与账本</div><div class="card-sub">安全一期 · 完整性账本 · 审计日志 · 安全数据库</div></div><span class="tag planned">规划</span><span class="tag fg">参考</span></div>
       <div class="body">
-        <div class="irow"><div class="ilab">I</div><div class="itext">操作结果 / 事件；文件 <code>quickSig</code>；审计链头外部锚点；周期复核范围。</div></div>
-        <div class="irow"><div class="ilab">P</div><div class="itext">快速签名 → 周期复核 → HMAC 链 <code>h_i=HMAC(chain,h_{i-1}||nonce||ct)</code> → seq 高水位 → 校验/回滚检测。</div></div>
-        <div class="irow"><div class="ilab">O</div><div class="itext">IntegrityState（正常/不可验证/篡改）· 审计行 · verify 报告 · 告警。</div></div>
+        <div class="irow"><div class="ilab">I</div><div class="itext">操作结果 / 事件；文件快速签名；审计链头外部锚点；周期复核范围。</div></div>
+        <div class="irow"><div class="ilab">P</div><div class="itext">快速签名 → 周期复核 → 哈希链（HMAC）→ 序号高水位 → 校验 / 回滚检测。</div></div>
+        <div class="irow"><div class="ilab">O</div><div class="itext">完整性状态（正常 / 不可验证 / 篡改）· 审计行 · 校验报告 · 告警。</div></div>
       </div>
-      <div class="store"><b>Store：</b>security.db（权威）· 外部 log head 锚点；<b>当前未实现</b></div>
+      <div class="store"><b>存储：</b>安全数据库（权威）· 外部链头锚点；<b>当前未实现</b></div>
     </article>
 
     <article class="card planned">
-      <div class="card-head"><span class="card-no">7.3</span><div><div class="card-title">安全 · 保险箱</div><div class="card-sub">M3-p2 · Vault · KeyVault · AesGcm · NameCipher · RecoveryCode</div></div><span class="tag planned">规划</span><span class="tag fg">FG</span></div>
+      <div class="card-head"><span class="card-no">7.3</span><div><div class="card-title">安全 · 保险箱</div><div class="card-sub">安全二期 · 保险箱 · 密钥保险箱 · 加密器 · 文件名加密 · 恢复码</div></div><span class="tag planned">规划</span><span class="tag fg">参考</span></div>
       <div class="body">
-        <div class="irow"><div class="ilab">I</div><div class="itext">明文 / 密码 / keyfile；恢复码；待加密文件；目标名称。</div></div>
-        <div class="irow"><div class="ilab">P</div><div class="itext">PBKDF2 派生 → 随机 DEK → DPAPI 保护 → AES-256-GCM 分块（FGC1 头，AAD=header||index||is_final）→ 名称加密 → 恢复码。</div></div>
-        <div class="irow"><div class="ilab">O</div><div class="itext"><code>.fgc</code> 容器 · 解密明文 · 密钥元数据 · 恢复套件；失败不输出半明文。</div></div>
+        <div class="irow"><div class="ilab">I</div><div class="itext">明文 / 密码 / 密钥文件；恢复码；待加密文件；目标名称。</div></div>
+        <div class="irow"><div class="ilab">P</div><div class="itext">口令派生 → 随机数据密钥 → Windows 数据保护接口保护 → AES-256-GCM 分块（头部 / 序号 / 末块标记）→ 名称加密 → 恢复码。</div></div>
+        <div class="irow"><div class="ilab">O</div><div class="itext">加密容器 · 解密明文 · 密钥元数据 · 恢复套件；失败不输出半明文。</div></div>
       </div>
-      <div class="store"><b>Store：</b>vault.bin（DPAPI）· .fgc · security.db；<b>当前未实现</b></div>
+      <div class="store"><b>存储：</b>密钥保险箱文件 · 加密容器 · 安全数据库；<b>当前未实现</b></div>
     </article>
 
     <article class="card fg">
-      <div class="card-head"><span class="card-no">7.4</span><div><div class="card-title">file_guard 参考实现</div><div class="card-sub">Python 原型 · CLI / HTTP / stdio · 不接产品</div></div><span class="tag fg">参考</span></div>
+      <div class="card-head"><span class="card-no">7.4</span><div><div class="card-title">文件卫士参考实现</div><div class="card-sub">脚本原型 · 命令行 / 本地接口 / 标准输入输出 · 不接产品</div></div><span class="tag fg">参考</span></div>
       <div class="body">
-        <div class="irow"><div class="ilab">I</div><div class="itext">CLI 参数 / 路径；<code>serve</code> 的 <code>POST /rpc</code> + token；密码 / keyfile / DPAPI vault。</div></div>
-        <div class="irow"><div class="ilab">P</div><div class="itext">crypto（FGC1/AES-GCM）· scan（敏感扫描）· audit（HMAC JSONL）· backup（版本化）· watch · fsutil（junction/ACL）。</div></div>
-        <div class="irow"><div class="ilab">O</div><div class="itext">JSON 结果 / 风险报告 · <code>.fgc</code> 文件 · 备份对象 · 退出码；仅供设计与验收。</div></div>
+        <div class="irow"><div class="ilab">I</div><div class="itext">命令行参数 / 路径；本地接口的请求与令牌；密码 / 密钥文件 / 凭据保险箱。</div></div>
+        <div class="irow"><div class="ilab">P</div><div class="itext">加密（容器与 AES-GCM）· 敏感扫描 · 审计（哈希链）· 版本化备份 · 目录监听 · 文件系统工具。</div></div>
+        <div class="irow"><div class="ilab">O</div><div class="itext">结果 / 风险报告 · 加密文件 · 备份对象 · 退出码；仅供设计与验收。</div></div>
       </div>
-      <div class="store"><b>Store：</b><code>tools/file_guard/</code> · <code>~/.file_guard</code>（参考）；<b>不参与构建</b></div>
+      <div class="store"><b>存储：</b>参考代码目录 · 参考数据目录（示例）；<b>不参与构建</b></div>
     </article>
 
     <article class="card">
-      <div class="card-head"><span class="card-no">8</span><div><div class="card-title">平台支撑</div><div class="card-sub">ConfigManager · Logger · DatabaseMigrator · SQLite · Win32</div></div><span class="tag ok">已落地</span></div>
+      <div class="card-head"><span class="card-no">8</span><div><div class="card-title">平台支撑</div><div class="card-sub">配置管理器 · 日志器 · 数据库迁移器 · 本地数据库 · Windows 接口</div></div><span class="tag ok">已落地</span></div>
       <div class="body">
-        <div class="irow"><div class="ilab">I</div><div class="itext">配置键 / 日志级别；DB 路径与 schema 版本；Win32 调用参数；qrc 资源请求。</div></div>
-        <div class="irow"><div class="ilab">P</div><div class="itext">JSON 读写/整文件重写；滚动日志；前向迁移；每库独立连接；系统 API 封装。</div></div>
-        <div class="irow"><div class="ilab">O</div><div class="itext">config.json · logs · schema/user_version · 文件索引/下载/同步/UI 资源。</div></div>
+        <div class="irow"><div class="ilab">I</div><div class="itext">配置键 / 日志级别；数据库路径与结构版本；系统调用参数；资源请求。</div></div>
+        <div class="irow"><div class="ilab">P</div><div class="itext">配置读写与整文件重写；滚动日志；前向迁移；每库独立连接；系统接口封装。</div></div>
+        <div class="irow"><div class="ilab">O</div><div class="itext">配置文件 · 日志 · 结构版本 · 文件索引 / 下载 / 同步 / 界面资源。</div></div>
       </div>
-      <div class="store"><b>Store：</b>config.json · logs · 6+ 个 SQLite 文件 · 资源内嵌 qrc</div>
+      <div class="store"><b>存储：</b>配置文件 · 日志 · 6 个以上数据库文件 · 内嵌资源</div>
     </article>
 
     <article class="card neutral">
-      <div class="card-head"><span class="card-no">C</span><div><div class="card-title">共享契约</div><div class="card-sub">include/contract · 只放常量/枚举/值类型</div></div><span class="tag partial">混合</span></div>
+      <div class="card-head"><span class="card-no">C</span><div><div class="card-title">共享契约</div><div class="card-sub">契约头文件 · 只放常量 / 枚举 / 值类型</div></div><span class="tag partial">混合</span></div>
       <div class="body">
-        <div class="irow"><div class="ilab">I</div><div class="itext">C1 <code>FileRef</code>；C2 <code>FileSystemEvent</code>；C3 <code>FileOpGateway</code> 类型；C4 <code>IHostApi</code>。</div></div>
-        <div class="irow"><div class="ilab">P</div><div class="itext">值传递 · 事件分发 · 网关请求/判定/结果 · 插件宿主 API 版本与扩展点。</div></div>
-        <div class="irow"><div class="ilab">O</div><div class="itext">模块解耦 · 稳定 ABI/API · 可审查的版本承诺；C2/C4 已落地，C1/C3 目标。</div></div>
+        <div class="irow"><div class="ilab">I</div><div class="itext">契约 1 文件引用；契约 2 文件系统事件；契约 3 文件操作网关类型；契约 4 插件宿主接口。</div></div>
+        <div class="irow"><div class="ilab">P</div><div class="itext">值传递 · 事件分发 · 网关请求 / 判定 / 结果 · 插件宿主接口版本与扩展点。</div></div>
+        <div class="irow"><div class="ilab">O</div><div class="itext">模块解耦 · 稳定接口 · 可审查的版本承诺；契约 2/4 已落地，契约 1/3 目标。</div></div>
       </div>
-      <div class="store"><b>Store：</b>header-only；禁止 include 实现头</div>
+      <div class="store"><b>存储：</b>仅头文件；禁止包含实现头</div>
     </article>
   </div>
 
   <div class="footnote">
-    <b>说明：</b>IPO 卡描述“模块收到什么、做什么、交付什么”，不是时序图；7.x 的 I/P/O 是目标设计，不是当前运行行为。file_guard 的 scan 读正文、账本为加密 JSONL、原名留盘，与 M3 提案的“默认路径/名称规则、security.db、名称加密、恢复码”仍有差异。
+    <b>说明：</b>本图描述“模块收到什么、做什么、交付什么”，不是时序图；7.x 的输入 / 处理 / 输出是目标设计，不是当前运行行为。文件卫士的敏感扫描读正文、账本为加密日志、原名留盘，与安全模块提案的“默认路径/名称规则、安全数据库、名称加密、恢复码”仍有差异。
   </div>
 </div>
 </body>

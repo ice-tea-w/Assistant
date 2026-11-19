@@ -2,7 +2,7 @@
 
 > 日期：2026-11-19  
 > 图源：`docs/architecture/hipo-hierarchy.html` / `hipo-ipo.html`（CSS 在 `hipo.css`）  
-> 导出：`hipo-hierarchy.png`（2940×1230）、`hipo-ipo.png`（2356×1779）  
+> 导出：`hipo-hierarchy.png`（2940×1230）、`hipo-ipo.png`（1960×1480）  
 > 状态基线：`main` @ `5cc8951`（插件 API 2 + UI 改版 + 数据看板已合入）
 
 HIPO = **Hierarchy plus Input-Process-Output**。本文包含两张图：
