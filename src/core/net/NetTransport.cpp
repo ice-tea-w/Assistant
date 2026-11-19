@@ -10,6 +10,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QSslConfiguration>
+#include <QThread>
 
 namespace Sync::Net {
 
@@ -455,6 +456,58 @@ bool NetTransport::removeRemote(const QString &relPath)
 QStringList NetTransport::remoteAliases() const
 {
     return m_aliases;
+}
+
+bool NetTransport::tryLock(int waitMs)
+{
+    if (m_lockHeld)
+        return true;
+    if (!ensureConnected())
+        return false;
+
+    QElapsedTimer timer;
+    timer.start();
+    qint64 retryAfter = 0;
+
+    while (true) {
+        Frame reply;
+        if (!requestJson(FrameType::Lock, m_nextReqId++, QByteArray(), &reply)) {
+            disconnectPeer();
+            return false;
+        }
+        if (reply.type != FrameType::LockAck)
+            return fail(QStringLiteral("协议错误：期望 LockAck"));
+
+        const QJsonObject ack = QJsonDocument::fromJson(reply.payload).object();
+        if (ack.value(QStringLiteral("ok")).toBool()) {
+            m_lockHeld = true;
+            return true;
+        }
+
+        const QString holder = ack.value(QStringLiteral("holder")).toString();
+        retryAfter = qint64(ack.value(QStringLiteral("retryAfterMs")).toDouble(0));
+        if (timer.elapsed() + qMax<qint64>(retryAfter, 200) > waitMs) {
+            // 对方还拿着锁：说清是谁，别让用户以为是网络故障
+            return fail(QStringLiteral("对端正在被 %1 同步，稍后再试")
+                            .arg(holder.isEmpty() ? QStringLiteral("另一台设备") : holder));
+        }
+        QThread::msleep(200);
+    }
+}
+
+void NetTransport::unlock()
+{
+    if (!m_lockHeld)
+        return;
+    m_lockHeld = false;
+    if (!ensureConnected())
+        return;
+
+    Frame reply;
+    if (requestJson(FrameType::Unlock, m_nextReqId++, QByteArray(), &reply)
+        && reply.type != FrameType::UnlockAck) {
+        fail(QStringLiteral("协议错误：期望 UnlockAck"));
+    }
 }
 
 } // namespace Sync::Net

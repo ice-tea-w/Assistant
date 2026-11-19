@@ -47,6 +47,11 @@ public:
     bool removeRemote(const QString &relPath) override;
     QStringList remoteAliases() const override;
 
+    /// 一轮同步的写会话锁（设计 §3.5）：向服务端 Lock，成功才允许这轮写。
+    /// 失败时 lastError() 给出"对端正在被谁同步"。
+    bool tryLock(int waitMs = 0) override;
+    void unlock() override;
+
     /// 服务端开放的文件夹（认证时 HelloAck 一并带来）：alias 为空表示单根无前缀
     struct RemoteRoot
     {
@@ -74,6 +79,10 @@ private:
     QList<RemoteRoot> m_remoteRoots;
     quint32      m_nextReqId = 1;
     bool         m_authenticated = false;
+    bool         m_lockHeld = false;
+
+    /// 拿到锁之后多久没动作算过期（服务端同款默认值）
+    static constexpr int kLockTtlMs = 120 * 1000;
 };
 
 } // namespace Sync::Net

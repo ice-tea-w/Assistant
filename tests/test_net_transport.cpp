@@ -51,6 +51,14 @@ public:
     QString    pairCode;
     QString    pairedDeviceId;
     QByteArray pairedSecret;
+    /// 额外允许的 deviceId → 口令（锁用例需要两台"设备"同时存在）
+    QHash<QString, QByteArray> extraSecrets;
+
+    void addDevice(const QString &id, const QByteArray &secret)
+    {
+        QMutexLocker lock(&mutex);
+        extraSecrets.insert(id, secret);
+    }
 
     QByteArray knownSecret(const QString &id)
     {
@@ -59,6 +67,9 @@ public:
             return secret;
         if (!pairedDeviceId.isEmpty() && id == pairedDeviceId)
             return pairedSecret;
+        const auto it = extraSecrets.constFind(id);
+        if (it != extraSecrets.constEnd())
+            return it.value();
         return QByteArray();
     }
 
@@ -102,6 +113,7 @@ private slots:
     void pushUploadsFile();
     void removeRemoteMovesToTrash();
     void pairingClientObtainsSecret();
+    void lockIsExclusiveOverWire();
 
 private:
     Sync::Net::NetPeer peer() const;
@@ -297,6 +309,32 @@ void TestNetTransport::pairingClientObtainsSecret()
 
     runner.quit();
     QVERIFY(runner.wait(5000));
+}
+
+void TestNetTransport::lockIsExclusiveOverWire()
+{
+    m_runner->addDevice(QStringLiteral("client-2"), m_secret);
+
+    Sync::Net::NetPeer first = peer();
+    first.deviceId = QStringLiteral("client-1");
+
+    Sync::Net::NetPeer second = peer();
+    second.deviceId = QStringLiteral("client-2");
+
+    Sync::Net::NetTransport holder(first);
+    QVERIFY2(holder.probe(), qPrintable(holder.lastError()));
+    QVERIFY2(holder.tryLock(1000), qPrintable(holder.lastError()));
+
+    Sync::Net::NetTransport other(second);
+    QVERIFY2(other.probe(), qPrintable(other.lastError()));
+    QVERIFY(!other.tryLock(300));
+    QVERIFY2(other.lastError().contains(QStringLiteral("对端正在被")),
+             qPrintable(other.lastError()));
+
+    holder.unlock();
+
+    QVERIFY2(other.tryLock(1000), qPrintable(other.lastError()));
+    other.unlock();
 }
 
 QTEST_MAIN(TestNetTransport)
