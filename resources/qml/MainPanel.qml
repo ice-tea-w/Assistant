@@ -1,124 +1,113 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import "components"
 
-// Phase 3 主面板 —— 常驻窗口（区别于搜索浮窗）：
-// 不置顶、非 Tool、失焦不隐藏、可最小化。
+// 主面板（2026-11-19 UI 改版）
 //
-// 左侧功能栏：待办 / 记事本 / 剪贴板 / 插件市场（从上到下）+ 设置（固定底部）。
-// 右侧用 Loader 切换页面。
-//
-// ── 为什么从 StackLayout 改成 Loader（插件市场 M0）──
-// 插件会往导航里加页面，数量是运行时才知道的；StackLayout 的子项模型是
-// 静态声明的，塞不进动态页面。Loader + source 能按 key 计算目标页。
-//
-// ── 为什么从 selectedIndex 改成 selectedKey ──
-// 原来用索引对齐（`selectedIndex === 3` 表示设置）在 4 个固定页时能用，
-// 但加一项之后设置页的索引就变了，而且插件页插在中间会让所有索引错位。
-// 用 key 后，加/减页面只影响 navItems 数组，不影响任何判定。
+// 窗口：Frameless + 自绘 44px 标题栏，四边 6px 可缩放。
+// 结构：158px 左侧导航（分组 + 设置固定底部）+ Loader 页面。
+// 行为保持：关闭只隐藏、插件页由 C++ 创建、selectedKey 驱动导航。
 ApplicationWindow {
     id: panelWindow
     width: 760
     height: 520
+    minimumWidth: 720
+    minimumHeight: 480
     title: "Assistant"
     color: "transparent"
-    visible: false   // 由 🏠 按钮 / 托盘菜单触发显示
+    flags: Qt.Window | Qt.FramelessWindowHint
+    visible: false
 
-    // ---- Theme colors：统一来自 Style 单例（同目录 qmldir 的 singleton）----
     readonly property bool isDark: Style.isDark
-    readonly property color bgColor:     Style.bgColor
-    readonly property color panelColor:  Style.panelColor
-    readonly property color textColor:   Style.textColor
-    readonly property color mutedColor:  Style.mutedColor
-    readonly property color accentColor: Style.accentColor
-    readonly property color borderColor: Style.borderColor
 
-    // 控件调色板（Qt 6.5+ 的 Window.palette），向下传给面板里所有 Quick Controls。
-    // 不设的话 Fusion 默认调色板始终是浅色的 —— 深色主题下按钮 / 单选 / 下拉
-    // 的文字会是深色压在深灰底上，几乎看不清。
-    palette.window: bgColor
-    palette.windowText: textColor
-    palette.base: panelColor
-    palette.alternateBase: panelColor
-    palette.text: textColor
-    palette.button: Style.controlColor
-    palette.buttonText: textColor
+    palette.window: Style.bg
+    palette.windowText: Style.text
+    palette.base: Style.surface
+    palette.alternateBase: Style.surface
+    palette.text: Style.text
+    palette.button: Style.surface2
+    palette.buttonText: Style.text
     palette.brightText: "#ffffff"
-    palette.highlight: accentColor
-    palette.highlightedText: Style.accentTextColor
-    palette.placeholderText: mutedColor
-    palette.toolTipBase: panelColor
-    palette.toolTipText: textColor
-    palette.light: Style.borderColor
-    palette.midlight: Style.borderColor
-    palette.mid: Style.borderColor
-    palette.dark: mutedColor
+    palette.highlight: Style.accent
+    palette.highlightedText: Style.textOnAccent
+    palette.placeholderText: Style.text3
+    palette.toolTipBase: Style.surface
+    palette.toolTipText: Style.text
+    palette.light: Style.line
+    palette.midlight: Style.line
+    palette.mid: Style.line
+    palette.dark: Style.text3
     palette.shadow: "#000000"
-    palette.link: accentColor
-    palette.linkVisited: accentColor
+    palette.link: Style.accent
+    palette.linkVisited: Style.accent
 
-    // ---- 导航状态：以 key 为准，不以索引对齐 ----
-    property string selectedKey: "sync"
+    property string selectedKey: "todo"
 
-    // ---- 插件市场数据源 ----
-    // 由 main.cpp 注入的 PluginBridge（context property `plugins`）。
-    // 保留 typeof 判断是为了让本文件能被单独加载（qmllint / 预览）而不报错；
-    // 正式运行时 `plugins` 一定存在。
     readonly property var pluginApi: (typeof plugins !== "undefined") ? plugins : null
 
-    // 内置导航项（从上到下）；设置项单独固定在底部。
     readonly property var builtinNav: [
-        { "key": "todo",    "icon": "✓",  "label": "待办事项" },
-        { "key": "notes",   "icon": "📝", "label": "记事本"   },
-        { "key": "clip",    "icon": "📋", "label": "剪贴板"   },
-        { "key": "downloads","icon": "⬇", "label": "最近下载" },
-        { "key": "sync",    "icon": "🔄", "label": "设备同步" },
-        { "key": "plugins", "icon": "🧩", "label": "插件市场" }
+        { "key": "todo",     "icon": "todo",     "label": "待办事项" },
+        { "key": "notes",    "icon": "note",     "label": "记事本"   },
+        { "key": "clip",     "icon": "clip",     "label": "剪贴板"   },
+        { "key": "downloads","icon": "download", "label": "最近下载" },
+        { "key": "sync",     "icon": "sync",     "label": "设备同步" },
+        { "key": "insight",  "icon": "chart",    "label": "数据看板" },
+        { "key": "plugins",  "icon": "plugin",   "label": "插件市场" }
     ]
-    // 插件贡献的页面 → 统一成导航项的形状。
-    // key 形如 "com.assistant.demo:demo"；依赖 pluginApi.navigationEntries，
-    // 后者在 loaded / unloaded 时通过 navigationChanged 通知。
+
     readonly property var pluginNav: {
         var out = []
         if (!pluginApi || !pluginApi.navigationEntries) return out
         var entries = pluginApi.navigationEntries
         for (var i = 0; i < entries.length; ++i) {
             var e = entries[i]
-            out.push({ "key": e.key, "icon": e.icon ? e.icon : "🧩", "label": e.title })
+            out.push({ "key": e.key, "icon": e.icon ? "plugin" : "plugin", "label": e.title })
         }
         return out
     }
 
-    readonly property var navItems: builtinNav.concat(pluginNav)
+    // 导航模型：分组标题 + 导航项 + 插件项
+    readonly property var navModel: {
+        var out = []
+        out.push({ "type": "label", "label": "工作台" })
+        for (var i = 0; i < 3 && i < builtinNav.length; ++i)
+            out.push({ "type": "item", "key": builtinNav[i].key,
+                       "icon": builtinNav[i].icon, "label": builtinNav[i].label })
+        out.push({ "type": "label", "label": "效率" })
+        for (var j = 3; j < builtinNav.length; ++j)
+            out.push({ "type": "item", "key": builtinNav[j].key,
+                       "icon": builtinNav[j].icon, "label": builtinNav[j].label })
+        for (var k = 0; k < pluginNav.length; ++k)
+            out.push({ "type": "item", "key": pluginNav[k].key,
+                       "icon": "plugin", "label": pluginNav[k].label })
+        return out
+    }
 
-    // 插件页面的 key 一定带冒号；内置 key 都不带。
     function isPluginKey(key) {
         return typeof key === "string" && key.indexOf(":") > 0
     }
 
     function indexOfKey(key) {
-        for (var i = 0; i < navItems.length; ++i)
-            if (navItems[i].key === key) return i
+        for (var i = 0; i < navModel.length; ++i)
+            if (navModel[i].type === "item" && navModel[i].key === key) return i
         return -1
     }
 
     function sourceFor(key) {
         switch (key) {
-        case "todo":    return "qrc:/qml/TodoPage.qml"
-        case "notes":   return "qrc:/qml/NotesPage.qml"
-        case "clip":    return "qrc:/qml/ClipboardPage.qml"
+        case "todo":      return "qrc:/qml/TodoPage.qml"
+        case "notes":     return "qrc:/qml/NotesPage.qml"
+        case "clip":      return "qrc:/qml/ClipboardPage.qml"
         case "downloads": return "qrc:/qml/RecentDownloadsPage.qml"
-        case "sync":    return "qrc:/qml/SyncPage.qml"
-        case "plugins": return "qrc:/qml/PluginsPage.qml"
-        case "settings":return "qrc:/qml/SettingsPage.qml"
+        case "sync":      return "qrc:/qml/SyncPage.qml"
+        case "insight":   return "qrc:/qml/InsightPage.qml"
+        case "plugins":   return "qrc:/qml/PluginsPage.qml"
+        case "settings":  return "qrc:/qml/SettingsPage.qml"
         }
-        return ""   // 插件页由 C++ 创建，不走 Loader
+        return ""
     }
 
-    // ---- 插件贡献的页面 ----
-    // 这些页面里会用到 host.xxx，而 host 只存在于插件自己的 QQmlContext。
-    // 所以不能用 Loader + file:// 加载（那会跑在面板 engine 的根上下文里），
-    // 必须由 C++ 用插件的上下文创建，这里只负责把对象挂进来并铺满。
     property var pluginPageItem: null
 
     function detachAllPluginPages() {
@@ -131,20 +120,14 @@ ApplicationWindow {
 
     function attachPluginPage() {
         detachAllPluginPages()
-
-        // 必须同时满足两件事：key 是插件页、且它确实在导航里。
-        // 只看 isPluginKey 不够：Component.onCompleted 早于 loadEnabledAtStartup()，
-        // 那时 navigationEntries 还是空的，直接去 acquirePage 会白报一次错。
         if (!isPluginKey(selectedKey) || indexOfKey(selectedKey) < 0) {
             pluginPageItem = null
             return
         }
-
         var obj = pluginApi ? pluginApi.acquirePage(selectedKey) : null
         pluginPageItem = obj
         if (!obj) return
-
-        obj.parent = pluginPageSlot          // QQuickItem 的视觉父项
+        obj.parent = pluginPageSlot
         obj.visible = true
         obj.width = Qt.binding(function() { return pluginPageSlot.width })
         obj.height = Qt.binding(function() { return pluginPageSlot.height })
@@ -152,11 +135,9 @@ ApplicationWindow {
 
     onSelectedKeyChanged: attachPluginPage()
 
-    // 正在查看的插件页被卸载/删除了 → 退回插件市场，避免停在空页面上。
     Connections {
         target: panelWindow.pluginApi
         ignoreUnknownSignals: true
-
         function onNavigationChanged() {
             var key = panelWindow.selectedKey
             if (panelWindow.isPluginKey(key) && panelWindow.indexOfKey(key) < 0)
@@ -168,147 +149,350 @@ ApplicationWindow {
 
     Component.onCompleted: attachPluginPage()
 
-    // 点 X 只隐藏，不销毁（主面板常驻，下次 🏠 重新 show）
     onClosing: function(close) {
         close.accepted = false
         panelWindow.hide()
     }
 
     Rectangle {
+        id: shell
         anchors.fill: parent
-        radius: 12
-        color: bgColor
-        border.color: borderColor
+        radius: Style.radiusWindow
+        color: Style.bg
         border.width: 1
+        border.color: Style.lineStrong
 
-        RowLayout {
+        ColumnLayout {
             anchors.fill: parent
-            anchors.margins: 10
-            spacing: 10
+            spacing: 0
 
-            // ---- 左侧导航栏 ----
-            Rectangle {
-                Layout.preferredWidth: 150
-                Layout.fillHeight: true
-                radius: 8
-                color: panelColor
+            // ================= 标题栏 =================
+            Item {
+                Layout.fillWidth: true
+                Layout.preferredHeight: Style.titlebarHeight
 
-                ColumnLayout {
+                MouseArea {
                     anchors.fill: parent
-                    anchors.margins: 8
-                    spacing: 4
+                    onPressed: panelWindow.startSystemMove()
+                    onDoubleClicked: {
+                        if (panelWindow.visibility === Window.Maximized)
+                            panelWindow.showNormal()
+                        else
+                            panelWindow.showMaximized()
+                    }
+                }
 
-                    // 功能入口（从上到下）
-                    ListView {
-                        id: navList
-                        Layout.fillWidth: true
-                        Layout.fillHeight: true
-                        clip: true
-                        model: panelWindow.navItems
-                        currentIndex: panelWindow.indexOfKey(panelWindow.selectedKey)
-                        spacing: 4
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: 14
+                    anchors.rightMargin: 8
+                    spacing: 8
 
-                        delegate: Rectangle {
-                            width: ListView.view.width
-                            height: 40
-                            radius: 6
-                            color: index === navList.currentIndex
-                                   ? accentColor : "transparent"
+                    Rectangle {
+                        width: 21
+                        height: 21
+                        radius: 6
+                        gradient: Gradient {
+                            GradientStop { position: 0; color: "#6E8DFF" }
+                            GradientStop { position: 1; color: "#9B7BFF" }
+                        }
+                        Text {
+                            anchors.centerIn: parent
+                            text: "A"
+                            color: "#FFFFFF"
+                            font.pixelSize: 10
+                            font.weight: Font.Bold
+                            font.family: Style.fontFamily
+                        }
+                    }
 
-                            RowLayout {
-                                anchors.fill: parent
-                                anchors.leftMargin: 12
-                                anchors.rightMargin: 12
-                                spacing: 8
+                    Text {
+                        text: "Assistant"
+                        color: Style.text
+                        font.pixelSize: 12
+                        font.weight: Font.DemiBold
+                        font.family: Style.fontFamily
+                    }
 
+                    Rectangle {
+                        width: 1
+                        height: 12
+                        color: Style.lineStrong
+                        Layout.alignment: Qt.AlignVCenter
+                    }
+
+                    Text {
+                        text: "主面板"
+                        color: Style.text3
+                        font.pixelSize: Style.fontCaption
+                        font.family: Style.fontFamily
+                    }
+
+                    Item { Layout.fillWidth: true }
+
+                    AppIconButton {
+                        icon: "minimize"
+                        iconSize: 12
+                        tooltip: "最小化"
+                        onClicked: panelWindow.showMinimized()
+                    }
+                    AppIconButton {
+                        icon: "close"
+                        iconSize: 12
+                        danger: true
+                        tooltip: "隐藏"
+                        onClicked: panelWindow.hide()
+                    }
+                }
+            }
+
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 1
+                color: Style.line
+            }
+
+            // ================= 主体 =================
+            RowLayout {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                Layout.margins: 10
+                spacing: 10
+
+                // ---- 左侧导航 ----
+                Rectangle {
+                    Layout.preferredWidth: Style.navWidth
+                    Layout.fillHeight: true
+                    radius: Style.radiusCard
+                    color: Style.navBg
+                    border.width: 1
+                    border.color: Style.line
+
+                    ColumnLayout {
+                        anchors.fill: parent
+                        anchors.margins: 9
+                        spacing: 2
+
+                        Repeater {
+                            model: panelWindow.navModel
+
+                            delegate: Item {
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: modelData.type === "label"
+                                                        ? 24 : 34
+
+                                // 分组标题
                                 Text {
-                                    text: modelData.icon
-                                    font.pixelSize: 14
-                                }
-                                Text {
+                                    visible: modelData.type === "label"
+                                    anchors.left: parent.left
+                                    anchors.leftMargin: 8
+                                    anchors.verticalCenter: parent.verticalCenter
                                     text: modelData.label
-                                    color: index === navList.currentIndex
-                                           ? Style.accentTextColor : textColor
-                                    font.pixelSize: 14
-                                    Layout.fillWidth: true
-                                    elide: Text.ElideRight
+                                    color: Style.text3
+                                    font.pixelSize: 10
+                                    font.weight: Font.DemiBold
+                                    font.letterSpacing: 1.2
+                                    font.family: Style.fontFamily
                                 }
+
+                                // 导航项
+                                Rectangle {
+                                    id: navRow
+                                    visible: modelData.type === "item"
+                                    anchors.fill: parent
+                                    radius: Style.radiusControl
+                                    color: panelWindow.selectedKey === modelData.key
+                                           ? Style.accentSoft
+                                           : navHover.hovered ? Style.surface2 : "transparent"
+                                    Behavior on color { ColorAnimation { duration: Style.motionFast } }
+
+                                    HoverHandler { id: navHover }
+
+                                    Rectangle {
+                                        visible: panelWindow.selectedKey === modelData.key
+                                        anchors.left: parent.left
+                                        anchors.leftMargin: -9
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        width: 3
+                                        height: 16
+                                        radius: 2
+                                        color: Style.accent
+                                    }
+
+                                    RowLayout {
+                                        anchors.fill: parent
+                                        anchors.leftMargin: 9
+                                        anchors.rightMargin: 8
+                                        spacing: 9
+
+                                        AppIcon {
+                                            name: modelData.type === "item" ? modelData.icon : "file"
+                                            size: 15
+                                            iconColor: panelWindow.selectedKey === modelData.key
+                                                       ? Style.accent : Style.text3
+                                        }
+                                        Text {
+                                            Layout.fillWidth: true
+                                            text: modelData.type === "item" ? modelData.label : ""
+                                            color: panelWindow.selectedKey === modelData.key
+                                                   ? Style.accent : Style.text2
+                                            font.pixelSize: 13
+                                            font.weight: panelWindow.selectedKey === modelData.key
+                                                         ? Font.DemiBold : Font.Normal
+                                            font.family: Style.fontFamily
+                                            elide: Text.ElideRight
+                                        }
+                                    }
+
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: panelWindow.selectedKey = modelData.key
+                                    }
+                                }
+                            }
+                        }
+
+                        Item { Layout.fillHeight: true }
+
+                        Rectangle {
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: 1
+                            Layout.topMargin: 4
+                            Layout.bottomMargin: 4
+                            color: Style.line
+                        }
+
+                        // 设置固定底部
+                        Rectangle {
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: 34
+                            radius: Style.radiusControl
+                            color: panelWindow.selectedKey === "settings"
+                                   ? Style.accentSoft
+                                   : settingsHover.hovered ? Style.surface2 : "transparent"
+
+                            HoverHandler { id: settingsHover }
+
+                            Rectangle {
+                                visible: panelWindow.selectedKey === "settings"
+                                anchors.left: parent.left
+                                anchors.leftMargin: -9
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: 3
+                                height: 16
+                                radius: 2
+                                color: Style.accent
+                            }
+
+                            AppIcon {
+                                anchors.left: parent.left
+                                anchors.leftMargin: 9
+                                anchors.verticalCenter: parent.verticalCenter
+                                name: "settings"
+                                size: 15
+                                iconColor: panelWindow.selectedKey === "settings"
+                                           ? Style.accent : Style.text3
+                            }
+                            Text {
+                                anchors.left: parent.left
+                                anchors.leftMargin: 33
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: "设置"
+                                color: panelWindow.selectedKey === "settings"
+                                       ? Style.accent : Style.text2
+                                font.pixelSize: 13
+                                font.weight: panelWindow.selectedKey === "settings"
+                                             ? Font.DemiBold : Font.Normal
+                                font.family: Style.fontFamily
                             }
 
                             MouseArea {
                                 anchors.fill: parent
                                 cursorShape: Qt.PointingHandCursor
-                                onClicked: panelWindow.selectedKey = modelData.key
+                                onClicked: panelWindow.selectedKey = "settings"
                             }
                         }
-                    }
-
-                    // 分隔线
-                    Rectangle {
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: 1
-                        color: borderColor
-                    }
-
-                    // ---- 设置（固定底部）----
-                    Rectangle {
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: 40
-                        radius: 6
-                        color: panelWindow.selectedKey === "settings"
-                               ? accentColor : "transparent"
 
                         RowLayout {
-                            anchors.fill: parent
-                            anchors.leftMargin: 12
-                            anchors.rightMargin: 12
-                            spacing: 8
+                            Layout.fillWidth: true
+                            Layout.leftMargin: 8
+                            Layout.rightMargin: 8
+                            Layout.topMargin: 2
+                            spacing: 6
 
-                            Text { text: "⚙"; font.pixelSize: 14 }
                             Text {
-                                text: "设置"
-                                color: panelWindow.selectedKey === "settings"
-                                       ? Style.accentTextColor : textColor
-                                font.pixelSize: 14
+                                text: "v" + appVersion
+                                color: Style.text3
+                                font.pixelSize: 10
+                                font.family: Style.fontFamily
+                            }
+                            Item { Layout.fillWidth: true }
+                            Text {
+                                text: Style.isDark ? "深色" : "浅色"
+                                color: Style.text3
+                                font.pixelSize: 10
+                                font.family: Style.fontFamily
                             }
                         }
+                    }
+                }
 
-                        MouseArea {
-                            anchors.fill: parent
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: panelWindow.selectedKey = "settings"
+                // ---- 右侧页面 ----
+                Item {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+
+                    Loader {
+                        id: pageLoader
+                        anchors.fill: parent
+                        visible: !panelWindow.isPluginKey(panelWindow.selectedKey)
+                        source: panelWindow.isPluginKey(panelWindow.selectedKey)
+                                ? "" : panelWindow.sourceFor(panelWindow.selectedKey)
+
+                        onLoaded: {
+                            if (item && panelWindow.selectedKey === "plugins")
+                                item.api = panelWindow.pluginApi
                         }
                     }
-                }
-            }
 
-            // ---- 右侧功能区 ----
-            Item {
-                Layout.fillWidth: true
-                Layout.fillHeight: true
-
-                // 内置页面
-                Loader {
-                    id: pageLoader
-                    anchors.fill: parent
-                    visible: !panelWindow.isPluginKey(panelWindow.selectedKey)
-                    source: panelWindow.isPluginKey(panelWindow.selectedKey)
-                            ? "" : panelWindow.sourceFor(panelWindow.selectedKey)
-
-                    // 插件市场页需要一个 api 注入点（其余页面走全局的 `panel`）
-                    onLoaded: {
-                        if (item && panelWindow.selectedKey === "plugins")
-                            item.api = panelWindow.pluginApi
+                    Item {
+                        id: pluginPageSlot
+                        anchors.fill: parent
+                        visible: panelWindow.isPluginKey(panelWindow.selectedKey)
                     }
-                }
-
-                // 插件贡献的页面：对象由 C++ 创建，这里只提供挂载位
-                Item {
-                    id: pluginPageSlot
-                    anchors.fill: parent
-                    visible: panelWindow.isPluginKey(panelWindow.selectedKey)
                 }
             }
         }
+    }
+
+    // ================= 四边缩放热区 =================
+    MouseArea {
+        width: 5; height: parent.height
+        anchors.left: parent.left
+        cursorShape: Qt.SizeHorCursor
+        onPressed: panelWindow.startSystemResize(Qt.LeftEdge)
+        z: 60
+    }
+    MouseArea {
+        width: 5; height: parent.height
+        anchors.right: parent.right
+        cursorShape: Qt.SizeHorCursor
+        onPressed: panelWindow.startSystemResize(Qt.RightEdge)
+        z: 60
+    }
+    MouseArea {
+        width: parent.width; height: 5
+        anchors.top: parent.top
+        cursorShape: Qt.SizeVerCursor
+        onPressed: panelWindow.startSystemResize(Qt.TopEdge)
+        z: 60
+    }
+    MouseArea {
+        width: parent.width; height: 5
+        anchors.bottom: parent.bottom
+        cursorShape: Qt.SizeVerCursor
+        onPressed: panelWindow.startSystemResize(Qt.BottomEdge)
+        z: 60
     }
 }

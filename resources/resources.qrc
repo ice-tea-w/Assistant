@@ -7,11 +7,31 @@
         <file>qml/ClipboardPage.qml</file>
         <file>qml/RecentDownloadsPage.qml</file>
         <file>qml/SyncPage.qml</file>
+        <file>qml/InsightPage.qml</file>
         <file>qml/SettingsPage.qml</file>
         <file>qml/PluginsPage.qml</file>
         <file>qml/PluginCard.qml</file>
         <file>qml/Style.qml</file>
         <file>qml/qmldir</file>
+        <file>qml/components/AppIcon.qml</file>
+        <file>qml/components/AppButton.qml</file>
+        <file>qml/components/AppIconButton.qml</file>
+        <file>qml/components/AppTextField.qml</file>
+        <file>qml/components/AppChip.qml</file>
+        <file>qml/components/AppCard.qml</file>
+        <file>qml/components/AppSectionHeader.qml</file>
+        <file>qml/components/AppEmptyState.qml</file>
+        <file>qml/components/AppKbd.qml</file>
+        <file>qml/components/AppCheckbox.qml</file>
+        <file>qml/components/AppSwitch.qml</file>
+        <file>qml/components/AppComboBox.qml</file>
+        <file>qml/components/AppScrollBar.qml</file>
+        <file>qml/components/AppToast.qml</file>
+        <file>qml/components/KpiCard.qml</file>
+        <file>qml/components/DonutChart.qml</file>
+        <file>qml/components/StackedBarChart.qml</file>
+        <file>qml/components/HeatmapChart.qml</file>
+        <file>qml/components/TopNBarChart.qml</file>
         <file>market/seed-index.json</file>
     </qresource>
 </RCC>

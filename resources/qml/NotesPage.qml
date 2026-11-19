@@ -1,30 +1,20 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import "components"
 
-// 记事本页（Phase 3 Step 4）
-// 左侧笔记列表 + 右侧编辑器；编辑防抖自动保存。
+// 记事本（2026-11-19 UI 改版）
+// 左列表 + 右编辑器；500ms 防抖自动保存；选中项用 accentSoft，不再整块实心蓝。
 Rectangle {
     id: notesPage
     color: "transparent"
 
-    // 主题色统一走 Style 单例（同目录 qmldir 的 singleton）
-    readonly property bool isDark: Style.isDark
-    readonly property color textColor:  Style.textColor
-    readonly property color mutedColor: Style.mutedColor
-    readonly property color accentColor: Style.accentColor
-    readonly property color borderColor: Style.borderColor
-    readonly property color panelColor: Style.panelColor
-
-    // 当前编辑的笔记 id；-1 表示无
     property int currentNoteId: -1
-    // 加载/新建时置 true，避免程序性赋值触发自动保存
     property bool loading: false
 
     function saveCurrent() {
-        if (currentNoteId >= 0 && !loading) {
+        if (currentNoteId >= 0 && !loading)
             panel.updateNote(currentNoteId, titleInput.text, contentEdit.text)
-        }
     }
 
     function loadNote(id) {
@@ -55,202 +45,234 @@ Rectangle {
         }
     }
 
-    // 防抖自动保存
+    function deleteCurrent() {
+        if (currentNoteId < 0) return
+        panel.deleteNote(currentNoteId)
+        currentNoteId = -1
+        loading = true
+        titleInput.text = ""
+        contentEdit.text = ""
+        loading = false
+        toast.show("笔记已删除", "info")
+    }
+
     Timer {
         id: saveTimer
         interval: 500
         onTriggered: notesPage.saveCurrent()
     }
 
-    RowLayout {
+    ColumnLayout {
         anchors.fill: parent
-        spacing: 10
+        anchors.margins: Style.pagePadding
+        spacing: Style.spacingM
 
-        // ---- 左侧笔记列表 ----
-        Rectangle {
-            Layout.preferredWidth: 200
-            Layout.fillHeight: true
-            radius: 6
-            color: panelColor
+        AppSectionHeader {
+            Layout.fillWidth: true
+            Layout.preferredHeight: 48
+            title: "记事本"
+            subtitle: panel.notesList.length + " 篇笔记 · 自动保存"
 
-            ColumnLayout {
-                anchors.fill: parent
-                anchors.margins: 8
-                spacing: 6
-
-                Rectangle {
-                    Layout.fillWidth: true
-                    Layout.preferredHeight: 34
-                    radius: 6
-                    color: accentColor
-
-                    Text {
-                        anchors.centerIn: parent
-                        text: "+ 新建笔记"
-                        color: "white"
-                        font.pixelSize: 13
-                    }
-
-                    MouseArea {
-                        anchors.fill: parent
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: notesPage.newNote()
-                    }
-                }
-
-                ListView {
-                    id: notesList
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    clip: true
-                    model: panel.notesList
-                    spacing: 4
-
-                    delegate: Rectangle {
-                        width: ListView.view.width
-                        height: 44
-                        radius: 6
-                        color: modelData.id === notesPage.currentNoteId
-                               ? accentColor : "transparent"
-
-                        Column {
-                            anchors.verticalCenter: parent.verticalCenter
-                            anchors.left: parent.left
-                            anchors.right: parent.right
-                            anchors.leftMargin: 10
-                            anchors.rightMargin: 10
-                            spacing: 2
-
-                            Text {
-                                text: modelData.title !== "" ? modelData.title : "无标题"
-                                color: modelData.id === notesPage.currentNoteId
-                                       ? "white" : textColor
-                                font.pixelSize: 14
-                                font.bold: true
-                                elide: Text.ElideRight
-                                width: parent.width
-                            }
-                            Text {
-                                text: modelData.updatedAt
-                                color: modelData.id === notesPage.currentNoteId
-                                       ? "white" : mutedColor
-                                font.pixelSize: 10
-                                opacity: 0.8
-                            }
-                        }
-
-                        MouseArea {
-                            anchors.fill: parent
-                            onClicked: notesPage.loadNote(modelData.id)
-                        }
-                    }
-                }
+            AppButton {
+                text: "新建"
+                icon: "plus"
+                small: true
+                variant: "primary"
+                onClicked: notesPage.newNote()
             }
         }
 
-        // ---- 右侧编辑器 ----
-        ColumnLayout {
+        RowLayout {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            spacing: 8
+            spacing: 10
 
-            // 标题
+            // ---- 左侧列表 ----
             Rectangle {
-                Layout.fillWidth: true
-                Layout.preferredHeight: 40
-                radius: 6
-                color: panelColor
-                border.color: titleInput.activeFocus ? accentColor : borderColor
-
-                TextInput {
-                    id: titleInput
-                    anchors.fill: parent
-                    anchors.leftMargin: 12
-                    anchors.rightMargin: 12
-                    color: textColor
-                    font.pixelSize: 16
-                    font.bold: true
-                    verticalAlignment: TextInput.AlignVCenter
-
-                    Text {
-                        anchors.fill: parent
-                        anchors.leftMargin: 12
-                        visible: !titleInput.text && !titleInput.activeFocus
-                        text: "标题"
-                        color: mutedColor
-                        font.pixelSize: 16
-                        verticalAlignment: Text.AlignVCenter
-                    }
-
-                    onTextChanged: {
-                        if (!notesPage.loading) saveTimer.restart()
-                    }
-                }
-            }
-
-            // 正文
-            Rectangle {
-                Layout.fillWidth: true
+                Layout.preferredWidth: 240
                 Layout.fillHeight: true
-                radius: 6
-                color: panelColor
-                border.color: contentEdit.activeFocus ? accentColor : borderColor
+                radius: Style.radiusCard
+                color: Style.surface
+                border.width: 1
+                border.color: Style.line
 
-                TextArea {
-                    id: contentEdit
+                ColumnLayout {
                     anchors.fill: parent
-                    anchors.margins: 8
-                    color: textColor
-                    font.pixelSize: 14
-                    placeholderText: "写点什么…"
-                    placeholderTextColor: mutedColor
-                    background: null
+                    anchors.margins: 10
+                    spacing: 8
 
-                    onTextChanged: {
-                        if (!notesPage.loading) saveTimer.restart()
-                    }
-                }
-            }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 18
+                        spacing: 6
 
-            // 底部工具栏
-            RowLayout {
-                Layout.fillWidth: true
-
-                Text {
-                    text: currentNoteId >= 0 ? "正在编辑" : "选择或新建笔记"
-                    color: mutedColor
-                    font.pixelSize: 12
-                    Layout.fillWidth: true
-                }
-
-                Rectangle {
-                    Layout.preferredWidth: 60
-                    Layout.preferredHeight: 30
-                    radius: 6
-                    color: borderColor
-                    visible: currentNoteId >= 0
-
-                    Text {
-                        anchors.centerIn: parent
-                        text: "删除"
-                        color: textColor
-                        font.pixelSize: 13
+                        Text {
+                            text: "全部笔记"
+                            color: Style.text3
+                            font.pixelSize: 10
+                            font.weight: Font.DemiBold
+                            font.letterSpacing: 1.0
+                            font.family: Style.fontFamily
+                        }
+                        Text {
+                            text: panel.notesList.length
+                            color: Style.text3
+                            font.pixelSize: 10
+                            font.family: Style.fontFamily
+                        }
+                        Item { Layout.fillWidth: true }
                     }
 
-                    MouseArea {
-                        anchors.fill: parent
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: {
-                            if (notesPage.currentNoteId >= 0) {
-                                panel.deleteNote(notesPage.currentNoteId)
-                                notesPage.currentNoteId = -1
-                                titleInput.text = ""
-                                contentEdit.text = ""
+                    ListView {
+                        id: notesList
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        Layout.preferredHeight: 1
+                        Layout.minimumHeight: 0
+                        clip: true
+                        model: panel.notesList
+                        spacing: 4
+                        boundsBehavior: Flickable.StopAtBounds
+                        ScrollBar.vertical: AppScrollBar { }
+
+                        delegate: Rectangle {
+                            id: noteRow
+                            width: ListView.view.width
+                            height: 52
+                            radius: Style.radiusControl
+                            color: modelData.id === notesPage.currentNoteId
+                                   ? Style.accentSoft
+                                   : noteHover.hovered ? Style.surface2 : "transparent"
+                            Behavior on color { ColorAnimation { duration: Style.motionFast } }
+
+                            HoverHandler { id: noteHover }
+
+                            ColumnLayout {
+                                anchors.fill: parent
+                                anchors.leftMargin: 10
+                                anchors.rightMargin: 10
+                                spacing: 2
+
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: modelData.title !== "" ? modelData.title : "无标题"
+                                    color: modelData.id === notesPage.currentNoteId
+                                           ? Style.accent : Style.text
+                                    font.pixelSize: 13
+                                    font.weight: Font.DemiBold
+                                    font.family: Style.fontFamily
+                                    elide: Text.ElideRight
+                                }
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: modelData.updatedAt
+                                    color: Style.text3
+                                    font.pixelSize: 10
+                                    font.family: Style.fontFamily
+                                    elide: Text.ElideRight
+                                }
+                            }
+
+                            MouseArea {
+                                anchors.fill: parent
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: notesPage.loadNote(modelData.id)
                             }
                         }
                     }
+
+                    AppEmptyState {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 160
+                        visible: panel.notesList.length === 0
+                        icon: "note"
+                        title: "还没有笔记"
+                        hint: "点右上角「新建」开始"
+                    }
+                }
+            }
+
+            // ---- 右侧编辑器 ----
+            Item {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+
+                ColumnLayout {
+                    anchors.fill: parent
+                    visible: notesPage.currentNoteId >= 0
+                    spacing: 8
+
+                    AppTextField {
+                        id: titleInput
+                        Layout.fillWidth: true
+                        placeholder: "标题"
+                        onEdited: {
+                            if (!notesPage.loading) saveTimer.restart()
+                        }
+                    }
+
+                    AppCard {
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        padding: 10
+
+                        TextArea {
+                            id: contentEdit
+                            anchors.fill: parent
+                            color: Style.text
+                            font.pixelSize: Style.fontBody
+                            font.family: Style.fontFamily
+                            placeholderText: "写点什么…"
+                            placeholderTextColor: Style.text3
+                            wrapMode: TextArea.Wrap
+                            selectByMouse: true
+                            background: null
+                            topPadding: 4
+                            leftPadding: 4
+
+                            onTextChanged: {
+                                if (!notesPage.loading) saveTimer.restart()
+                            }
+                        }
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 30
+                        spacing: 8
+
+                        Text {
+                            Layout.fillWidth: true
+                            text: "自动保存 · 关闭页面也会保留"
+                            color: Style.text3
+                            font.pixelSize: 10
+                            font.family: Style.fontFamily
+                        }
+
+                        AppButton {
+                            text: "删除"
+                            icon: "trash"
+                            variant: "ghost"
+                            small: true
+                            onClicked: notesPage.deleteCurrent()
+                        }
+                    }
+                }
+
+                AppEmptyState {
+                    anchors.centerIn: parent
+                    width: 340
+                    height: 180
+                    visible: notesPage.currentNoteId < 0
+                    icon: "note"
+                    title: "选择或新建一篇笔记"
+                    hint: "左侧列表点一下即可编辑；所有修改会在 500ms 后自动保存。"
+                    actionText: "新建笔记"
+                    onActionClicked: notesPage.newNote()
                 }
             }
         }
     }
+
+    AppToast { id: toast }
 }

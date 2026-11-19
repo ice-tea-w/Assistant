@@ -1,5 +1,7 @@
 import QtQuick
+import QtQuick.Controls
 import QtQuick.Layouts
+import "components"
 
 // 插件市场页（M0：本地已装管理；M1 起补市场目录）
 //
@@ -211,137 +213,88 @@ Rectangle {
         spacing: 0
 
         // ══════════ 头部 ══════════
-        RowLayout {
+        Item {
             Layout.fillWidth: true
-            Layout.preferredHeight: 44
-            Layout.leftMargin: 14
-            Layout.rightMargin: 14
-            spacing: 8
+            Layout.preferredHeight: 64
+            Layout.topMargin: 16
+            Layout.leftMargin: 20
+            Layout.rightMargin: 20
 
-            Text {
-                text: "插件市场"
-                color: page.textColor
-                font.pixelSize: Style.titleSize
-                font.bold: true
-            }
+            RowLayout {
+                anchors.fill: parent
+                spacing: 8
 
-            Item { Layout.fillWidth: true }
-
-            // 搜索框（沿用 TodoPage 的 TextInput + 占位 Text 写法）
-            Rectangle {
-                Layout.preferredWidth: 168
-                Layout.preferredHeight: 26
-                radius: Style.radiusSmall
-                color: Style.isDark ? "#262626" : "#fafafa"
-                border.width: 1
-                border.color: searchInput.activeFocus ? page.accentColor : page.borderColor
-
-                TextInput {
-                    id: searchInput
-                    anchors.fill: parent
-                    anchors.leftMargin: 8
-                    anchors.rightMargin: 8
-                    color: page.textColor
-                    font.pixelSize: 11
-                    verticalAlignment: TextInput.AlignVCenter
-                    selectByMouse: true
-                    onTextChanged: page.filterText = text
-
-                    Text {
-                        anchors.fill: parent
-                        verticalAlignment: Text.AlignVCenter
-                        visible: !searchInput.text && !searchInput.activeFocus
-                        text: "搜索插件…"
-                        color: page.mutedColor
-                        font.pixelSize: 11
-                    }
-                }
-            }
-
-            // 从文件安装（侧载）
-            Rectangle {
-                Layout.preferredHeight: 26
-                Layout.preferredWidth: installLabel.implicitWidth + 20
-                radius: Style.radiusSmall
-                color: page.accentColor
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: 2
 
                 Text {
-                    id: installLabel
-                    anchors.centerIn: parent
-                    text: "从文件安装"
-                    color: Style.accentTextColor
-                    font.pixelSize: 11
+                    text: "插件市场"
+                    color: Style.text
+                    font.pixelSize: Style.fontTitle
+                    font.weight: Font.DemiBold
+                    font.family: Style.fontFamily
                 }
-
-                MouseArea {
-                    anchors.fill: parent
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: { if (page.api) page.api.pickAndInstall() }
+                Text {
+                    text: page.installedRows.length + " 已安装 · "
+                          + page.availableRows.length + " 可安装"
+                    color: Style.text3
+                    font.pixelSize: 10
+                    font.family: Style.fontFamily
                 }
             }
 
-            // 刷新
-            Rectangle {
-                Layout.preferredWidth: 26
-                Layout.preferredHeight: 26
-                radius: Style.radiusSmall
-                color: "transparent"
-                border.width: 1
-                border.color: refreshMouse.containsMouse ? page.accentColor : page.borderColor
+            AppButton {
+                text: "从文件安装"
+                icon: "plus"
+                variant: "primary"
+                small: true
+                onClicked: { if (page.api) page.api.pickAndInstall() }
+            }
 
-                Text {
-                    anchors.centerIn: parent
-                    text: "↻"
-                    color: refreshMouse.containsMouse ? page.accentColor : page.mutedColor
-                    font.pixelSize: 15
-                }
-
-                MouseArea {
-                    id: refreshMouse
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: { if (page.api) page.api.refresh() }
-                }
+            AppIconButton {
+                icon: "refresh"
+                iconSize: 14
+                tooltip: "刷新市场"
+                onClicked: { if (page.api) page.api.refresh() }
+            }
             }
         }
 
-        // ══════════ 分类条 ══════════
-        RowLayout {
+        // ══════════ 搜索 + 分类 ══════════
+        ColumnLayout {
             Layout.fillWidth: true
-            Layout.preferredHeight: 32
-            Layout.leftMargin: 14
-            Layout.rightMargin: 14
-            spacing: 6
+            Layout.leftMargin: 20
+            Layout.rightMargin: 20
+            Layout.topMargin: 10
+            spacing: 8
 
-            Repeater {
-                model: page.categoryList
+            AppTextField {
+                id: searchInput
+                Layout.fillWidth: true
+                compact: true
+                placeholder: "搜索插件名称、描述或 id…"
+                leadingIcon: "search"
+                clearable: true
+                onEdited: page.filterText = text
+            }
 
-                Rectangle {
-                    height: 20
-                    width: chipText.implicitWidth + 18
-                    radius: 10
-                    color: page.category === modelData ? page.accentColor
-                                                       : (Style.isDark ? "#262626" : "#f5f5f5")
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 4
 
-                    Text {
-                        id: chipText
-                        anchors.centerIn: parent
+                Repeater {
+                    model: page.categoryList
+
+                    delegate: AppChip {
                         text: modelData
-                        font.pixelSize: 11
-                        color: page.category === modelData ? Style.accentTextColor
-                                                           : page.mutedColor
-                    }
-
-                    MouseArea {
-                        anchors.fill: parent
-                        cursorShape: Qt.PointingHandCursor
+                        selected: page.category === modelData
                         onClicked: page.category = modelData
                     }
                 }
-            }
 
-            Item { Layout.fillWidth: true }
+                Item { Layout.fillWidth: true }
+            }
         }
 
         // 细分隔线
@@ -359,41 +312,49 @@ Rectangle {
             ListView {
                 id: pluginList
                 anchors.fill: parent
-                anchors.leftMargin: 14
-                anchors.rightMargin: 14
-                anchors.topMargin: 4
+                anchors.leftMargin: 20
+                anchors.rightMargin: 20
+                anchors.topMargin: 6
                 anchors.bottomMargin: 4
                 clip: true
-                spacing: 6
+                spacing: 8
                 model: page.rows
                 visible: !page.loading && page.rows.length > 0
+                boundsBehavior: Flickable.StopAtBounds
+                ScrollBar.vertical: AppScrollBar { }
 
                 // 分组标题（已安装 / 可安装）
                 section.property: "group"
                 section.delegate: Item {
                     width: ListView.view.width
-                    height: 22
+                    height: 28
 
-                    Row {
+                    RowLayout {
                         anchors.left: parent.left
+                        anchors.right: parent.right
                         anchors.bottom: parent.bottom
-                        anchors.bottomMargin: 3
+                        anchors.bottomMargin: 4
                         spacing: 6
 
                         Text {
                             text: section
-                            color: page.mutedColor
-                            font.pixelSize: 11
+                            color: Style.text3
+                            font.pixelSize: 10
+                            font.weight: Font.DemiBold
+                            font.letterSpacing: 1.0
+                            font.family: Style.fontFamily
                         }
 
-                        // 示例数据必须说清楚，否则"未接入"三个字还是会被误读成 bug
                         Text {
                             text: "示例数据 · 安装功能尚未接入真实市场"
-                            color: page.mutedColor
-                            font.pixelSize: 11
-                            opacity: 0.75
+                            color: Style.text3
+                            font.pixelSize: 10
+                            font.family: Style.fontFamily
+                            opacity: 0.8
                             visible: section === "可安装" && page.marketIsDemo
                         }
+
+                        Item { Layout.fillWidth: true }
                     }
                 }
 
@@ -441,10 +402,10 @@ Rectangle {
             // ---- 骨架屏（首次加载）----
             Column {
                 anchors.fill: parent
-                anchors.leftMargin: 14
-                anchors.rightMargin: 14
+                anchors.leftMargin: 20
+                anchors.rightMargin: 20
                 anchors.topMargin: 8
-                spacing: 6
+                spacing: 8
                 visible: page.loading
 
                 Repeater {
@@ -452,58 +413,49 @@ Rectangle {
                     Rectangle {
                         width: parent.width
                         height: 64
-                        radius: Style.radius
-                        color: Style.isDark ? "#262626" : "#f2f2f2"
+                        radius: Style.radiusCard
+                        color: Style.surface2
+                        border.width: 1
+                        border.color: Style.line
                     }
                 }
             }
 
             // ---- 空态 ----
-            ColumnLayout {
+            AppEmptyState {
                 anchors.centerIn: parent
-                spacing: 8
+                width: 360
+                height: 190
                 visible: page.isEmpty
-
-                Text {
-                    Layout.alignment: Qt.AlignHCenter
-                    text: "🧩"
-                    font.pixelSize: 32
-                    opacity: 0.5
-                }
-                Text {
-                    Layout.alignment: Qt.AlignHCenter
-                    text: filterText !== "" ? "没有匹配的插件"
-                                            : "市场还没有内容"
-                    color: page.mutedColor
-                    font.pixelSize: 13
-                }
-                Text {
-                    Layout.alignment: Qt.AlignHCenter
-                    visible: filterText === ""
-                    text: "把插件文件夹放进 plugins 目录即可加载"
-                    color: page.mutedColor
-                    font.pixelSize: 11
-                    opacity: 0.8
-                }
+                icon: "plugin"
+                title: page.filterText !== "" ? "没有匹配的插件" : "市场还没有内容"
+                hint: page.filterText !== ""
+                      ? "换个关键词，或切到「全部」分类看看"
+                      : "把插件文件夹放进 plugins 目录即可加载；也可以从文件安装。"
             }
         }
 
         // ══════════ 底部离线提示 ══════════
         Rectangle {
             Layout.fillWidth: true
-            Layout.preferredHeight: visible ? 24 : 0
+            Layout.preferredHeight: visible ? 28 : 0
+            Layout.leftMargin: 20
+            Layout.rightMargin: 20
+            Layout.bottomMargin: visible ? 12 : 0
+            radius: Style.radiusControl
             visible: page.isOffline && fetchedText !== ""
-            color: Style.isDark ? "#332b1a" : "#fdf8ec"
+            color: Style.alpha(Style.warning, 0.12)
 
             Text {
                 anchors.fill: parent
-                anchors.leftMargin: 14
-                anchors.rightMargin: 14
+                anchors.leftMargin: 10
+                anchors.rightMargin: 10
                 verticalAlignment: Text.AlignVCenter
                 elide: Text.ElideRight
                 text: "离线：显示的是 " + page.fetchedText + " 的缓存内容"
-                color: Style.isDark ? "#d8b878" : "#9a6b1e"
+                color: Style.warning
                 font.pixelSize: 10
+                font.family: Style.fontFamily
             }
         }
     }

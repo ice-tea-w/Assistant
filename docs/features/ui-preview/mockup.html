@@ -1,0 +1,593 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Assistant · UI 视觉稿</title>
+<style>
+  :root{
+    --canvas:#0a0c10;
+    --win:#171a1f;
+    --nav:#1b1f25;
+    --surface:#1d2127;
+    --surface-2:#242a32;
+    --surface-3:#2c333d;
+    --text:#e9ecf1;
+    --text-2:#aab3c0;
+    --text-3:#808a99;
+    --line:rgba(255,255,255,.075);
+    --line-2:rgba(255,255,255,.13);
+    --accent:#6e8dff;
+    --accent-2:#9b7bff;
+    --accent-soft:rgba(110,141,255,.14);
+    --accent-border:rgba(110,141,255,.38);
+    --success:#45c48c;
+    --warn:#eeb154;
+    --danger:#ef6b6b;
+    --win-shadow:0 34px 90px rgba(0,0,0,.68), 0 4px 18px rgba(0,0,0,.35);
+    --pal-shadow:0 26px 70px rgba(0,0,0,.55), 0 2px 10px rgba(0,0,0,.3);
+    --tile-file:rgba(110,141,255,.16);
+    --tile-file-fg:#93aaff;
+    --tile-app:rgba(69,196,140,.15);
+    --tile-app-fg:#63d3a4;
+    --tile-doc:rgba(238,177,84,.15);
+    --tile-doc-fg:#f0bd72;
+    --tile-calc:rgba(155,123,255,.16);
+    --tile-calc-fg:#b49bff;
+    --tile-folder:rgba(238,177,84,.15);
+    --tile-folder-fg:#f0bd72;
+    --scroll:#39414d;
+  }
+  .theme-light{
+    --win:#f7f8fb;
+    --nav:#f1f4f9;
+    --surface:#ffffff;
+    --surface-2:#eef1f6;
+    --surface-3:#e4e9f1;
+    --text:#151a22;
+    --text-2:#525d6e;
+    --text-3:#6b7585;
+    --line:rgba(20,29,45,.075);
+    --line-2:rgba(20,29,45,.13);
+    --accent:#2f5fe0;
+    --accent-2:#6f49e8;
+    --accent-soft:rgba(47,95,224,.10);
+    --accent-border:rgba(47,95,224,.30);
+    --success:#159a63;
+    --warn:#b57311;
+    --danger:#d14848;
+    --win-shadow:0 30px 70px rgba(28,38,58,.20), 0 3px 12px rgba(28,38,58,.08);
+    --pal-shadow:0 24px 60px rgba(28,38,58,.18), 0 2px 8px rgba(28,38,58,.06);
+    --tile-file:rgba(47,95,224,.10);
+    --tile-file-fg:#2f5fe0;
+    --tile-app:rgba(21,154,99,.10);
+    --tile-app-fg:#12855a;
+    --tile-doc:rgba(181,115,17,.11);
+    --tile-doc-fg:#a2650d;
+    --tile-calc:rgba(122,90,245,.11);
+    --tile-calc-fg:#6b4ce0;
+    --tile-folder:rgba(181,115,17,.11);
+    --tile-folder-fg:#a2650d;
+    --scroll:#c7ced9;
+  }
+
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    width:1760px;height:1220px;overflow:hidden;
+    background:
+      radial-gradient(900px 500px at 8% -8%, rgba(110,141,255,.10), transparent 62%),
+      radial-gradient(900px 500px at 92% 4%, rgba(155,123,255,.08), transparent 60%),
+      var(--canvas);
+    color:var(--text);
+    font-family:"MiSans","Segoe UI Variable Text","Segoe UI","Microsoft YaHei UI","Microsoft YaHei",sans-serif;
+    -webkit-font-smoothing:antialiased;
+    text-rendering:geometricPrecision;
+  }
+  .canvas-head{
+    height:92px;display:flex;align-items:center;justify-content:space-between;
+    padding:0 40px;
+  }
+  .head-left{display:flex;align-items:center;gap:16px}
+  .app-mark{
+    width:38px;height:38px;border-radius:12px;
+    background:linear-gradient(145deg,#6e8dff,#9b7bff);
+    box-shadow:0 6px 18px rgba(110,141,255,.35), inset 0 1px 0 rgba(255,255,255,.35);
+    display:flex;align-items:center;justify-content:center;
+    font-size:17px;font-weight:700;color:#fff;letter-spacing:-.02em;
+  }
+  .head-title{font-size:17px;font-weight:600;letter-spacing:.01em;color:#eef1f6}
+  .head-sub{font-size:11.5px;color:#788394;margin-top:3px;letter-spacing:.02em}
+  .head-right{text-align:right;font-size:11px;color:#6f7a8a;line-height:1.7}
+  .head-right b{color:#9aa6b8;font-weight:500}
+  .pill{
+    display:inline-flex;align-items:center;gap:6px;height:22px;padding:0 9px;border-radius:999px;
+    border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.035);
+    font-size:10.5px;color:#9aa6b8;margin-left:10px;vertical-align:1px;
+  }
+  .dot{width:5px;height:5px;border-radius:50%;background:#45c48c;box-shadow:0 0 0 3px rgba(69,196,140,.14)}
+
+  .boards{display:flex;gap:32px;padding:0 32px}
+  .board{
+    width:820px;padding:26px;border-radius:24px;
+    background:
+      radial-gradient(680px 380px at 12% 0%, rgba(110,141,255,.10), transparent 64%),
+      linear-gradient(180deg,#101319,#0c0f14 74%);
+    border:1px solid rgba(255,255,255,.055);
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.035);
+  }
+  .board.theme-light{
+    background:
+      radial-gradient(680px 380px at 12% 0%, rgba(58,107,240,.10), transparent 62%),
+      linear-gradient(180deg,#e9edf5,#dfe5ef 76%);
+    border-color:rgba(255,255,255,.7);
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.9), 0 18px 40px rgba(10,14,22,.12);
+  }
+  .board-head{
+    height:24px;display:flex;align-items:center;justify-content:space-between;
+    margin-bottom:22px;padding:0 2px;
+  }
+  .board-name{display:flex;align-items:center;gap:9px;font-size:11px;letter-spacing:.14em;color:#8d99aa;font-weight:600}
+  .theme-light .board-name{color:#68758a}
+  .board-dot{width:7px;height:7px;border-radius:50%;background:#6e8dff;box-shadow:0 0 0 4px rgba(110,141,255,.14)}
+  .theme-light .board-dot{background:#3a6bf0;box-shadow:0 0 0 4px rgba(58,107,240,.12)}
+  .board-size{font-size:10px;color:#5d6878;letter-spacing:.06em;font-variant-numeric:tabular-nums}
+  .theme-light .board-size{color:#8b95a6}
+
+  /* ============ 主面板 ============ */
+  .panel{
+    position:relative;width:760px;height:520px;border-radius:16px;overflow:hidden;
+    background:var(--win);
+    border:1px solid var(--line-2);
+    box-shadow:var(--win-shadow), inset 0 1px 0 rgba(255,255,255,.045);
+  }
+  .theme-light .panel{box-shadow:var(--win-shadow), inset 0 1px 0 rgba(255,255,255,.9)}
+  .titlebar{
+    height:44px;display:flex;align-items:center;justify-content:space-between;
+    padding:0 8px 0 14px;border-bottom:1px solid var(--line);
+  }
+  .brand{display:flex;align-items:center;gap:9px}
+  .brand-mark{
+    width:21px;height:21px;border-radius:6px;
+    background:linear-gradient(145deg,#6e8dff,#9b7bff);
+    display:flex;align-items:center;justify-content:center;
+    font-size:10px;font-weight:700;color:#fff;
+    box-shadow:0 2px 7px rgba(110,141,255,.35), inset 0 1px 0 rgba(255,255,255,.35);
+  }
+  .brand-name{font-size:11.5px;font-weight:600;color:var(--text)}
+  .title-sep{width:1px;height:12px;background:var(--line-2);margin:0 3px}
+  .title-page{font-size:11px;color:var(--text-3)}
+  .win-ctrls{display:flex;align-items:center;gap:2px}
+  .wc{
+    width:34px;height:28px;border:0;border-radius:7px;background:transparent;
+    color:var(--text-3);display:flex;align-items:center;justify-content:center;cursor:default;
+  }
+  .wc .i{width:13px;height:13px}
+  .wc:hover{background:var(--surface-2);color:var(--text)}
+  .wc.close:hover{background:#d54b4b;color:#fff}
+
+  .panel-body{height:475px;display:flex;padding:10px;gap:10px}
+  .nav{
+    width:158px;height:455px;flex:none;border-radius:12px;background:var(--nav);
+    border:1px solid var(--line);
+    padding:12px 9px 9px;display:flex;flex-direction:column;
+  }
+  .nav-group{font-size:9.5px;font-weight:600;letter-spacing:.13em;color:var(--text-3);padding:7px 8px 5px}
+  .nav-group:first-child{padding-top:2px}
+  .nav-item{
+    position:relative;height:34px;border-radius:8px;display:flex;align-items:center;gap:9px;
+    padding:0 9px;font-size:12.5px;color:var(--text-2);margin-bottom:2px;
+  }
+  .nav-item .i{width:15px;height:15px;color:var(--text-3)}
+  .nav-item:hover{background:var(--surface-2);color:var(--text)}
+  .nav-item.active{background:var(--accent-soft);color:var(--accent);font-weight:600}
+  .nav-item.active .i{color:var(--accent)}
+  .nav-item.active::before{
+    content:"";position:absolute;left:-9px;top:50%;transform:translateY(-50%);
+    width:3px;height:16px;border-radius:0 3px 3px 0;background:var(--accent);
+  }
+  .nav-badge{
+    margin-left:auto;min-width:17px;height:17px;padding:0 5px;border-radius:999px;
+    background:var(--accent-soft);color:var(--accent);font-size:10px;font-weight:600;
+    display:flex;align-items:center;justify-content:center;font-variant-numeric:tabular-nums;
+  }
+  .nav-status{margin-left:auto;width:6px;height:6px;border-radius:50%;background:var(--success);box-shadow:0 0 0 3px rgba(69,196,140,.13)}
+  .nav-spacer{flex:1}
+  .nav-divider{height:1px;background:var(--line);margin:7px 8px}
+  .nav-foot{display:flex;align-items:center;justify-content:space-between;padding:5px 8px 0;font-size:9.5px;color:var(--text-3);letter-spacing:.03em}
+  .nav-foot .ver{font-variant-numeric:tabular-nums}
+
+  .page{flex:1;min-width:0;padding:7px 9px 0 8px;display:flex;flex-direction:column}
+  .page-head{display:flex;align-items:flex-start;justify-content:space-between;padding:0 2px}
+  .page-title{font-size:19px;font-weight:600;letter-spacing:-.01em;color:var(--text);line-height:1.25}
+  .page-sub{font-size:10.5px;color:var(--text-3);margin-top:4px;letter-spacing:.01em}
+  .page-sub b{color:var(--text-2);font-weight:600}
+  .head-actions{display:flex;gap:4px;padding-top:2px}
+  .icon-btn{
+    width:28px;height:28px;border:1px solid transparent;border-radius:8px;background:transparent;
+    color:var(--text-3);display:flex;align-items:center;justify-content:center;
+  }
+  .icon-btn:hover{background:var(--surface-2);border-color:var(--line);color:var(--text)}
+  .icon-btn .i{width:14px;height:14px}
+
+  .sect{display:flex;align-items:center;gap:8px;margin:14px 2px 7px}
+  .sect-t{font-size:10px;font-weight:600;letter-spacing:.09em;color:var(--text-3)}
+  .sect-n{font-size:10px;color:var(--text-3);font-variant-numeric:tabular-nums}
+  .sect-line{flex:1;height:1px;background:var(--line)}
+
+  .todo-list{display:flex;flex-direction:column;gap:5px}
+  .todo{
+    height:49px;flex:none;border-radius:10px;background:var(--surface);border:1px solid var(--line);
+    display:flex;align-items:center;gap:10px;padding:0 11px;position:relative;
+    box-shadow:0 1px 2px rgba(28,38,58,.05);
+  }
+  .todo.hover{background:var(--surface-2);border-color:var(--line-2);box-shadow:0 4px 12px rgba(0,0,0,.12)}
+  .theme-light .todo.hover{box-shadow:0 4px 12px rgba(28,38,58,.06)}
+  .todo.done{background:transparent;border-color:transparent}
+  .check{
+    width:18px;height:18px;flex:none;border-radius:6px;border:1.5px solid var(--line-2);
+    display:flex;align-items:center;justify-content:center;color:transparent;
+  }
+  .check.on{background:var(--accent);border-color:var(--accent);color:#fff;box-shadow:0 2px 8px rgba(110,141,255,.35)}
+  .theme-light .check.on{box-shadow:0 2px 8px rgba(58,107,240,.25)}
+  .check .i{width:11px;height:11px;stroke-width:2.6}
+  .todo-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+  .todo-t{font-size:12.5px;font-weight:500;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .todo.done .todo-t{color:var(--text-3);text-decoration:line-through;text-decoration-thickness:1px}
+  .todo-m{font-size:9.5px;color:var(--text-3);letter-spacing:.01em}
+  .tag{
+    height:19px;padding:0 7px;border-radius:5px;background:var(--accent-soft);color:var(--accent);
+    font-size:9.5px;font-weight:600;display:flex;align-items:center;letter-spacing:.02em;flex:none;
+  }
+  .tag.gray{background:var(--surface-3);color:var(--text-2)}
+  .todo-time{font-size:9.5px;color:var(--text-3);font-variant-numeric:tabular-nums;flex:none;letter-spacing:.02em}
+  .row-act{display:flex;gap:1px;margin-left:2px}
+  .row-act .icon-btn{width:24px;height:24px}
+  .row-act .icon-btn .i{width:13px;height:13px}
+
+  .composer{display:flex;gap:7px;margin-top:auto;padding-top:12px}
+  .comp-input{
+    flex:1;height:40px;border-radius:10px;background:var(--surface);border:1px solid var(--line-2);
+    display:flex;align-items:center;gap:8px;padding:0 11px;color:var(--text-3);font-size:11.5px;
+    box-shadow:inset 0 1px 2px rgba(0,0,0,.08);
+  }
+  .theme-light .comp-input{box-shadow:inset 0 1px 2px rgba(28,38,58,.04)}
+  .comp-input .i{width:14px;height:14px;color:var(--text-3)}
+  .send{
+    width:40px;height:40px;flex:none;border:0;border-radius:10px;
+    background:linear-gradient(150deg,#7b97ff,#6e8dff);
+    color:#fff;display:flex;align-items:center;justify-content:center;
+    box-shadow:0 5px 14px rgba(110,141,255,.35), inset 0 1px 0 rgba(255,255,255,.3);
+  }
+  .send .i{width:16px;height:16px;stroke-width:2.4}
+  .save-hint{display:flex;align-items:center;gap:5px;font-size:9.5px;color:var(--text-3);padding:7px 2px 0}
+  .save-hint .i{width:11px;height:11px;color:var(--success)}
+
+  /* ============ 搜索浮窗 ============ */
+  .palette{
+    width:600px;height:420px;margin-left:80px;border-radius:14px;overflow:hidden;
+    background:var(--surface);border:1px solid var(--line-2);
+    box-shadow:var(--pal-shadow), inset 0 1px 0 rgba(255,255,255,.05);
+    display:flex;flex-direction:column;
+  }
+  .theme-light .palette{box-shadow:var(--pal-shadow), inset 0 1px 0 rgba(255,255,255,.9)}
+  .p-search{height:57px;flex:none;display:flex;align-items:center;gap:11px;padding:0 16px;border-bottom:1px solid var(--line)}
+  .p-search > .i{width:18px;height:18px;color:var(--accent);stroke-width:2}
+  .p-query{flex:1;font-size:15.5px;color:var(--text);display:flex;align-items:center;letter-spacing:.01em}
+  .caret{display:inline-block;width:1.5px;height:17px;background:var(--accent);margin-left:2px;border-radius:1px;box-shadow:0 0 0 3px var(--accent-soft)}
+  .kbd{
+    height:20px;min-width:20px;padding:0 5px;border-radius:5px;background:var(--surface-2);
+    border:1px solid var(--line-2);border-bottom-width:2px;color:var(--text-3);
+    font-size:9.5px;font-weight:500;display:flex;align-items:center;justify-content:center;
+    font-variant-numeric:tabular-nums;letter-spacing:.02em;
+  }
+  .kbd + .kbd{margin-left:-4px}
+  .p-chips{height:40px;flex:none;display:flex;align-items:center;gap:4px;padding:0 12px;border-bottom:1px solid var(--line)}
+  .chip{
+    height:25px;padding:0 10px;border-radius:999px;border:1px solid transparent;
+    font-size:10.5px;color:var(--text-2);display:flex;align-items:center;gap:5px;letter-spacing:.02em;
+  }
+  .chip.on{background:var(--accent-soft);border-color:var(--accent-border);color:var(--accent);font-weight:600}
+  .chip .cn{font-size:9px;opacity:.65;font-variant-numeric:tabular-nums}
+  .p-body{flex:1;min-height:0;padding:0 6px}
+  .p-label{display:flex;align-items:center;gap:6px;padding:8px 10px 4px;font-size:9px;font-weight:600;letter-spacing:.11em;color:var(--text-3)}
+  .p-label .n{font-weight:500;color:var(--text-3);opacity:.75}
+  .res{
+    position:relative;height:52px;border-radius:9px;display:flex;align-items:center;gap:10px;padding:0 10px;
+  }
+  .res.sel{background:var(--accent-soft);box-shadow:inset 2px 0 0 var(--accent)}
+  .res.sel .res-t{color:var(--text)}
+  .res:hover{background:var(--surface-2)}
+  .res.sel:hover{background:var(--accent-soft)}
+  .tile{
+    width:31px;height:31px;flex:none;border-radius:9px;display:flex;align-items:center;justify-content:center;
+  }
+  .tile .i{width:15px;height:15px}
+  .tile.file{background:var(--tile-file);color:var(--tile-file-fg)}
+  .tile.app{background:var(--tile-app);color:var(--tile-app-fg)}
+  .tile.doc{background:var(--tile-doc);color:var(--tile-doc-fg)}
+  .tile.calc{background:var(--tile-calc);color:var(--tile-calc-fg)}
+  .tile.folder{background:var(--tile-folder);color:var(--tile-folder-fg)}
+  .res-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
+  .res-title{display:flex;align-items:baseline;gap:7px;min-width:0}
+  .res-t{font-size:12.5px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .res-t mark{background:var(--accent-soft);color:var(--accent);border-radius:3px;padding:0 1px}
+  .res-s{font-size:9.5px;color:var(--text-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:.01em}
+  .res-s .sep{opacity:.5;margin:0 4px}
+  .res-type{font-size:9px;color:var(--text-3);flex:none;letter-spacing:.05em}
+  .enter{opacity:0;flex:none;transition:opacity .12s ease}
+  .res.sel .enter{opacity:1}
+  .p-foot{
+    height:36px;flex:none;border-top:1px solid var(--line);display:flex;align-items:center;
+    justify-content:space-between;padding:0 14px;background:var(--surface);
+  }
+  .theme-light .p-foot{background:#f8f9fc}
+  .p-stat{font-size:9.5px;color:var(--text-3);letter-spacing:.01em;font-variant-numeric:tabular-nums}
+  .p-keys{display:flex;align-items:center;gap:9px;font-size:9px;color:var(--text-3)}
+  .p-keys span{display:flex;align-items:center;gap:4px}
+  .p-keys .kbd{height:17px;min-width:17px;font-size:8.5px;border-bottom-width:1px;padding:0 4px}
+
+  /* icons */
+  .i{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;display:block}
+</style>
+</head>
+<body>
+
+<!-- icon sprite -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7.5"/><path d="M20.5 20.5 16 16"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+  <symbol id="i-todo" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="4"/><path d="m8.5 12 2.4 2.4L15.8 9.5"/></symbol>
+  <symbol id="i-note" viewBox="0 0 24 24"><path d="M6 3h9l5 5v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M15 3v5h5M9 13h6M9 17h4"/></symbol>
+  <symbol id="i-clip" viewBox="0 0 24 24"><rect x="8" y="2.5" width="8" height="4" rx="1.3"/><path d="M16 4.5h2a2 2 0 0 1 2 2V20a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6.5a2 2 0 0 1 2-2h2"/><path d="M8.5 11h7M8.5 15h5"/></symbol>
+  <symbol id="i-dl" viewBox="0 0 24 24"><path d="M21 15v3.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V15"/><path d="m7 10 5 5 5-5M12 15V3"/></symbol>
+  <symbol id="i-sync" viewBox="0 0 24 24"><path d="M21 12a9 9 0 0 1-15.4 6.4L3 16"/><path d="M3 21v-5h5"/><path d="M3 12a9 9 0 0 1 15.4-6.4L21 8"/><path d="M21 3v5h-5"/></symbol>
+  <symbol id="i-plugin" viewBox="0 0 24 24"><path d="M21 8.3 12 3.5 3 8.3v7.4l9 4.8 9-4.8z"/><path d="m3 8.3 9 4.9 9-4.9M12 13.2V21"/></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24"><path d="M4 21v-6M4 11V3M12 21v-4M12 13V3M20 21v-9M20 8V3"/><path d="M1.5 15h5M9.5 13h5M17.5 12h5"/></symbol>
+  <symbol id="i-filter" viewBox="0 0 24 24"><path d="M22 3H2l8 9.5V19l4 2v-8.5z"/></symbol>
+  <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.2" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.2" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.2" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-arrow-up" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></symbol>
+  <symbol id="i-enter" viewBox="0 0 24 24"><path d="M20 5v7a3 3 0 0 1-3 3H5"/><path d="m9 11-4 4 4 4"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 2.5H6.5a2 2 0 0 0-2 2v15a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V8z"/><path d="M14 2.5V8h5.5M9 13h6M9 17h4"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7.5a2 2 0 0 1 2-2h4.2l2 2.5H19a2 2 0 0 1 2 2v8.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
+  <symbol id="i-app" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="4"/><path d="M3 9h18M8 6.2h.01M11 6.2h.01"/></symbol>
+  <symbol id="i-ppt" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="13" rx="2.5"/><path d="M12 17v4M8 21h8"/></symbol>
+  <symbol id="i-calc" viewBox="0 0 24 24"><rect x="4" y="2.5" width="16" height="19" rx="2.5"/><path d="M8 6.5h8M8 11h.01M12 11h.01M16 11h.01M8 15h.01M12 15h.01M16 15h.01M8 18.5h.01M12 18.5h.01M16 18.5h.01"/></symbol>
+  <symbol id="i-close" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+  <symbol id="i-min" viewBox="0 0 24 24"><path d="M5 12h14"/></symbol>
+  <symbol id="i-max" viewBox="0 0 24 24"><rect x="5.5" y="5.5" width="13" height="13" rx="1.2"/></symbol>
+  <symbol id="i-chev" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M8 6V3.8c0-.5.4-.8.9-.8h6.2c.5 0 .9.3.9.8V6"/><path d="M18.5 6 17.6 20a2 2 0 0 1-2 1.9H8.4a2 2 0 0 1-2-1.9L5.5 6"/><path d="M10 10.5v7M14 10.5v7"/></symbol>
+</svg>
+
+<div class="canvas-head">
+  <div class="head-left">
+    <div class="app-mark">A</div>
+    <div>
+      <div class="head-title">Assistant · UI 视觉方向 A <span class="pill"><span class="dot"></span>柔光玻璃</span></div>
+      <div class="head-sub">暗色优先 · Fluent 质感 · 8pt 网格 · 浅色同源令牌</div>
+    </div>
+  </div>
+  <div class="head-right">
+    视觉稿 v0.1 &nbsp;·&nbsp; 2026-11-19<br>
+    <b>尺寸按真实窗口 1:1</b>（主面板 760×520 / 搜索浮窗 600×420）
+  </div>
+</div>
+
+<div class="boards">
+  <section class="board">
+    <div class="board-head">
+      <div class="board-name"><span class="board-dot"></span>DARK · 深色主题</div>
+      <div class="board-size">PANEL 760 × 520 &nbsp;/&nbsp; PALETTE 600 × 420</div>
+    </div>
+    <div class="slot" data-clone="panel"></div>
+    <div class="slot" data-clone="palette" style="margin-top:24px"></div>
+  </section>
+
+  <section class="board theme-light">
+    <div class="board-head">
+      <div class="board-name"><span class="board-dot"></span>LIGHT · 浅色主题</div>
+      <div class="board-size">SAME TOKENS &nbsp;/&nbsp; SURFACE ELEVATION</div>
+    </div>
+    <div class="slot" data-clone="panel"></div>
+    <div class="slot" data-clone="palette" style="margin-top:24px"></div>
+  </section>
+</div>
+
+<!-- ================= 主面板模板 ================= -->
+<template id="tpl-panel">
+  <div class="panel">
+    <div class="titlebar">
+      <div class="brand">
+        <div class="brand-mark">A</div>
+        <span class="brand-name">Assistant</span>
+        <span class="title-sep"></span>
+        <span class="title-page">主面板</span>
+      </div>
+      <div class="win-ctrls">
+        <button class="wc"><svg class="i"><use href="#i-min"/></svg></button>
+        <button class="wc"><svg class="i"><use href="#i-max"/></svg></button>
+        <button class="wc close"><svg class="i"><use href="#i-close"/></svg></button>
+      </div>
+    </div>
+
+    <div class="panel-body">
+      <aside class="nav">
+        <div class="nav-group">工作台</div>
+        <div class="nav-item active"><svg class="i"><use href="#i-todo"/></svg>待办事项</div>
+        <div class="nav-item"><svg class="i"><use href="#i-note"/></svg>记事本</div>
+        <div class="nav-item"><svg class="i"><use href="#i-clip"/></svg>剪贴板</div>
+
+        <div class="nav-group">效率</div>
+        <div class="nav-item"><svg class="i"><use href="#i-dl"/></svg>最近下载<span class="nav-badge">2</span></div>
+        <div class="nav-item"><svg class="i"><use href="#i-sync"/></svg>设备同步<span class="nav-status"></span></div>
+        <div class="nav-item"><svg class="i"><use href="#i-plugin"/></svg>插件市场</div>
+
+        <div class="nav-spacer"></div>
+        <div class="nav-divider"></div>
+        <div class="nav-item"><svg class="i"><use href="#i-settings"/></svg>设置</div>
+        <div class="nav-foot"><span class="ver">v0.4.0</span><span>已连接</span></div>
+      </aside>
+
+      <main class="page">
+        <div class="page-head">
+          <div>
+            <div class="page-title">待办事项</div>
+            <div class="page-sub"><b>3</b> 项进行中 &nbsp;·&nbsp; 今日完成 <b>1</b> 项</div>
+          </div>
+          <div class="head-actions">
+            <button class="icon-btn"><svg class="i"><use href="#i-filter"/></svg></button>
+            <button class="icon-btn"><svg class="i"><use href="#i-more"/></svg></button>
+          </div>
+        </div>
+
+        <div class="sect">
+          <span class="sect-t">今天</span><span class="sect-n">3</span><span class="sect-line"></span>
+        </div>
+
+        <div class="todo-list">
+          <div class="todo done">
+            <span class="check on"><svg class="i"><use href="#i-check"/></svg></span>
+            <div class="todo-main">
+              <span class="todo-t">整理 UI 视觉稿评审意见</span>
+              <span class="todo-m">今天 09:30 完成</span>
+            </div>
+            <span class="tag gray">设计</span>
+            <span class="todo-time">09:30</span>
+          </div>
+
+          <div class="todo hover">
+            <span class="check"></span>
+            <div class="todo-main">
+              <span class="todo-t">把搜索浮窗改成柔光玻璃质感</span>
+              <span class="todo-m">关联：MainWindow.qml · 搜索浮窗</span>
+            </div>
+            <span class="tag">设计</span>
+            <span class="todo-time">14:00</span>
+            <div class="row-act">
+              <button class="icon-btn"><svg class="i"><use href="#i-more"/></svg></button>
+              <button class="icon-btn"><svg class="i"><use href="#i-trash"/></svg></button>
+            </div>
+          </div>
+
+          <div class="todo">
+            <span class="check"></span>
+            <div class="todo-main">
+              <span class="todo-t">给设置页加左侧二级导航</span>
+              <span class="todo-m">通用 / 外观 / 文件索引 / 收件箱</span>
+            </div>
+            <span class="tag">体验</span>
+            <span class="todo-time">明天</span>
+          </div>
+
+          <div class="todo">
+            <span class="check"></span>
+            <div class="todo-main">
+              <span class="todo-t">统一 8pt 间距与圆角令牌</span>
+              <span class="todo-m">Style.qml → Theme.qml</span>
+            </div>
+            <span class="tag">规范</span>
+            <span class="todo-time">周五</span>
+          </div>
+        </div>
+
+        <div class="composer">
+          <div class="comp-input"><svg class="i"><use href="#i-plus"/></svg>添加待办，Enter 保存</div>
+          <button class="send"><svg class="i"><use href="#i-arrow-up"/></svg></button>
+        </div>
+        <div class="save-hint"><svg class="i"><use href="#i-check"/></svg>已自动保存 · 12:04</div>
+      </main>
+    </div>
+  </div>
+</template>
+
+<!-- ================= 搜索浮窗模板 ================= -->
+<template id="tpl-palette">
+  <div class="palette">
+    <div class="p-search">
+      <svg class="i"><use href="#i-search"/></svg>
+      <div class="p-query">设计<span class="caret"></span></div>
+      <span class="kbd">Alt</span><span class="kbd">Space</span>
+    </div>
+
+    <div class="p-chips">
+      <span class="chip on">全部</span>
+      <span class="chip">文档</span>
+      <span class="chip">图片</span>
+      <span class="chip">视频</span>
+      <span class="chip">音频</span>
+      <span class="chip">压缩</span>
+      <span class="chip">代码</span>
+      <span class="chip">PDF</span>
+    </div>
+
+    <div class="p-body">
+      <div class="p-label">最佳匹配 <span class="n">5</span></div>
+
+      <div class="res sel">
+        <div class="tile file"><svg class="i"><use href="#i-file"/></svg></div>
+        <div class="res-main">
+          <div class="res-title"><span class="res-t">文件治理功能<mark>设计</mark>.md</span></div>
+          <div class="res-s">E:\Assistant\docs\architecture<span class="sep">·</span>修改于 2 小时前</div>
+        </div>
+        <span class="enter"><span class="kbd">↵</span></span>
+      </div>
+
+      <div class="res">
+        <div class="tile app"><svg class="i"><use href="#i-app"/></svg></div>
+        <div class="res-main">
+          <div class="res-title"><span class="res-t">Visual Studio Code</span></div>
+          <div class="res-s">应用程序<span class="sep">·</span>最近使用</div>
+        </div>
+        <span class="res-type">APP</span>
+      </div>
+
+      <div class="res">
+        <div class="tile doc"><svg class="i"><use href="#i-ppt"/></svg></div>
+        <div class="res-main">
+          <div class="res-title"><span class="res-t">季度汇报.pptx</span></div>
+          <div class="res-s">E:\Assistant\docs\slides<span class="sep">·</span>昨天 18:20</div>
+        </div>
+        <span class="res-type">PPTX</span>
+      </div>
+
+      <div class="res">
+        <div class="tile calc"><svg class="i"><use href="#i-calc"/></svg></div>
+        <div class="res-main">
+          <div class="res-title"><span class="res-t">128 × 24 = 3072</span></div>
+          <div class="res-s">计算结果<span class="sep">·</span>Enter 复制到剪贴板</div>
+        </div>
+        <span class="res-type">CALC</span>
+      </div>
+
+      <div class="res">
+        <div class="tile folder"><svg class="i"><use href="#i-folder"/></svg></div>
+        <div class="res-main">
+          <div class="res-title"><span class="res-t">设计资源</span></div>
+          <div class="res-s">文件夹<span class="sep">·</span>E:\Assistant\docs\design<span class="sep">·</span>18 个文件</div>
+        </div>
+        <span class="res-type">FOLDER</span>
+      </div>
+    </div>
+
+    <div class="p-foot">
+      <span class="p-stat">5 个结果 &nbsp;·&nbsp; 已索引 31,845 个文件</span>
+      <div class="p-keys">
+        <span><span class="kbd">↑</span><span class="kbd">↓</span>选择</span>
+        <span><span class="kbd">↵</span>打开</span>
+        <span><span class="kbd">Esc</span>关闭</span>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script>
+  document.querySelectorAll('[data-clone="panel"]').forEach(function (slot) {
+    slot.appendChild(document.getElementById('tpl-panel').content.cloneNode(true));
+  });
+  document.querySelectorAll('[data-clone="palette"]').forEach(function (slot) {
+    slot.appendChild(document.getElementById('tpl-palette').content.cloneNode(true));
+  });
+</script>
+</body>
+</html>

@@ -210,9 +210,9 @@ void AppBridge::search(const QString &query)
     emit searchResultsChanged();
 
     if (m_searchResults.isEmpty()) {
-        setStatus(QStringLiteral("No matching commands"));
+        setStatus(QStringLiteral("没有匹配的命令"));
     } else {
-        setStatus(QStringLiteral("%1 result(s)").arg(m_searchResults.size()));
+        setStatus(QStringLiteral("%1 个结果").arg(m_searchResults.size()));
     }
 
     // A2：v2 的索引在后台建，窗口先可用。索引没就绪时把状态说清楚，
@@ -295,7 +295,7 @@ void AppBridge::executeCommand(int index)
         QClipboard *clipboard = QApplication::clipboard();
         if (clipboard) {
             clipboard->setText(item.subtitle.mid(2));  // strip "= " prefix
-            setStatus(QStringLiteral("Copied: %1").arg(item.subtitle));
+            setStatus(QStringLiteral("已复制：%1").arg(item.subtitle));
         }
         recordSearchExecution();
         emit commandExecuted(item.title);
@@ -314,8 +314,8 @@ void AppBridge::executeCommand(int index)
         if (ok)
             recordSearchExecution();
 
-        setStatus(ok ? QStringLiteral("OK — %1").arg(item.title)
-                     : QStringLiteral("Failed — %1").arg(item.title));
+        setStatus(ok ? QStringLiteral("已执行：%1").arg(item.title)
+                     : QStringLiteral("失败：%1").arg(item.title));
         emit commandExecuted(item.title);
         return;
     }
@@ -327,8 +327,8 @@ void AppBridge::executeCommand(int index)
         if (ok)
             recordSearchExecution();
 
-        setStatus(ok ? QStringLiteral("OK — %1").arg(item.title)
-                     : QStringLiteral("Failed — %1").arg(item.title));
+        setStatus(ok ? QStringLiteral("已执行：%1").arg(item.title)
+                     : QStringLiteral("失败：%1").arg(item.title));
         emit commandExecuted(item.title);
         return;
     }
@@ -351,7 +351,7 @@ void AppBridge::activate()
     if (m_fileIndex && !m_fileIndex->isReady())
         setStatus(QStringLiteral("正在建立索引…"));
     else
-        setStatus(QStringLiteral("Ready — type to search"));
+        setStatus(QStringLiteral("就绪 · 输入关键词开始搜索"));
 }
 
 void AppBridge::hideWindow()
@@ -467,9 +467,9 @@ void AppBridge::executeAction(const SearchResult &item)
 #endif
 
     if (ok) {
-        setStatus(QStringLiteral("OK — %1").arg(item.title));
+        setStatus(QStringLiteral("已执行：%1").arg(item.title));
     } else {
-        setStatus(QStringLiteral("Failed — %1").arg(item.title));
+        setStatus(QStringLiteral("失败：%1").arg(item.title));
     }
 }
 

@@ -1,24 +1,28 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import "components"
 
-// 剪贴板历史页（Phase 3 Step 5 + 收尾）
-// 展示剪贴板文本历史，点击条目复制回剪贴板，支持一键清空。
-// 时间显示改为相对时间（刚刚 / N 分钟前 / N 天前），悬停显示原始时间。
+// 剪贴板历史（2026-11-19 UI 改版）
+// 顶部搜索 + 行内复制按钮 + 清空二次确认；相对时间保持原逻辑。
 Rectangle {
     id: clipPage
     color: "transparent"
 
-    readonly property bool isDark: Style.isDark
-    readonly property color textColor:  Style.textColor
-    readonly property color mutedColor: Style.mutedColor
-    readonly property color accentColor: Style.accentColor
-    readonly property color borderColor: Style.borderColor
-    readonly property color panelColor: Style.panelColor
-
-    // 相对时间的"刷新脉冲"：Date.now() 不是 QML 属性，绑不上依赖，
-    // 所以每分钟自增一次，让下面引用它的绑定重新求值（时间才会自己走）。
+    property string query: ""
     property int nowTick: 0
+    property bool confirmClear: false
+
+    readonly property var rows: {
+        var out = []
+        var q = query.trim().toLowerCase()
+        var list = panel.clipList
+        for (var i = 0; i < list.length; ++i) {
+            if (q === "" || String(list[i].content).toLowerCase().indexOf(q) >= 0)
+                out.push(list[i])
+        }
+        return out
+    }
 
     Timer {
         interval: 60000
@@ -27,10 +31,14 @@ Rectangle {
         onTriggered: clipPage.nowTick++
     }
 
-    /// 把 epoch 秒转成"刚刚 / N 分钟前 / N 小时前 / N 天前"；
-    /// 超过一周回退到日期（从 createdAt 里取 MM-DD）。
+    Timer {
+        id: confirmTimer
+        interval: 3000
+        onTriggered: clipPage.confirmClear = false
+    }
+
     function relativeTime(epoch, createdAt) {
-        clipPage.nowTick   // 建立依赖，见上
+        clipPage.nowTick
         if (!epoch || epoch <= 0)
             return createdAt ? createdAt.substring(5, 10) : ""
 
@@ -42,104 +50,148 @@ Rectangle {
         return createdAt ? createdAt.substring(5, 10) : ""
     }
 
+    function clearAll() {
+        panel.clearClips()
+        confirmClear = false
+        toast.show("已清空剪贴板历史", "info")
+    }
+
     ColumnLayout {
         anchors.fill: parent
-        spacing: 10
+        anchors.margins: Style.pagePadding
+        spacing: Style.spacingM
 
-        // 顶部工具栏
-        RowLayout {
+        AppSectionHeader {
             Layout.fillWidth: true
+            Layout.preferredHeight: 48
+            title: "剪贴板"
+            subtitle: panel.clipList.length + " 条记录 · 点击任意条目复制"
 
-            Text {
-                text: "剪贴板历史"
-                color: textColor
-                font.pixelSize: Style.titleSize
-                font.bold: true
-                Layout.fillWidth: true
-            }
-
-            Rectangle {
-                Layout.preferredWidth: 60
-                Layout.preferredHeight: 30
-                radius: Style.radiusSmall
-                color: borderColor
-
-                Text {
-                    anchors.centerIn: parent
-                    text: "清空"
-                    color: textColor
-                    font.pixelSize: Style.bodySize
-                }
-
-                MouseArea {
-                    anchors.fill: parent
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: panel.clearClips()
+            AppButton {
+                text: clipPage.confirmClear ? "确认清空" : "清空"
+                icon: "trash"
+                variant: clipPage.confirmClear ? "danger" : "ghost"
+                small: true
+                onClicked: {
+                    if (clipPage.confirmClear) {
+                        clipPage.clearAll()
+                    } else {
+                        clipPage.confirmClear = true
+                        confirmTimer.restart()
+                    }
                 }
             }
         }
 
-        // 历史列表
-        ListView {
-            id: clipList
+        AppTextField {
+            Layout.fillWidth: true
+            placeholder: "搜索剪贴板内容…"
+            leadingIcon: "search"
+            clearable: true
+            onEdited: clipPage.query = text
+        }
+
+        Item {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            clip: true
-            model: panel.clipList
-            spacing: 4
 
-            delegate: Rectangle {
-                width: ListView.view.width
-                height: 40
-                radius: Style.radiusSmall
-                color: clipMouse.containsMouse ? accentColor : panelColor
+            ListView {
+                id: clipList
+                anchors.fill: parent
+                clip: true
+                model: clipPage.rows
+                spacing: 4
+                boundsBehavior: Flickable.StopAtBounds
+                ScrollBar.vertical: AppScrollBar { }
 
-                RowLayout {
-                    anchors.fill: parent
-                    anchors.leftMargin: 10
-                    anchors.rightMargin: 10
-                    spacing: 8
+                delegate: Rectangle {
+                    id: clipRow
+                    width: ListView.view.width
+                    height: 48
+                    radius: Style.radiusInput
+                    color: clipRow.hovered ? Style.surface2 : Style.surface
+                    border.width: 1
+                    border.color: clipRow.hovered ? Style.lineStrong : Style.line
+                    Behavior on color { ColorAnimation { duration: Style.motionFast } }
 
-                    // 单行预览（把换行/连续空白压成单个空格）
-                    Text {
-                        text: modelData.content.replace(/\s+/g, " ")
-                        color: clipMouse.containsMouse ? Style.accentTextColor : textColor
-                        font.pixelSize: Style.bodySize
-                        Layout.fillWidth: true
-                        elide: Text.ElideRight
+                    readonly property bool hovered: clipHover.hovered
+                    HoverHandler { id: clipHover }
+
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.leftMargin: 12
+                        anchors.rightMargin: 8
+                        spacing: 10
+
+                        Rectangle {
+                            Layout.preferredWidth: 28
+                            Layout.preferredHeight: 28
+                            radius: 8
+                            color: Style.surface2
+                            AppIcon {
+                                anchors.centerIn: parent
+                                name: "clip"
+                                size: 14
+                                iconColor: Style.text3
+                            }
+                        }
+
+                        Text {
+                            Layout.fillWidth: true
+                            text: String(modelData.content).replace(/\s+/g, " ")
+                            color: Style.text
+                            font.pixelSize: Style.fontBody
+                            font.family: Style.fontFamily
+                            elide: Text.ElideRight
+                        }
+
+                        Text {
+                            text: clipPage.relativeTime(modelData.createdAtEpoch, modelData.createdAt)
+                            color: Style.text3
+                            font.pixelSize: Style.fontMicro
+                            font.family: Style.fontFamily
+
+                            ToolTip.visible: clipHover.hovered
+                            ToolTip.delay: 600
+                            ToolTip.text: modelData.createdAt
+                        }
+
+                        AppIconButton {
+                            visible: clipHover.hovered
+                            icon: "copy"
+                            iconSize: 13
+                            tooltip: "复制"
+                            onClicked: {
+                                panel.copyClip(modelData.id)
+                                toast.show("已复制到剪贴板", "success")
+                            }
+                        }
                     }
 
-                    Text {
-                        id: timeText
-                        text: clipPage.relativeTime(modelData.createdAtEpoch, modelData.createdAt)
-                        color: clipMouse.containsMouse ? Style.accentTextColor : mutedColor
-                        font.pixelSize: 10
-                        opacity: 0.8
-
-                        // 悬停显示原始时间，需要精确值时不用猜
-                        ToolTip.visible: clipMouse.containsMouse
-                        ToolTip.delay: 600
-                        ToolTip.text: modelData.createdAt
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            panel.copyClip(modelData.id)
+                            toast.show("已复制到剪贴板", "success")
+                        }
                     }
-                }
-
-                MouseArea {
-                    id: clipMouse
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: panel.copyClip(modelData.id)
                 }
             }
 
-            Text {
+            AppEmptyState {
                 anchors.centerIn: parent
-                text: "暂无剪贴板记录\n复制任意文本后会自动记录"
-                color: mutedColor
-                font.pixelSize: Style.bodySize
-                horizontalAlignment: Text.AlignHCenter
+                width: 320
+                height: 170
                 visible: clipList.count === 0
+                icon: "clip"
+                title: clipPage.query.length > 0 ? "没有匹配的记录" : "剪贴板还是空的"
+                hint: clipPage.query.length > 0
+                      ? "换个关键词试试；清空搜索框可看全部记录"
+                      : "复制任意文本后会自动记录在这里"
             }
         }
     }
+
+    AppToast { id: toast }
 }

@@ -1,7 +1,13 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import "components"
 
+// 搜索浮窗（2026-11-19 UI 改版）
+//
+// 结构：搜索行 56 / 过滤 Chip 40 / 结果列表 / 底部键位 36。
+// 视觉：单层浮窗 + 1px 边框 + 选中行 accentSoft + 左侧 2px 指示条。
+// 行为保持原样：失焦 dock、点击两次执行、Alt+Space 唤起、Esc 关闭。
 ApplicationWindow {
     id: window
     width: 600
@@ -10,63 +16,51 @@ ApplicationWindow {
     flags: Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
     color: "transparent"
 
-    // ---- C++ property binding ----
-    // Window visibility is driven by the C++ AppBridge::visible property.
-    // QML only calls backend.show/hide/toggle — never sets visible directly.
     visible: backend.visible
-
     property bool ready: false
 
     // ---- QQ-style dock-to-top-edge ----
-    // On focus loss the window slides up so only a thin strip stays visible at
-    // the top of the screen; hovering that strip slides it back down.
     property bool docked: false
-    property int  dockRestoreY: 0
+    property int dockRestoreY: 0
     readonly property int dockStrip: 8
 
-    // Mouse click-to-select state: first click selects, second click executes.
-    // Kept separate from currentIndex so keyboard/default pre-selection doesn't
-    // cause a first click to launch immediately.
+    // 第一次点击只选中，第二次才执行
     property int mouseSelectedIndex: -1
 
-    // ---- Theme colors：统一来自 Style 单例（同目录 qmldir 的 singleton）----
-    readonly property bool isDark:  Style.isDark
-    readonly property color bgColor:         Style.bgColor
-    readonly property color panelColor:      Style.panelColor
-    readonly property color textColor:       Style.textColor
-    readonly property color mutedColor:      Style.mutedColor
-    readonly property color accentColor:     Style.accentColor
-    readonly property color borderColor:     Style.borderColor
-    readonly property color activeBorder:    Style.activeBorder
-    readonly property color statusTextColor: Style.statusTextColor
+    readonly property bool isDark: Style.isDark
 
-    // ---- Result type → icon glyph + badge color ----
-    // Single source of truth for how each result category is visualized.
-    // Kept as functions (not readonly properties) so the delegate can call
-    // them with modelData.type directly.
-    function typeGlyph(t) {
+    // ---- 结果类型 → 图标 / 颜色 ----
+    function typeIcon(t) {
         switch (t) {
-            case "app":        return "▶"
-            case "file":       return "▤"
-            case "calculator": return "#"
-            case "url":        return "↗"
-            default:           return "⚡"
+            case "app":        return "app"
+            case "file":       return "file"
+            case "calculator": return "calc"
+            case "url":        return "link"
+            default:           return "zap"
         }
     }
 
     function typeColor(t) {
         switch (t) {
-            case "app":        return accentColor
-            case "file":       return isDark ? "#5b8f5b" : "#4c8a4c"
-            case "calculator": return isDark ? "#8f6bd1" : "#7a58c4"
-            case "url":        return isDark ? "#3d9ba8" : "#2f8b98"
-            default:           return isDark ? "#5a5a5a" : "#a0a0a0"
+            case "app":        return Style.tileApp
+            case "file":       return Style.tileFile
+            case "calculator": return Style.tileCalc
+            case "url":        return Style.tileCalc
+            default:           return Style.text3
+        }
+    }
+
+    function typeBg(t) {
+        switch (t) {
+            case "app":        return Style.tileAppBg
+            case "file":       return Style.tileFileBg
+            case "calculator": return Style.tileCalcBg
+            case "url":        return Style.tileCalcBg
+            default:           return Style.surface2
         }
     }
 
     // ---- Phase B：种类过滤 Chip ----
-    // Chip ↔ 查询文本双向：点击等于在输入框里插入/删除对应 token。
-    // 空 token 的「全部」只清掉种类 token，保留自由词（"报告 :doc" → "报告"）。
     readonly property var kindTokens: [":doc", ":img", ":vid", ":aud",
                                        ":zip", ":exe", ":code", ":pdf"]
 
@@ -99,6 +93,20 @@ ApplicationWindow {
         searchInput.cursorPosition = searchInput.text.length
     }
 
+    function moveSelection(delta) {
+        if (resultsList.count === 0) return
+        var next = resultsList.currentIndex + delta
+        if (next < 0) next = 0
+        if (next > resultsList.count - 1) next = resultsList.count - 1
+        resultsList.currentIndex = next
+        window.mouseSelectedIndex = -1
+    }
+
+    function executeCurrent() {
+        if (resultsList.currentIndex >= 0 && resultsList.count > 0)
+            backend.executeCommand(resultsList.currentIndex)
+    }
+
     Component.onCompleted: ready = true
 
     function dock() {
@@ -120,7 +128,6 @@ ApplicationWindow {
         searchInput.forceActiveFocus()
     }
 
-    // ---- C++ signal handlers ----
     Connections {
         target: backend
 
@@ -128,12 +135,10 @@ ApplicationWindow {
             if (backend.visible) {
                 docked = false
                 mouseSelectedIndex = -1
-                // Restore saved position, or center on first run
                 if (config.windowX >= 0 && config.windowY >= 0) {
                     window.x = config.windowX
                     window.y = config.windowY
                 } else {
-                    // Default: horizontally centered, flush against the top edge
                     window.x = (Screen.width - window.width) / 2
                     window.y = 0
                 }
@@ -144,19 +149,15 @@ ApplicationWindow {
         }
 
         function onCommandExecuted(command) {
-            // Command was dispatched in C++; hide the window
             backend.hideWindow()
         }
     }
 
-    // Click outside → dock to the top edge (QQ-style), not fully hide
     onActiveChanged: {
-        if (ready && !active && visible) {
+        if (ready && !active && visible)
             dock()
-        }
     }
 
-    // ---- Dock slide animations ----
     PropertyAnimation {
         id: dockAnim
         target: window
@@ -173,8 +174,7 @@ ApplicationWindow {
         easing.type: Easing.OutCubic
     }
 
-    // Hover trigger — sits behind the content. When docked, the only on-screen
-    // part is the strip at the top, so onEntered == "cursor touched the strip".
+    // 鼠标移到顶部露出的细条 → 展开
     MouseArea {
         anchors.fill: parent
         hoverEnabled: true
@@ -182,50 +182,37 @@ ApplicationWindow {
     }
 
     Rectangle {
+        id: shell
         anchors.fill: parent
-        radius: 12
-        color: bgColor
-        border.color: borderColor
+        radius: 14
+        color: Style.surface
         border.width: 1
+        border.color: Style.lineStrong
         focus: true
 
-        Keys.onEscapePressed: {
-            backend.hideWindow()
+        // dock 后露出的顶部提示线
+        Rectangle {
+            anchors.top: parent.top
+            anchors.left: parent.left
+            anchors.right: parent.right
+            height: 2
+            radius: 1
+            color: Style.accent
+            opacity: window.docked ? 1 : 0
+            Behavior on opacity { NumberAnimation { duration: Style.motionFast } }
         }
 
-        Keys.onReturnPressed: {
-            if (resultsList.currentIndex >= 0 && resultsList.count > 0) {
-                backend.executeCommand(resultsList.currentIndex)
-            }
-        }
+        Keys.onEscapePressed: backend.hideWindow()
+        Keys.onReturnPressed: window.executeCurrent()
+        Keys.onUpPressed: window.moveSelection(-1)
+        Keys.onDownPressed: window.moveSelection(1)
 
-        Keys.onUpPressed: {
-            if (resultsList.currentIndex > 0) {
-                resultsList.currentIndex--
-                window.mouseSelectedIndex = -1
-            }
-        }
-
-        Keys.onDownPressed: {
-            if (resultsList.currentIndex < resultsList.count - 1) {
-                resultsList.currentIndex++
-                window.mouseSelectedIndex = -1
-            }
-        }
-
-        // ---- Whole-window drag (behind ColumnLayout) ----
-        // ColumnLayout is on top and consumes clicks on controls;
-        // clicks on empty areas fall through to here.
+        // 整窗拖动（放在内容下层，空白处可拖）
         MouseArea {
             anchors.fill: parent
             property real dragX: 0
             property real dragY: 0
-
-            onPressed: function(mouse) {
-                dragX = mouse.x
-                dragY = mouse.y
-            }
-
+            onPressed: function(mouse) { dragX = mouse.x; dragY = mouse.y }
             onPositionChanged: function(mouse) {
                 window.x += mouse.x - dragX
                 window.y += mouse.y - dragY
@@ -233,243 +220,258 @@ ApplicationWindow {
         }
 
         ColumnLayout {
+            id: mainColumn
             anchors.fill: parent
-            anchors.margins: 10
-            spacing: 8
+            spacing: 0
 
-            // ---- Search bar (also drag handle) ----
-            Rectangle {
-                id: searchBar
+            // ================= 搜索行 =================
+            Item {
                 Layout.fillWidth: true
-                Layout.preferredHeight: 42
-                radius: 8
-                color: panelColor
-                border.color: searchInput.activeFocus ? activeBorder : borderColor
+                Layout.preferredHeight: 57
 
-                // Search bar drag — behind RowLayout, catches clicks on icon / margins
                 MouseArea {
                     anchors.fill: parent
                     property real lastX: 0
                     property real lastY: 0
-
-                    onPressed: function(mouse) {
-                        lastX = mouse.x
-                        lastY = mouse.y
-                    }
-
+                    onPressed: function(mouse) { lastX = mouse.x; lastY = mouse.y }
                     onPositionChanged: function(mouse) {
                         window.x += mouse.x - lastX
                         window.y += mouse.y - lastY
                     }
                 }
 
+                AppIcon {
+                    id: searchIcon
+                    anchors.left: parent.left
+                    anchors.leftMargin: 16
+                    anchors.verticalCenter: parent.verticalCenter
+                    name: "search"
+                    size: 18
+                    weight: 2
+                    iconColor: Style.accent
+                }
+
                 RowLayout {
-                    anchors.fill: parent
-                    anchors.leftMargin: 14
-                    anchors.rightMargin: 14
-                    spacing: 10
+                    id: searchHints
+                    anchors.right: parent.right
+                    anchors.rightMargin: 10
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 5
+
+                    AppKbd { text: "Alt"; Layout.alignment: Qt.AlignVCenter }
+                    AppKbd { text: "Space"; Layout.alignment: Qt.AlignVCenter }
+                    AppIconButton {
+                        icon: "home"
+                        iconSize: 15
+                        tooltip: "打开主面板"
+                        onClicked: backend.openMainPanel()
+                    }
+                }
+
+                TextInput {
+                    id: searchInput
+                    anchors.left: searchIcon.right
+                    anchors.leftMargin: 12
+                    anchors.right: searchHints.left
+                    anchors.rightMargin: 10
+                    anchors.verticalCenter: parent.verticalCenter
+                    height: 28
+                    color: Style.text
+                    font.pixelSize: 15
+                    font.family: Style.fontFamily
+                    selectionColor: Style.accent
+                    selectedTextColor: Style.textOnAccent
+                    focus: true
+                    activeFocusOnTab: false
+                    verticalAlignment: TextInput.AlignVCenter
+                    clip: true
 
                     Text {
-                        text: "⌕"
-                        font.pixelSize: 18
-                        color: mutedColor
+                        anchors.fill: parent
+                        visible: !searchInput.text
+                        text: "搜索应用、文件、计算…"
+                        color: Style.text3
+                        font: searchInput.font
+                        verticalAlignment: Text.AlignVCenter
                     }
 
-                    TextInput {
-                        id: searchInput
-                        Layout.fillWidth: true
-                        color: textColor
-                        font.pixelSize: 16
-                        focus: true
-                        activeFocusOnTab: false
-
-                        Text {
-                            anchors.fill: parent
-                            visible: !searchInput.text && !searchInput.activeFocus
-                            text: "Type to search..."
-                            color: mutedColor
-                            font: searchInput.font
-                        }
-
-                        // A1 修 P1-6：不再逐字检索。
-                        //  - IME 预编辑阶段（拼音串）不该触发检索 → inputMethodComposing 时直接跳过
-                        //  - 连续输入用 40ms 防抖合并：连打 8 个字符只跑 1 次全量模糊匹配
-                        Timer {
-                            id: searchDebounce
-                            interval: 40
-                            repeat: false
-                            onTriggered: backend.search(searchInput.text)
-                        }
-
-                        onTextChanged: {
-                            if (searchInput.inputMethodComposing)
-                                return
-
-                            // New query → reset selection to top result
-                            resultsList.currentIndex = 0
-                            window.mouseSelectedIndex = -1
-                            searchDebounce.restart()
-                        }
+                    Timer {
+                        id: searchDebounce
+                        interval: 40
+                        repeat: false
+                        onTriggered: backend.search(searchInput.text)
                     }
 
-                    // 🏠 按钮：打开主面板（Phase 3 Step 1）
-                    Rectangle {
-                        Layout.preferredWidth: 30
-                        Layout.preferredHeight: 30
-                        radius: 6
-                        color: homeMouse.containsMouse ? panelColor : "transparent"
-
-                        Text {
-                            anchors.centerIn: parent
-                            text: "🏠"
-                            font.pixelSize: 16
-                        }
-
-                        MouseArea {
-                            id: homeMouse
-                            anchors.fill: parent
-                            hoverEnabled: true
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: backend.openMainPanel()
-                        }
+                    onTextChanged: {
+                        if (searchInput.inputMethodComposing)
+                            return
+                        resultsList.currentIndex = 0
+                        window.mouseSelectedIndex = -1
+                        searchDebounce.restart()
                     }
+
+                    Keys.onEscapePressed: backend.hideWindow()
+                    Keys.onUpPressed: window.moveSelection(-1)
+                    Keys.onDownPressed: window.moveSelection(1)
                 }
             }
 
-            // ---- 种类过滤 Chip（Phase B）----
-            // 视觉上是一行“标签”，点击即改查询文本；Chip 高亮由查询文本反推，
-            // 所以手输 `:doc` 也会让「文档」亮起来（双向同步）。
-            RowLayout {
+            Rectangle {
                 Layout.fillWidth: true
-                Layout.preferredHeight: 24
-                spacing: 4
+                Layout.preferredHeight: 1
+                color: Style.line
+            }
 
-                Repeater {
-                    model: [
-                        { "token": "",      "label": "全部" },
-                        { "token": ":doc",  "label": "文档" },
-                        { "token": ":img",  "label": "图片" },
-                        { "token": ":vid",  "label": "视频" },
-                        { "token": ":aud",  "label": "音频" },
-                        { "token": ":zip",  "label": "压缩" },
-                        { "token": ":exe",  "label": "安装包" },
-                        { "token": ":code", "label": "代码" },
-                        { "token": ":pdf",  "label": "PDF" }
-                    ]
+            // ================= 过滤 Chip =================
+            Item {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 40
 
-                    delegate: Rectangle {
-                        id: chip
-                        readonly property bool active: window.chipActive(modelData.token)
-                        Layout.preferredWidth: chipLabel.implicitWidth + 14
-                        Layout.preferredHeight: 22
-                        radius: 11
-                        color: active ? accentColor : panelColor
-                        border.color: active ? activeBorder : borderColor
-                        border.width: 1
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: 12
+                    anchors.rightMargin: 12
+                    spacing: 4
 
-                        Text {
-                            id: chipLabel
-                            anchors.centerIn: parent
+                    Repeater {
+                        model: [
+                            { "token": "",      "label": "全部" },
+                            { "token": ":doc",  "label": "文档" },
+                            { "token": ":img",  "label": "图片" },
+                            { "token": ":vid",  "label": "视频" },
+                            { "token": ":aud",  "label": "音频" },
+                            { "token": ":zip",  "label": "压缩" },
+                            { "token": ":exe",  "label": "安装包" },
+                            { "token": ":code", "label": "代码" },
+                            { "token": ":pdf",  "label": "PDF" }
+                        ]
+
+                        delegate: AppChip {
                             text: modelData.label
-                            font.pixelSize: 11
-                            color: chip.active ? Style.accentTextColor : mutedColor
-                        }
-
-                        MouseArea {
-                            anchors.fill: parent
-                            cursorShape: Qt.PointingHandCursor
+                            selected: window.chipActive(modelData.token)
                             onClicked: window.toggleKindChip(modelData.token)
                         }
                     }
-                }
 
-                Item { Layout.fillWidth: true }
+                    Item { Layout.fillWidth: true }
+                }
             }
 
-            // ---- Results list ----
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 1
+                color: Style.line
+            }
+
+            // ================= 结果列表 =================
             ListView {
                 id: resultsList
                 Layout.fillWidth: true
                 Layout.fillHeight: true
+                Layout.preferredHeight: 1
+                Layout.minimumHeight: 0
                 clip: true
                 model: backend.searchResults
                 currentIndex: 0
                 spacing: 2
+                topMargin: 4
+                bottomMargin: 4
 
-                // Keep the highlighted item visible as keyboard navigation moves it
                 onCurrentIndexChanged: {
                     if (currentIndex >= 0)
                         positionViewAtIndex(currentIndex, ListView.Contain)
                 }
 
                 delegate: Rectangle {
-                    width: ListView.view.width
+                    id: row
+                    width: ListView.view.width - 12
+                    x: 6
                     height: 52
-                    radius: 6
-                    color: index === resultsList.currentIndex ? accentColor : "transparent"
+                    radius: 9
+                    color: index === resultsList.currentIndex
+                           ? Style.accentSoft
+                           : hover.hovered ? Style.surface2 : "transparent"
+                    Behavior on color { ColorAnimation { duration: Style.motionFast } }
 
-                    Behavior on color { ColorAnimation { duration: 100 } }
+                    HoverHandler { id: hover }
+
+                    Rectangle {
+                        visible: index === resultsList.currentIndex
+                        anchors.left: parent.left
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 2
+                        height: 22
+                        radius: 1
+                        color: Style.accent
+                    }
 
                     RowLayout {
                         anchors.fill: parent
-                        anchors.leftMargin: 14
-                        anchors.rightMargin: 14
+                        anchors.leftMargin: 10
+                        anchors.rightMargin: 10
                         spacing: 10
 
-                        // Type icon — colored badge, one tint per result category
                         Rectangle {
-                            Layout.preferredWidth: 26
-                            Layout.preferredHeight: 26
-                            radius: 6
-                            color: typeColor(modelData.type)
+                            Layout.preferredWidth: 30
+                            Layout.preferredHeight: 30
                             Layout.alignment: Qt.AlignVCenter
+                            radius: 9
+                            color: window.typeBg(modelData.type)
 
-                            Text {
+                            AppIcon {
                                 anchors.centerIn: parent
-                                text: typeGlyph(modelData.type)
-                                color: "white"
-                                font.pixelSize: 13
-                                font.bold: true
+                                name: window.typeIcon(modelData.type)
+                                size: 15
+                                iconColor: window.typeColor(modelData.type)
                             }
                         }
 
-                        Column {
+                        ColumnLayout {
                             Layout.fillWidth: true
                             Layout.alignment: Qt.AlignVCenter
                             spacing: 2
 
                             RowLayout {
+                                Layout.fillWidth: true
                                 spacing: 8
 
                                 Text {
-                                    text: modelData.title
-                                    color: textColor
-                                    font.pixelSize: 14
-                                    font.bold: true
-                                    elide: Text.ElideRight
                                     Layout.fillWidth: true
+                                    text: modelData.title
+                                    color: Style.text
+                                    font.pixelSize: 13
+                                    font.weight: Font.DemiBold
+                                    font.family: Style.fontFamily
+                                    elide: Text.ElideRight
                                 }
 
                                 Text {
-                                    text: modelData.result
-                                    color: accentColor
-                                    font.pixelSize: 14
-                                    font.bold: true
                                     visible: modelData.result !== ""
+                                    text: modelData.result
+                                    color: Style.accent
+                                    font.pixelSize: 13
+                                    font.weight: Font.DemiBold
+                                    font.family: Style.fontFamily
                                 }
                             }
 
                             Text {
-                                text: modelData.subtitle
-                                color: mutedColor
-                                font.pixelSize: 12
-                                elide: Text.ElideRight
+                                Layout.fillWidth: true
                                 visible: modelData.subtitle !== ""
+                                text: modelData.subtitle
+                                color: Style.text3
+                                font.pixelSize: Style.fontMicro
+                                font.family: Style.fontFamily
+                                elide: Text.ElideRight
                             }
+                        }
+
+                        AppKbd {
+                            text: "↵"
+                            visible: index === resultsList.currentIndex
                         }
                     }
 
-                    // Mouse selection: click to select, click again to launch
                     MouseArea {
                         anchors.fill: parent
                         onClicked: {
@@ -484,40 +486,70 @@ ApplicationWindow {
                     }
                 }
 
-                Text {
+                AppEmptyState {
                     anchors.centerIn: parent
-                    text: "No results"
-                    color: mutedColor
-                    font.pixelSize: 14
+                    width: 300
+                    height: 150
                     visible: resultsList.count === 0
+                    icon: "search"
+                    title: searchInput.text.length > 0 ? "没有找到相关结果" : "输入关键词开始搜索"
+                    hint: searchInput.text.length > 0
+                          ? "试试去掉 :doc 之类的过滤，或换一个更短的关键词"
+                          : "支持应用、文件、计算式；也可以用 :doc / in:downloads 过滤"
                 }
             }
 
-            // ---- Status bar (C++ → QML signal/slot demo) ----
+            // ================= 底部状态 / 键位 =================
             Rectangle {
+                id: footer
                 Layout.fillWidth: true
-                Layout.preferredHeight: 28
-                radius: 6
-                color: panelColor
+                Layout.preferredHeight: 36
+                color: Style.surface
+
+                Rectangle {
+                    anchors.top: parent.top
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    height: 1
+                    color: Style.line
+                }
 
                 RowLayout {
                     anchors.fill: parent
-                    anchors.leftMargin: 12
+                    anchors.leftMargin: 14
                     anchors.rightMargin: 12
+                    spacing: 8
 
                     Text {
-                        text: backend.statusText
-                        color: statusTextColor
-                        font.pixelSize: 12
-                        elide: Text.ElideRight
                         Layout.fillWidth: true
+                        text: backend.statusText
+                        color: Style.text2
+                        font.pixelSize: Style.fontMicro
+                        font.family: Style.fontFamily
+                        elide: Text.ElideRight
                     }
 
+                    AppKbd { text: "↑" }
+                    AppKbd { text: "↓" }
                     Text {
-                        text: "↑↓ 选择 · Enter 打开 · Esc 关闭"
-                        color: statusTextColor
-                        font.pixelSize: 11
-                        opacity: 0.7
+                        text: "选择"
+                        color: Style.text3
+                        font.pixelSize: 9
+                        font.family: Style.fontFamily
+                    }
+                    AppKbd { text: "↵" }
+                    Text {
+                        text: "打开"
+                        color: Style.text3
+                        font.pixelSize: 9
+                        font.family: Style.fontFamily
+                    }
+                    AppKbd { text: "Esc" }
+                    Text {
+                        text: "关闭"
+                        color: Style.text3
+                        font.pixelSize: 9
+                        font.family: Style.fontFamily
                     }
                 }
             }

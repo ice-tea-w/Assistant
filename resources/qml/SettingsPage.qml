@@ -1,31 +1,30 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import "components"
 
-// 设置页（Phase 3 Step 6 + 收尾）
-// 主题 / 日志级别 / 全局热键（可自定义）/ 开机启动
-// 主题色统一走 Style 单例（同目录 qmldir 声明的 singleton）。
+// 设置页（2026-11-19 UI 改版）
+//
+// 从「一根 800 行长滚动」改成「左侧二级导航 + 右侧分组卡片」。
+// 所有配置项、热键捕获、规则编辑、IM 目录逻辑都保持原样，只重排视觉。
 Rectangle {
     id: settingsPage
     color: "transparent"
 
-    readonly property bool isDark:      Style.isDark
-    readonly property color textColor:  Style.textColor
-    readonly property color mutedColor: Style.mutedColor
-    readonly property color accentColor: Style.accentColor
-    readonly property color borderColor: Style.borderColor
-    readonly property color panelColor: Style.panelColor
-
-    // ---- 热键捕获状态 ----
     property bool capturing: false
     property string hotkeyStatus: ""
-    property bool   hotkeyStatusOk: false
+    property bool hotkeyStatusOk: false
 
-    // ---- 文件索引范围（Phase B）----
-    // kindSelection 用本地副本：勾选过程中不写配置，点「应用」才落盘。
-    // 初值直接绑定配置；用户勾选后改成普通数组（绑定断开），避免每次点击都写盘。
     property var kindSelection: config.fileKindFilterKinds
     property string fileStatus: ""
+    property int activeSection: 0
+
+    readonly property var sections: [
+        { "icon": "settings", "label": "通用" },
+        { "icon": "filter",   "label": "文件索引" },
+        { "icon": "inbox",    "label": "收件箱" },
+        { "icon": "info",     "label": "关于" }
+    ]
 
     function toggleKind(token, on) {
         var next = kindSelection.slice()
@@ -37,720 +36,911 @@ Rectangle {
         kindSelection = next
     }
 
-    // 内容比窗口高（Phase B 加了文件索引范围），用 Flickable 滚动，
-    // 否则最后一项会被裁掉且没有任何提示。
-    Flickable {
-        id: settingsFlick
+    function jumpTo(index) {
+        activeSection = index
+        var targets = [generalSection, fileSection, inboxSection, aboutSection]
+        settingsFlick.contentY = Math.max(0, targets[index].y - 4)
+    }
+
+    RowLayout {
         anchors.fill: parent
-        anchors.margins: 8
-        clip: true
-        contentWidth: width
-        contentHeight: settingsColumn.implicitHeight
-        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+        anchors.margins: Style.pagePadding
+        spacing: Style.spacingL
 
-    ColumnLayout {
-        id: settingsColumn
-        width: settingsFlick.width
-        spacing: 20
+        // ---- 左侧二级导航 ----
+        Rectangle {
+            Layout.preferredWidth: 148
+            Layout.fillHeight: true
+            radius: Style.radiusCard
+            color: Style.surface
+            border.width: 1
+            border.color: Style.line
 
-        Text {
-            text: "设置"
-            color: textColor
-            font.pixelSize: Style.titleSize
-            font.bold: true
-        }
-
-        // ---- 主题 ----
-        ColumnLayout {
-            spacing: 8
-
-            Text {
-                text: "主题"
-                color: mutedColor
-                font.pixelSize: 12
-            }
-
-            RowLayout {
-                spacing: 8
-
-                Rectangle {
-                    width: 70
-                    height: 32
-                    radius: Style.radiusSmall
-                    color: config.theme === "light" ? accentColor : panelColor
-                    border.color: borderColor
-
-                    Text {
-                        anchors.centerIn: parent
-                        text: "浅色"
-                        color: config.theme === "light" ? Style.accentTextColor : textColor
-                        font.pixelSize: Style.bodySize
-                    }
-
-                    MouseArea {
-                        anchors.fill: parent
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: config.setTheme("light")
-                    }
-                }
-
-                Rectangle {
-                    width: 70
-                    height: 32
-                    radius: Style.radiusSmall
-                    color: config.theme === "dark" ? accentColor : panelColor
-                    border.color: borderColor
-
-                    Text {
-                        anchors.centerIn: parent
-                        text: "深色"
-                        color: config.theme === "dark" ? Style.accentTextColor : textColor
-                        font.pixelSize: Style.bodySize
-                    }
-
-                    MouseArea {
-                        anchors.fill: parent
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: config.setTheme("dark")
-                    }
-                }
-            }
-        }
-
-        // ---- 日志级别 ----
-        ColumnLayout {
-            spacing: 8
-
-            Text {
-                text: "日志级别"
-                color: mutedColor
-                font.pixelSize: 12
-            }
-
-            ComboBox {
-                id: logLevelBox
-                model: ["trace", "debug", "info", "warn"]
-                Layout.preferredWidth: 140
-
-                Component.onCompleted: {
-                    for (let i = 0; i < model.length; i++) {
-                        if (model[i] === config.logLevel) {
-                            currentIndex = i
-                            break
-                        }
-                    }
-                }
-
-                onActivated: config.setLogLevel(currentText)
-            }
-        }
-
-        // ---- 文件索引范围（Phase B：种类过滤 + 工程排除）----
-        ColumnLayout {
-            Layout.fillWidth: true
-            spacing: 8
-
-            Text {
-                text: "文件索引范围"
-                color: mutedColor
-                font.pixelSize: 12
-            }
-
-            RowLayout {
-                spacing: 8
+            ColumnLayout {
+                anchors.fill: parent
+                anchors.margins: 9
+                spacing: 2
 
                 Text {
-                    text: "种类过滤"
-                    color: textColor
-                    font.pixelSize: 12
-                    Layout.preferredWidth: 64
+                    Layout.leftMargin: 8
+                    Layout.topMargin: 2
+                    Layout.bottomMargin: 6
+                    text: "设置"
+                    color: Style.text
+                    font.pixelSize: Style.fontTitle
+                    font.weight: Font.DemiBold
+                    font.family: Style.fontFamily
                 }
-
-                ComboBox {
-                    id: kindModeBox
-                    Layout.preferredWidth: 190
-                    model: [
-                        { "key": "all",       "label": "全部文件（不过滤）" },
-                        { "key": "whitelist", "label": "只保留选中的种类" },
-                        { "key": "blacklist", "label": "排除选中的种类" }
-                    ]
-                    textRole: "label"
-
-                    Component.onCompleted: {
-                        for (var i = 0; i < model.length; ++i) {
-                            if (model[i].key === config.fileKindFilterMode) {
-                                currentIndex = i
-                                break
-                            }
-                        }
-                    }
-                }
-            }
-
-            Grid {
-                columns: 4
-                columnSpacing: 4
-                rowSpacing: 0
-                visible: kindModeBox.currentIndex > 0
 
                 Repeater {
-                    model: [
-                        { "token": "doc",   "label": "文档" },
-                        { "token": "sheet", "label": "表格" },
-                        { "token": "slide", "label": "演示" },
-                        { "token": "pdf",   "label": "PDF" },
-                        { "token": "img",   "label": "图片" },
-                        { "token": "vid",   "label": "视频" },
-                        { "token": "aud",   "label": "音频" },
-                        { "token": "zip",   "label": "压缩包" },
-                        { "token": "exe",   "label": "安装包" },
-                        { "token": "code",  "label": "代码" },
-                        { "token": "font",  "label": "字体" },
-                        { "token": "data",  "label": "数据" },
-                        { "token": "ebook", "label": "电子书" },
-                        { "token": "lnk",   "label": "快捷方式" },
-                        { "token": "disk",  "label": "磁盘镜像" },
-                        { "token": "other", "label": "其他" }
-                    ]
+                    model: settingsPage.sections
 
-                    delegate: CheckBox {
-                        text: modelData.label
-                        font.pixelSize: 12
+                    delegate: Rectangle {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 34
+                        radius: Style.radiusControl
+                        color: settingsPage.activeSection === index
+                               ? Style.accentSoft
+                               : sectionHover.hovered ? Style.surface2 : "transparent"
 
-                        Component.onCompleted:
-                            checked = settingsPage.kindSelection.indexOf(modelData.token) >= 0
+                        HoverHandler { id: sectionHover }
 
-                        onToggled: settingsPage.toggleKind(modelData.token, checked)
-                    }
-                }
-            }
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: 9
+                            anchors.rightMargin: 8
+                            spacing: 8
 
-            RowLayout {
-                spacing: 10
-
-                Button {
-                    text: "应用白名单"
-
-                    onClicked: {
-                        var mode = kindModeBox.model[kindModeBox.currentIndex].key
-                        config.setFileKindFilter(mode, settingsPage.kindSelection)
-                        settingsPage.fileStatus = mode === "all"
-                            ? "已恢复：显示全部文件（立即生效）"
-                            : "已应用：立即生效，无需重新扫描索引"
-                    }
-                }
-
-                // 2026-11-19：平时启动不再全量扫盘（24h + 空闲闸门 + 目录 mtime 增量），
-                // 所以必须有一个"我现在就要最新的"出口。
-                Button {
-                    text: "重建索引"
-
-                    onClicked: {
-                        backend.rebuildFileIndex()
-                        settingsPage.fileStatus = "已开始重建（全量扫描；期间仍可用旧索引搜索）"
-                    }
-                }
-
-                Text {
-                    text: settingsPage.fileStatus
-                    color: mutedColor
-                    font.pixelSize: Style.captionSize
-                    Layout.fillWidth: true
-                    elide: Text.ElideRight
-                }
-            }
-
-            Text {
-                text: "白名单只影响搜索结果，不会删除索引；切换无需重扫。"
-                color: mutedColor
-                font.pixelSize: Style.captionSize
-            }
-
-            RowLayout {
-                spacing: 8
-                Layout.topMargin: 4
-
-                Text {
-                    text: "工程目录"
-                    color: textColor
-                    font.pixelSize: 12
-                    Layout.preferredWidth: 64
-                }
-
-                ComboBox {
-                    id: projectPolicyBox
-                    Layout.preferredWidth: 190
-                    model: [
-                        { "key": "skip",   "label": "跳过（默认，推荐）" },
-                        { "key": "demote", "label": "入库但降权 30%" },
-                        { "key": "index",  "label": "如实入库" }
-                    ]
-                    textRole: "label"
-
-                    Component.onCompleted: {
-                        for (var i = 0; i < model.length; ++i) {
-                            if (model[i].key === config.fileProjectPolicy) {
-                                currentIndex = i
-                                break
+                            AppIcon {
+                                name: modelData.icon
+                                size: 14
+                                iconColor: settingsPage.activeSection === index
+                                           ? Style.accent : Style.text3
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: modelData.label
+                                color: settingsPage.activeSection === index
+                                       ? Style.accent : Style.text2
+                                font.pixelSize: Style.fontBody
+                                font.weight: settingsPage.activeSection === index
+                                             ? Font.DemiBold : Font.Normal
+                                font.family: Style.fontFamily
+                                elide: Text.ElideRight
                             }
                         }
-                    }
 
-                    onActivated: {
-                        config.setFileProjectPolicy(model[currentIndex].key)
-                        settingsPage.fileStatus = "已保存；正在后台重新建立索引…"
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: settingsPage.jumpTo(index)
+                        }
                     }
                 }
-            }
 
-            Text {
-                text: "工程目录 = 含 .git / CMakeLists.txt / package.json 等哨兵的目录。改这项会重新扫描索引。"
-                color: mutedColor
-                font.pixelSize: Style.captionSize
-                wrapMode: Text.WordWrap
-                Layout.maximumWidth: 460
+                Item { Layout.fillHeight: true }
+
+                Text {
+                    Layout.leftMargin: 8
+                    text: "v" + appVersion
+                    color: Style.text3
+                    font.pixelSize: 10
+                    font.family: Style.fontFamily
+                }
             }
         }
 
-        // ---- 下载接管（Phase C）----
-        ColumnLayout {
+        // ---- 右侧内容 ----
+        Flickable {
+            id: settingsFlick
             Layout.fillWidth: true
-            spacing: 8
+            Layout.fillHeight: true
+            clip: true
+            contentWidth: width
+            contentHeight: settingsColumn.implicitHeight
+            boundsBehavior: Flickable.StopAtBounds
+            ScrollBar.vertical: AppScrollBar { }
 
-            Text {
-                text: "下载接管（收件箱）"
-                color: mutedColor
-                font.pixelSize: 12
-            }
+            ColumnLayout {
+                id: settingsColumn
+                width: settingsFlick.width
+                spacing: 14
 
-            RowLayout {
-                spacing: 8
-
-                Switch {
-                    id: inboxSwitch
-                    checked: config.inboxEnabled
-                    onToggled: config.setInboxEnabled(checked)
-                }
-
-                Text {
-                    text: config.inboxEnabled
-                          ? "已开启：只接管开启之后完成的新下载"
-                          : "未开启（不会移动任何文件）"
-                    color: mutedColor
-                    font.pixelSize: 12
-                }
-            }
-
-            Text {
-                text: "收件箱：" + config.inboxPath
-                color: mutedColor
-                font.pixelSize: Style.captionSize
-                elide: Text.ElideMiddle
-                Layout.maximumWidth: 460
-            }
-
-            Text {
-                text: "下载完成判定通过后移入收件箱（可在「最近下载」页打开/定位/撤销）；"
-                      + "绝不删除源文件，失败时保持原位。"
-                color: mutedColor
-                font.pixelSize: Style.captionSize
-                wrapMode: Text.WordWrap
-                Layout.maximumWidth: 460
-            }
-        }
-
-        // ---- 下载归档规则（S11：可编辑 + dry-run）----
-        ColumnLayout {
-            id: rulesSection
-            Layout.fillWidth: true
-            spacing: 8
-
-            Text {
-                text: "下载归档规则"
-                color: mutedColor
-                font.pixelSize: 12
-            }
-
-            RowLayout {
-                spacing: 8
-
-                Switch {
-                    checked: config.inboxAutoOrganize
-                    onToggled: config.setInboxAutoOrganize(checked)
-                }
-
-                Text {
-                    text: config.inboxAutoOrganize
-                          ? "自动执行 move 规则（默认关闭）"
-                          : "只给建议，不移动文件"
-                    color: mutedColor
-                    font.pixelSize: 12
-                }
-            }
-
-            Text {
-                text: "按 priority 从小到大首个命中；action = suggest / move / skip / notify。"
-                      + " 未开启自动归档时，move 也只显示在「最近下载」的建议里。"
-                color: mutedColor
-                font.pixelSize: Style.captionSize
-                wrapMode: Text.WordWrap
-                Layout.maximumWidth: 460
-            }
-
-            ListModel { id: ruleModel }
-
-            Component.onCompleted: rulesSection.loadRules()
-
-            function loadRules() {
-                ruleModel.clear()
-                var rules = config.inboxRules
-                for (var i = 0; i < rules.length; ++i) {
-                    var r = rules[i]
-                    ruleModel.append({
-                        name: r.name || "",
-                        kind: r.kind || "",
-                        size: r.size || "",
-                        action: r.action || "suggest",
-                        dest: r.dest || ""
-                    })
-                }
-            }
-
-            function ruleArray() {
-                var arr = []
-                for (var i = 0; i < ruleModel.count; ++i) {
-                    var r = ruleModel.get(i)
-                    arr.push({
-                        name: r.name,
-                        kind: r.kind,
-                        size: r.size,
-                        action: r.action,
-                        dest: r.dest,
-                        priority: 100,
-                        enabled: true
-                    })
-                }
-                return arr
-            }
-
-            function preview() {
-                var result = inbox.previewRules(ruleArray())
-                if (result.length === 0) {
-                    previewLabel.text = "当前收件箱没有待整理文件。"
-                    return
-                }
-                var lines = []
-                for (var i = 0; i < result.length; ++i) {
-                    var item = result[i]
-                    if (item.matched)
-                        lines.push(item.name + " → " + item.rule + " / "
-                                   + item.action + " / " + item.dest)
-                    else
-                        lines.push(item.name + " → 未命中")
-                }
-                previewLabel.text = lines.join("\n")
-            }
-
-            function saveRules() {
-                config.setInboxRules(ruleArray())
-                rulesStatus.text = "已保存（" + ruleModel.count + " 条）"
-            }
-
-            Repeater {
-                model: ruleModel
-
-                delegate: ColumnLayout {
-                    id: ruleDelegate
-                    property int rowIndex: index
+                // ================= 通用 =================
+                AppCard {
+                    id: generalSection
                     Layout.fillWidth: true
-                    spacing: 2
 
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: 4
+                    ColumnLayout {
+                        width: parent.width
+                        spacing: 14
 
-                        TextField {
-                            text: model.name
-                            placeholderText: "名称"
-                            Layout.preferredWidth: 120
-                            onTextEdited: ruleModel.setProperty(index, "name", text)
+                        Text {
+                            text: "通用"
+                            color: Style.text
+                            font.pixelSize: Style.fontSubtitle
+                            font.weight: Font.DemiBold
+                            font.family: Style.fontFamily
                         }
-                        TextField {
-                            text: model.kind
-                            placeholderText: "种类 doc,pdf"
-                            Layout.preferredWidth: 110
-                            onTextEdited: ruleModel.setProperty(index, "kind", text)
-                        }
-                        TextField {
-                            text: model.size
-                            placeholderText: "大小 >10mb"
-                            Layout.preferredWidth: 95
-                            onTextEdited: ruleModel.setProperty(index, "size", text)
-                        }
-                        Button {
-                            text: "×"
-                            onClicked: ruleModel.remove(index)
-                        }
-                    }
 
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: 4
-
-                        ComboBox {
-                            model: [ "suggest", "move", "skip", "notify" ]
-                            Component.onCompleted: {
-                                var actions = [ "suggest", "move", "skip", "notify" ]
-                                var at = actions.indexOf(action)
-                                currentIndex = at >= 0 ? at : 0
-                            }
-                            onActivated: ruleModel.setProperty(ruleDelegate.rowIndex,
-                                                               "action", currentText)
-                        }
-                        TextField {
-                            text: model.dest
-                            placeholderText: "去向 {inbox}/Docs/{yyyy}"
+                        // 主题
+                        RowLayout {
                             Layout.fillWidth: true
-                            onTextEdited: ruleModel.setProperty(index, "dest", text)
+                            spacing: 8
+
+                            Text {
+                                text: "主题"
+                                color: Style.text2
+                                font.pixelSize: Style.fontBody
+                                font.family: Style.fontFamily
+                                Layout.preferredWidth: 76
+                            }
+
+                            AppButton {
+                                text: "浅色"
+                                icon: "sun"
+                                small: true
+                                variant: config.theme === "light" ? "primary" : "secondary"
+                                onClicked: config.setTheme("light")
+                            }
+                            AppButton {
+                                text: "深色"
+                                icon: "moon"
+                                small: true
+                                variant: config.theme === "dark" ? "primary" : "secondary"
+                                onClicked: config.setTheme("dark")
+                            }
+                            Item { Layout.fillWidth: true }
+                        }
+
+                        Rectangle { Layout.fillWidth: true; height: 1; color: Style.line }
+
+                        // 日志级别
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+
+                            Text {
+                                text: "日志级别"
+                                color: Style.text2
+                                font.pixelSize: Style.fontBody
+                                font.family: Style.fontFamily
+                                Layout.preferredWidth: 76
+                            }
+
+                            AppComboBox {
+                                id: logLevelBox
+                                Layout.preferredWidth: 140
+                                model: ["trace", "debug", "info", "warn"]
+
+                                Component.onCompleted: {
+                                    for (let i = 0; i < model.length; i++) {
+                                        if (model[i] === config.logLevel) {
+                                            currentIndex = i
+                                            break
+                                        }
+                                    }
+                                }
+                                onActivated: config.setLogLevel(currentText)
+                            }
+                            Item { Layout.fillWidth: true }
+                        }
+
+                        Rectangle { Layout.fillWidth: true; height: 1; color: Style.line }
+
+                        // 全局热键
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+
+                            Text {
+                                text: "全局热键"
+                                color: Style.text2
+                                font.pixelSize: Style.fontBody
+                                font.family: Style.fontFamily
+                            }
+
+                            RowLayout {
+                                spacing: 8
+
+                                Rectangle {
+                                    width: 190
+                                    height: 32
+                                    radius: Style.radiusControl
+                                    color: settingsPage.capturing ? Style.accentSoft : Style.surface
+                                    border.width: settingsPage.capturing ? 1.5 : 1
+                                    border.color: settingsPage.capturing ? Style.accent : Style.lineStrong
+
+                                    Text {
+                                        anchors.centerIn: parent
+                                        text: settingsPage.capturing
+                                              ? "请按下组合键…（Esc 取消）"
+                                              : config.hotkeyModifiers + " + " + config.hotkeyKey
+                                        color: settingsPage.capturing ? Style.accent : Style.text
+                                        font.pixelSize: Style.fontBody
+                                        font.weight: Font.DemiBold
+                                        font.family: Style.fontFamily
+                                    }
+
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: {
+                                            settingsPage.capturing = true
+                                            settingsPage.hotkeyStatus = ""
+                                            keyCapture.forceActiveFocus()
+                                        }
+                                    }
+                                }
+
+                                AppButton {
+                                    visible: settingsPage.capturing
+                                    text: "取消"
+                                    small: true
+                                    variant: "ghost"
+                                    onClicked: settingsPage.capturing = false
+                                }
+                            }
+
+                            Text {
+                                visible: settingsPage.hotkeyStatus.length > 0
+                                text: settingsPage.hotkeyStatus
+                                color: settingsPage.hotkeyStatusOk ? Style.success : Style.danger
+                                font.pixelSize: 10
+                                font.family: Style.fontFamily
+                                wrapMode: Text.WordWrap
+                                Layout.fillWidth: true
+                            }
+
+                            Text {
+                                text: "至少一个修饰键（Ctrl / Alt / Shift / Win）+ 字母、数字、F1–F24 或空格"
+                                color: Style.text3
+                                font.pixelSize: 10
+                                font.family: Style.fontFamily
+                                wrapMode: Text.WordWrap
+                                Layout.fillWidth: true
+                            }
+                        }
+
+                        Rectangle { Layout.fillWidth: true; height: 1; color: Style.line }
+
+                        // 开机启动
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+
+                            Text {
+                                text: "开机启动"
+                                color: Style.text2
+                                font.pixelSize: Style.fontBody
+                                font.family: Style.fontFamily
+                                Layout.preferredWidth: 76
+                            }
+
+                            AppSwitch {
+                                id: autoStartSwitch
+                                checked: config.autoStart
+                                onToggled: config.setAutoStart(checked)
+                            }
+
+                            Text {
+                                Layout.fillWidth: true
+                                text: config.autoStart ? "已随系统启动（HKCU\\...\\Run）" : "不随系统启动"
+                                color: Style.text3
+                                font.pixelSize: 10
+                                font.family: Style.fontFamily
+                                elide: Text.ElideRight
+                            }
+                        }
+                    }
+                }
+
+                // ================= 文件索引 =================
+                AppCard {
+                    id: fileSection
+                    Layout.fillWidth: true
+
+                    ColumnLayout {
+                        width: parent.width
+                        spacing: 12
+
+                        Text {
+                            text: "文件索引"
+                            color: Style.text
+                            font.pixelSize: Style.fontSubtitle
+                            font.weight: Font.DemiBold
+                            font.family: Style.fontFamily
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+
+                            Text {
+                                text: "种类过滤"
+                                color: Style.text2
+                                font.pixelSize: Style.fontBody
+                                font.family: Style.fontFamily
+                                Layout.preferredWidth: 76
+                            }
+
+                            AppComboBox {
+                                id: kindModeBox
+                                Layout.preferredWidth: 200
+                                model: [
+                                    { "key": "all",       "label": "全部文件（不过滤）" },
+                                    { "key": "whitelist", "label": "只保留选中的种类" },
+                                    { "key": "blacklist", "label": "排除选中的种类" }
+                                ]
+                                textRole: "label"
+
+                                Component.onCompleted: {
+                                    for (var i = 0; i < model.length; ++i) {
+                                        if (model[i].key === config.fileKindFilterMode) {
+                                            currentIndex = i
+                                            break
+                                        }
+                                    }
+                                }
+                            }
+                            Item { Layout.fillWidth: true }
+                        }
+
+                        Flow {
+                            Layout.fillWidth: true
+                            spacing: 4
+                            visible: kindModeBox.currentIndex > 0
+
+                            Repeater {
+                                model: [
+                                    { "token": "doc",   "label": "文档" },
+                                    { "token": "sheet", "label": "表格" },
+                                    { "token": "slide", "label": "演示" },
+                                    { "token": "pdf",   "label": "PDF" },
+                                    { "token": "img",   "label": "图片" },
+                                    { "token": "vid",   "label": "视频" },
+                                    { "token": "aud",   "label": "音频" },
+                                    { "token": "zip",   "label": "压缩包" },
+                                    { "token": "exe",   "label": "安装包" },
+                                    { "token": "code",  "label": "代码" },
+                                    { "token": "font",  "label": "字体" },
+                                    { "token": "data",  "label": "数据" },
+                                    { "token": "ebook", "label": "电子书" },
+                                    { "token": "lnk",   "label": "快捷方式" },
+                                    { "token": "disk",  "label": "磁盘镜像" },
+                                    { "token": "other", "label": "其他" }
+                                ]
+
+                                delegate: RowLayout {
+                                    width: 92
+                                    height: 26
+                                    spacing: 6
+
+                                    AppCheckbox {
+                                        checked: settingsPage.kindSelection.indexOf(modelData.token) >= 0
+                                        onToggled: settingsPage.toggleKind(modelData.token, checked)
+                                    }
+                                    Text {
+                                        text: modelData.label
+                                        color: Style.text2
+                                        font.pixelSize: 11
+                                        font.family: Style.fontFamily
+                                    }
+                                }
+                            }
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+
+                            AppButton {
+                                text: "应用白名单"
+                                variant: "primary"
+                                small: true
+                                onClicked: {
+                                    var mode = kindModeBox.model[kindModeBox.currentIndex].key
+                                    config.setFileKindFilter(mode, settingsPage.kindSelection)
+                                    settingsPage.fileStatus = mode === "all"
+                                        ? "已恢复：显示全部文件（立即生效）"
+                                        : "已应用：立即生效，无需重新扫描索引"
+                                }
+                            }
+                            AppButton {
+                                text: "重建索引"
+                                variant: "secondary"
+                                small: true
+                                onClicked: {
+                                    backend.rebuildFileIndex()
+                                    settingsPage.fileStatus = "已开始重建（全量扫描；期间仍可用旧索引搜索）"
+                                }
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: settingsPage.fileStatus
+                                color: Style.success
+                                font.pixelSize: 10
+                                font.family: Style.fontFamily
+                                elide: Text.ElideRight
+                            }
+                        }
+
+                        Text {
+                            text: "白名单只影响搜索结果，不会删除索引；切换无需重扫。"
+                            color: Style.text3
+                            font.pixelSize: 10
+                            font.family: Style.fontFamily
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+
+                            Text {
+                                text: "工程目录"
+                                color: Style.text2
+                                font.pixelSize: Style.fontBody
+                                font.family: Style.fontFamily
+                                Layout.preferredWidth: 76
+                            }
+
+                            AppComboBox {
+                                id: projectPolicyBox
+                                Layout.preferredWidth: 200
+                                model: [
+                                    { "key": "skip",   "label": "跳过（默认，推荐）" },
+                                    { "key": "demote", "label": "入库但降权 30%" },
+                                    { "key": "index",  "label": "如实入库" }
+                                ]
+                                textRole: "label"
+
+                                Component.onCompleted: {
+                                    for (var i = 0; i < model.length; ++i) {
+                                        if (model[i].key === config.fileProjectPolicy) {
+                                            currentIndex = i
+                                            break
+                                        }
+                                    }
+                                }
+                                onActivated: {
+                                    config.setFileProjectPolicy(model[currentIndex].key)
+                                    settingsPage.fileStatus = "已保存；正在后台重新建立索引…"
+                                }
+                            }
+                            Item { Layout.fillWidth: true }
+                        }
+
+                        Text {
+                            text: "工程目录 = 含 .git / CMakeLists.txt / package.json 等哨兵的目录。改这项会重新扫描索引。"
+                            color: Style.text3
+                            font.pixelSize: 10
+                            font.family: Style.fontFamily
+                            wrapMode: Text.WordWrap
+                            Layout.fillWidth: true
+                        }
+                    }
+                }
+
+                // ================= 收件箱 =================
+                AppCard {
+                    id: inboxSection
+                    Layout.fillWidth: true
+
+                    ColumnLayout {
+                        width: parent.width
+                        spacing: 12
+
+                        Text {
+                            text: "收件箱"
+                            color: Style.text
+                            font.pixelSize: Style.fontSubtitle
+                            font.weight: Font.DemiBold
+                            font.family: Style.fontFamily
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+
+                            Text {
+                                text: "下载接管"
+                                color: Style.text2
+                                font.pixelSize: Style.fontBody
+                                font.family: Style.fontFamily
+                                Layout.preferredWidth: 76
+                            }
+
+                            AppSwitch {
+                                id: inboxSwitch
+                                checked: config.inboxEnabled
+                                onToggled: config.setInboxEnabled(checked)
+                            }
+
+                            Text {
+                                Layout.fillWidth: true
+                                text: config.inboxEnabled
+                                      ? "已开启：只接管开启之后完成的新下载"
+                                      : "未开启（不会移动任何文件）"
+                                color: Style.text3
+                                font.pixelSize: 10
+                                font.family: Style.fontFamily
+                                elide: Text.ElideRight
+                            }
+                        }
+
+                        Text {
+                            text: "收件箱：" + config.inboxPath
+                            color: Style.text3
+                            font.pixelSize: 10
+                            font.family: Style.fontFamily
+                            elide: Text.ElideMiddle
+                            Layout.fillWidth: true
+                        }
+
+                        Text {
+                            text: "下载完成判定通过后移入收件箱（可在「最近下载」页打开/定位/撤销）；绝不删除源文件，失败时保持原位。"
+                            color: Style.text3
+                            font.pixelSize: 10
+                            font.family: Style.fontFamily
+                            wrapMode: Text.WordWrap
+                            Layout.fillWidth: true
+                        }
+
+                        Rectangle { Layout.fillWidth: true; height: 1; color: Style.line }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+
+                            Text {
+                                text: "自动归档"
+                                color: Style.text2
+                                font.pixelSize: Style.fontBody
+                                font.family: Style.fontFamily
+                                Layout.preferredWidth: 76
+                            }
+
+                            AppSwitch {
+                                checked: config.inboxAutoOrganize
+                                onToggled: config.setInboxAutoOrganize(checked)
+                            }
+
+                            Text {
+                                Layout.fillWidth: true
+                                text: config.inboxAutoOrganize
+                                      ? "自动执行 move 规则（默认关闭）"
+                                      : "只给建议，不移动文件"
+                                color: Style.text3
+                                font.pixelSize: 10
+                                font.family: Style.fontFamily
+                                elide: Text.ElideRight
+                            }
+                        }
+
+                        Text {
+                            text: "按 priority 从小到大首个命中；action = suggest / move / skip / notify。未开启自动归档时，move 也只显示在「最近下载」的建议里。"
+                            color: Style.text3
+                            font.pixelSize: 10
+                            font.family: Style.fontFamily
+                            wrapMode: Text.WordWrap
+                            Layout.fillWidth: true
+                        }
+
+                        // ---- 规则编辑器 ----
+                        ColumnLayout {
+                            id: rulesSection
+                            Layout.fillWidth: true
+                            spacing: 6
+
+                            ListModel { id: ruleModel }
+
+                            Component.onCompleted: rulesSection.loadRules()
+
+                            function loadRules() {
+                                ruleModel.clear()
+                                var rules = config.inboxRules
+                                for (var i = 0; i < rules.length; ++i) {
+                                    var r = rules[i]
+                                    ruleModel.append({
+                                        name: r.name || "",
+                                        kind: r.kind || "",
+                                        size: r.size || "",
+                                        action: r.action || "suggest",
+                                        dest: r.dest || ""
+                                    })
+                                }
+                            }
+
+                            function ruleArray() {
+                                var arr = []
+                                for (var i = 0; i < ruleModel.count; ++i) {
+                                    var r = ruleModel.get(i)
+                                    arr.push({
+                                        name: r.name,
+                                        kind: r.kind,
+                                        size: r.size,
+                                        action: r.action,
+                                        dest: r.dest,
+                                        priority: 100,
+                                        enabled: true
+                                    })
+                                }
+                                return arr
+                            }
+
+                            function preview() {
+                                var result = inbox.previewRules(ruleArray())
+                                if (result.length === 0) {
+                                    previewLabel.text = "当前收件箱没有待整理文件。"
+                                    return
+                                }
+                                var lines = []
+                                for (var i = 0; i < result.length; ++i) {
+                                    var item = result[i]
+                                    if (item.matched)
+                                        lines.push(item.name + " → " + item.rule + " / "
+                                                   + item.action + " / " + item.dest)
+                                    else
+                                        lines.push(item.name + " → 未命中")
+                                }
+                                previewLabel.text = lines.join("\n")
+                            }
+
+                            function saveRules() {
+                                config.setInboxRules(ruleArray())
+                                rulesStatus.text = "已保存（" + ruleModel.count + " 条）"
+                            }
+
+                            Text {
+                                text: "归档规则"
+                                color: Style.text3
+                                font.pixelSize: 10
+                                font.weight: Font.DemiBold
+                                font.letterSpacing: 1.0
+                                font.family: Style.fontFamily
+                            }
+
+                            Repeater {
+                                model: ruleModel
+
+                                delegate: ColumnLayout {
+                                    id: ruleDelegate
+                                    property int rowIndex: index
+                                    Layout.fillWidth: true
+                                    spacing: 4
+
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 4
+
+                                        AppTextField {
+                                            text: model.name
+                                            placeholder: "名称"
+                                            compact: true
+                                            Layout.preferredWidth: 110
+                                            onUserEdited: ruleModel.setProperty(index, "name", text)
+                                        }
+                                        AppTextField {
+                                            text: model.kind
+                                            placeholder: "种类 doc,pdf"
+                                            compact: true
+                                            Layout.preferredWidth: 100
+                                            onUserEdited: ruleModel.setProperty(index, "kind", text)
+                                        }
+                                        AppTextField {
+                                            text: model.size
+                                            placeholder: "大小 >10mb"
+                                            compact: true
+                                            Layout.preferredWidth: 90
+                                            onUserEdited: ruleModel.setProperty(index, "size", text)
+                                        }
+                                        AppIconButton {
+                                            icon: "trash"
+                                            iconSize: 13
+                                            danger: true
+                                            tooltip: "删除规则"
+                                            onClicked: ruleModel.remove(index)
+                                        }
+                                    }
+
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 4
+
+                                        AppComboBox {
+                                            Layout.preferredWidth: 96
+                                            model: [ "suggest", "move", "skip", "notify" ]
+                                            Component.onCompleted: {
+                                                var actions = [ "suggest", "move", "skip", "notify" ]
+                                                var at = actions.indexOf(action)
+                                                currentIndex = at >= 0 ? at : 0
+                                            }
+                                            onActivated: ruleModel.setProperty(ruleDelegate.rowIndex,
+                                                                                "action", currentText)
+                                        }
+                                        AppTextField {
+                                            text: model.dest
+                                            placeholder: "去向 {inbox}/Docs/{yyyy}"
+                                            compact: true
+                                            Layout.fillWidth: true
+                                            onUserEdited: ruleModel.setProperty(index, "dest", text)
+                                        }
+                                    }
+                                }
+                            }
+
+                            RowLayout {
+                                spacing: 8
+
+                                AppButton {
+                                    text: "添加规则"
+                                    variant: "secondary"
+                                    small: true
+                                    onClicked: ruleModel.append({ name: "", kind: "", size: "",
+                                                                  action: "suggest", dest: "" })
+                                }
+                                AppButton {
+                                    text: "预览"
+                                    variant: "ghost"
+                                    small: true
+                                    onClicked: rulesSection.preview()
+                                }
+                                AppButton {
+                                    text: "保存规则"
+                                    variant: "primary"
+                                    small: true
+                                    onClicked: rulesSection.saveRules()
+                                }
+                                Text {
+                                    id: rulesStatus
+                                    color: Style.success
+                                    font.pixelSize: 10
+                                    font.family: Style.fontFamily
+                                }
+                            }
+
+                            Text {
+                                id: previewLabel
+                                visible: text.length > 0
+                                color: Style.text3
+                                font.pixelSize: 10
+                                font.family: Style.fontFamily
+                                wrapMode: Text.WordWrap
+                                Layout.fillWidth: true
+                            }
+                        }
+
+                        Rectangle { Layout.fillWidth: true; height: 1; color: Style.line }
+
+                        // ---- IM 目录 ----
+                        ColumnLayout {
+                            id: imSection
+                            Layout.fillWidth: true
+                            spacing: 6
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 8
+
+                                Text {
+                                    text: "IM 接收目录"
+                                    color: Style.text2
+                                    font.pixelSize: Style.fontBody
+                                    font.family: Style.fontFamily
+                                    Layout.preferredWidth: 76
+                                }
+
+                                AppSwitch {
+                                    checked: config.imEnabled
+                                    onToggled: config.setImEnabled(checked)
+                                }
+
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: config.imEnabled
+                                          ? "已开启：复制到这些目录的完成文件会进收件箱"
+                                          : "未开启（默认，不碰 IM 目录）"
+                                    color: Style.text3
+                                    font.pixelSize: 10
+                                    font.family: Style.fontFamily
+                                    elide: Text.ElideRight
+                                }
+                            }
+
+                            Text {
+                                text: "多个目录用分号分隔；修改目录后需重启应用（watcher 只在启动时建）。"
+                                color: Style.text3
+                                font.pixelSize: 10
+                                font.family: Style.fontFamily
+                                wrapMode: Text.WordWrap
+                                Layout.fillWidth: true
+                            }
+
+                            AppTextField {
+                                id: imDirsField
+                                Layout.fillWidth: true
+                                text: config.imDirs.join(";")
+                                placeholder: "C:/Users/me/Documents/WeChat Files;..."
+                            }
+
+                            RowLayout {
+                                spacing: 6
+
+                                AppButton {
+                                    text: "扫描常见目录"
+                                    variant: "secondary"
+                                    small: true
+                                    onClicked: {
+                                        var found = inbox.imCandidates()
+                                        if (found.length === 0) {
+                                            imStatus.text = "没有发现常见 IM 目录"
+                                        } else {
+                                            imDirsField.text = found.join(";")
+                                            imStatus.text = "已填入 " + found.length + " 个目录，请确认后保存"
+                                        }
+                                    }
+                                }
+                                AppButton {
+                                    text: "保存目录"
+                                    variant: "primary"
+                                    small: true
+                                    onClicked: {
+                                        var parts = imDirsField.text.split(";")
+                                        var dirs = []
+                                        for (var i = 0; i < parts.length; ++i) {
+                                            var d = parts[i].trim()
+                                            if (d.length > 0)
+                                                dirs.push(d)
+                                        }
+                                        config.setImDirs(dirs)
+                                        imStatus.text = "已保存（" + dirs.length + " 个目录），重启后监听"
+                                    }
+                                }
+                                Text {
+                                    id: imStatus
+                                    color: Style.success
+                                    font.pixelSize: 10
+                                    font.family: Style.fontFamily
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ================= 关于 =================
+                AppCard {
+                    id: aboutSection
+                    Layout.fillWidth: true
+
+                    ColumnLayout {
+                        width: parent.width
+                        spacing: 6
+
+                        Text {
+                            text: "关于"
+                            color: Style.text
+                            font.pixelSize: Style.fontSubtitle
+                            font.weight: Font.DemiBold
+                            font.family: Style.fontFamily
+                        }
+                        Text {
+                            text: "Assistant v" + appVersion + " · Windows 桌面助手"
+                            color: Style.text2
+                            font.pixelSize: Style.fontBody
+                            font.family: Style.fontFamily
+                        }
+                        Text {
+                            text: "配置与数据库位于 %LOCALAPPDATA%/AssistantTeam/Assistant/；主题、日志级别、文件索引与收件箱设置即时生效。"
+                            color: Style.text3
+                            font.pixelSize: 10
+                            font.family: Style.fontFamily
+                            wrapMode: Text.WordWrap
+                            Layout.fillWidth: true
                         }
                     }
                 }
             }
-
-            RowLayout {
-                spacing: 8
-
-                Button {
-                    text: "添加规则"
-                    onClicked: ruleModel.append({ name: "", kind: "", size: "",
-                                                  action: "suggest", dest: "" })
-                }
-                Button {
-                    text: "预览（dry-run）"
-                    onClicked: rulesSection.preview()
-                }
-                Button {
-                    text: "保存规则"
-                    onClicked: rulesSection.saveRules()
-                }
-                Text {
-                    id: rulesStatus
-                    color: accentColor
-                    font.pixelSize: Style.captionSize
-                }
-            }
-
-            Text {
-                id: previewLabel
-                visible: text.length > 0
-                color: mutedColor
-                font.pixelSize: Style.captionSize
-                wrapMode: Text.WordWrap
-                Layout.fillWidth: true
-                Layout.maximumWidth: 460
-            }
         }
-
-        // ---- IM 接收目录（S11，默认关闭，需用户确认）----
-        ColumnLayout {
-            id: imSection
-            Layout.fillWidth: true
-            spacing: 8
-
-            Text {
-                text: "IM 接收目录（QQ / 微信 / 钉钉）"
-                color: mutedColor
-                font.pixelSize: 12
-            }
-
-            RowLayout {
-                spacing: 8
-
-                Switch {
-                    checked: config.imEnabled
-                    onToggled: config.setImEnabled(checked)
-                }
-
-                Text {
-                    text: config.imEnabled
-                          ? "已开启：复制到这些目录的完成文件会进收件箱"
-                          : "未开启（默认，不碰 IM 目录）"
-                    color: mutedColor
-                    font.pixelSize: 12
-                }
-            }
-
-            Text {
-                text: "多个目录用分号分隔；修改目录后需重启应用（watcher 只在启动时建）。"
-                color: mutedColor
-                font.pixelSize: Style.captionSize
-                wrapMode: Text.WordWrap
-                Layout.maximumWidth: 460
-            }
-
-            TextField {
-                id: imDirsField
-                text: config.imDirs.join(";")
-                placeholderText: "C:/Users/me/Documents/WeChat Files;..."
-                Layout.fillWidth: true
-                Layout.maximumWidth: 460
-            }
-
-            RowLayout {
-                spacing: 4
-
-                Button {
-                    text: "扫描常见目录"
-                    onClicked: {
-                        var found = inbox.imCandidates()
-                        if (found.length === 0) {
-                            imStatus.text = "没有发现常见 IM 目录"
-                        } else {
-                            imDirsField.text = found.join(";")
-                            imStatus.text = "已填入 " + found.length + " 个目录，请确认后保存"
-                        }
-                    }
-                }
-                Button {
-                    text: "保存目录"
-                    onClicked: {
-                        var parts = imDirsField.text.split(";")
-                        var dirs = []
-                        for (var i = 0; i < parts.length; ++i) {
-                            var d = parts[i].trim()
-                            if (d.length > 0)
-                                dirs.push(d)
-                        }
-                        config.setImDirs(dirs)
-                        imStatus.text = "已保存（" + dirs.length + " 个目录），重启后监听"
-                    }
-                }
-            }
-
-            Text {
-                id: imStatus
-                color: accentColor
-                font.pixelSize: Style.captionSize
-            }
-        }
-
-        // ---- 全局热键（可自定义，Phase 3 收尾）----
-        ColumnLayout {
-            spacing: 8
-
-            Text {
-                text: "全局热键"
-                color: mutedColor
-                font.pixelSize: 12
-            }
-
-            RowLayout {
-                spacing: 8
-
-                // 点击进入捕获态，接着按下的组合键即为新热键
-                Rectangle {
-                    width: 190
-                    height: 32
-                    radius: Style.radiusSmall
-                    color: settingsPage.capturing ? accentColor : panelColor
-                    border.color: settingsPage.capturing ? accentColor : borderColor
-                    border.width: settingsPage.capturing ? 2 : 1
-
-                    Text {
-                        anchors.centerIn: parent
-                        text: settingsPage.capturing
-                              ? "请按下组合键…（Esc 取消）"
-                              : config.hotkeyModifiers + " + " + config.hotkeyKey
-                        color: settingsPage.capturing ? Style.accentTextColor : textColor
-                        font.pixelSize: Style.bodySize
-                        font.bold: !settingsPage.capturing
-                    }
-
-                    MouseArea {
-                        anchors.fill: parent
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: {
-                            settingsPage.capturing = true
-                            settingsPage.hotkeyStatus = ""
-                            keyCapture.forceActiveFocus()
-                        }
-                    }
-                }
-
-                Rectangle {
-                    visible: settingsPage.capturing
-                    width: 56
-                    height: 32
-                    radius: Style.radiusSmall
-                    color: borderColor
-
-                    Text {
-                        anchors.centerIn: parent
-                        text: "取消"
-                        color: textColor
-                        font.pixelSize: 12
-                    }
-
-                    MouseArea {
-                        anchors.fill: parent
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: settingsPage.capturing = false
-                    }
-                }
-            }
-
-            Text {
-                visible: settingsPage.hotkeyStatus.length > 0
-                text: settingsPage.hotkeyStatus
-                color: settingsPage.hotkeyStatusOk ? mutedColor : Style.dangerColor
-                font.pixelSize: Style.captionSize
-                wrapMode: Text.WordWrap
-                Layout.maximumWidth: 460
-            }
-
-            Text {
-                text: "至少包含一个修饰键（Ctrl / Alt / Shift / Win）+ 字母、数字、F1–F24 或空格"
-                color: mutedColor
-                font.pixelSize: Style.captionSize
-            }
-        }
-
-        // ---- 开机启动（Phase 3 收尾）----
-        ColumnLayout {
-            spacing: 8
-
-            Text {
-                text: "开机启动"
-                color: mutedColor
-                font.pixelSize: 12
-            }
-
-            RowLayout {
-                spacing: 8
-
-                Switch {
-                    id: autoStartSwitch
-                    checked: config.autoStart
-                    onToggled: config.setAutoStart(checked)
-                }
-
-                Text {
-                    text: config.autoStart ? "已随系统启动（写入用户注册表 Run 键）"
-                                           : "不随系统启动"
-                    color: mutedColor
-                    font.pixelSize: 12
-                }
-            }
-        }
-
-        // ---- 关于 ----
-        Text {
-            text: "Assistant v" + appVersion + " · Phase 3"
-            color: mutedColor
-            font.pixelSize: Style.captionSize
-            Layout.fillWidth: true
-        }
-    }
     }
 
     // ---- 隐藏的按键捕获器（放在布局之外，避免影响 ColumnLayout）----
@@ -760,7 +950,6 @@ Rectangle {
         height: 0
         focus: settingsPage.capturing
 
-        // 把 Qt 的按键值翻译成 HotkeyManager::parseKey 认识的名字
         function keyNameOf(k) {
             if (k >= Qt.Key_A && k <= Qt.Key_Z) return String.fromCharCode(k)
             if (k >= Qt.Key_0 && k <= Qt.Key_9) return String.fromCharCode(k)
@@ -781,14 +970,12 @@ Rectangle {
             if (event.modifiers & Qt.ShiftModifier)   mods.push("Shift")
             if (event.modifiers & Qt.MetaModifier)    mods.push("Win")
 
-            // 单独按 Esc：取消捕获
             if (event.key === Qt.Key_Escape && mods.length === 0) {
                 event.accepted = true
                 settingsPage.capturing = false
                 return
             }
 
-            // 只按下修饰键本身：等待主键，不当作组合键
             if (event.key === Qt.Key_Control || event.key === Qt.Key_Alt ||
                 event.key === Qt.Key_Shift   || event.key === Qt.Key_Meta) {
                 event.accepted = true

@@ -1,4 +1,5 @@
 #include <QApplication>
+#include <QFont>
 #include <QQmlApplicationEngine>
 #include <QQuickStyle>
 #include <QWindow>
@@ -29,6 +30,7 @@
 #include "ui/PanelBridge.h"
 #include "ui/PluginBridge.h"
 #include "ui/InboxBridge.h"
+#include "ui/MetricsBridge.h"
 #include "core/plugin/PluginCatalog.h"
 #include "core/plugin/PluginInstaller.h"
 #include "core/plugin/PluginLoader.h"
@@ -62,6 +64,14 @@ int main(int argc, char *argv[])
 
     QApplication app(argc, argv);
     app.setQuitOnLastWindowClosed(false);
+
+    // UI 改版：统一默认字体。QML 里大多显式写了 font.family，但菜单、对话框、
+    // 原生控件仍会读 QGuiApplication::font；不设的话 Win10/Win11 的默认字号不一致。
+    {
+        QFont uiFont(QStringLiteral("Segoe UI Variable Text"));
+        uiFont.setPointSize(10);
+        app.setFont(uiFont);
+    }
 
     // ---- config (load before anything that needs it) ----
     ConfigManager config;
@@ -349,6 +359,7 @@ int main(int argc, char *argv[])
 
     // ---- main panel window (Phase 3 Step 1) ----
     // 常驻主面板：独立 engine，初始隐藏，由 🏠 按钮 / 托盘菜单触发显示。
+    MetricsBridge metricsBridge(dbDir);
     QQmlApplicationEngine panelEngine;
     panelEngine.rootContext()->setContextProperty("config", &config);
     // 主面板也要用 backend：设置页「重建文件索引」是 AppBridge 的 Q_INVOKABLE
@@ -356,6 +367,7 @@ int main(int argc, char *argv[])
     panelEngine.rootContext()->setContextProperty("panel", &panel);
     panelEngine.rootContext()->setContextProperty("sync", &syncBridge);
     panelEngine.rootContext()->setContextProperty("inbox", &inboxBridge);
+    panelEngine.rootContext()->setContextProperty("metrics", &metricsBridge);
     panelEngine.rootContext()->setContextProperty("appVersion", QCoreApplication::applicationVersion());
 
     // Must be registered BEFORE the QML loads: MainPanel binds `pluginApi` to
@@ -394,7 +406,7 @@ int main(int argc, char *argv[])
     if (qApp->arguments().contains(QStringLiteral("--show-panel"))) {
         QTimer::singleShot(400, &app, [&]() {
             static const char *kPageKeys[] = { "todo", "notes", "clip", "downloads",
-                                               "sync", "settings", "plugins" };
+                                               "sync", "insight", "settings", "plugins" };
             for (const QString &arg : qApp->arguments()) {
                 if (!arg.startsWith(QStringLiteral("--page=")))
                     continue;
