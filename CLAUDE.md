@@ -109,6 +109,10 @@ cmake --build build --config Debug
       配对成功时**双方各写一条 `devices`**（`PairResult` 带 `hostDeviceId`，否则主机反连会
       `AUTH_FAILED`）；新增 `peerForDevice()`，主机发文件时能直推就直推、不能才退回发件箱
       `_outbox/`；`init()` 里有同步根就自动开监听（以前只有"主机"点按钮，对端永远不可达）
+- [x] 对端范围自动读取（2026-11-19 同日）：`HelloAck` 带 `roots:[{alias,name}]`，
+      `NetTransport::remoteRoots()` 收下；`SyncBridge::refreshRemoteRoots()` / `alignAliasesToRemote()`
+      按**目录名**匹配把本机别名对齐到对端；配对成功自动读 + 自动对齐（`m_alignAfterPairing`），
+      页面「同步范围」卡多一行提示 + 「读取对端文件夹」「对齐别名」，配对窗口开着时有「复制配对码」
 - [ ] 直连剩余：主机拉取对端目录差异（主机「立即同步」仍灰，现在只能直推单文件）、
       `LocalDirTransport`（host 本地根与共享根对称）、直连卡片真机肉眼走查、两台机器真跑、
       双实例投递走查（停主机后发送 → 队列保留 → 重开主机自动补发）、C 阶段删 `FolderTransport` /
