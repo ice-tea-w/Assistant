@@ -509,7 +509,7 @@ Rectangle {
 
                         Button {
                             text: sync.busy ? "同步中…" : "立即同步"
-                            enabled: !sync.busy && sync.peerPaired
+                            enabled: !sync.busy && (sync.peerPaired || sync.pairedDevices.length > 0)
                             onClicked: sync.syncNow()
                         }
 
@@ -526,8 +526,8 @@ Rectangle {
                         color: syncPage.mutedColor
                         font.pixelSize: 12
                         visible: !sync.peerPaired && sync.pairedDevices.length > 0
-                        text: "你是主机：文件在你这边，等对方点「立即同步」来拉取；"
-                              + "这台机器上的「立即同步」没有对端可连，所以是灰的。"
+                        text: "你是主机：会主动连回最近连过的设备，各跑一轮双向同步；"
+                              + "对方还没连过（没有地址）时，得等它先连一次。"
                     }
 
                     RowLayout {

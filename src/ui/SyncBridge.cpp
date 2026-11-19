@@ -1589,16 +1589,50 @@ void SyncBridge::syncNow()
         return;
     }
 
-    if (!hasPeerCredentials()) {
-        // 主机模式：这台机器是服务端，自己没有「到主机」的凭据 —— 同步由对方发起，
-        // 它连过来拉走这边的文件。所以这里不是错误，别按警告刷屏（自动同步会反复触发）。
-        if (!m_db.allDevices().isEmpty()) {
-            setStatus(QStringLiteral("主机模式：等你配对的设备点「立即同步」来拉取"));
+    // 一轮同步要连谁：连接方连主机；主机反连"连过我的设备"。两边都可能有多个。
+    struct Round
+    {
+        Sync::Net::NetPeer peer;
+        QString            baselineKey;   // 基线按设备存，用对端 deviceId
+    };
+    QList<Round> rounds;
+
+    if (hasPeerCredentials()) {
+        const Sync::Net::PeerAddress parsed =
+            Sync::Net::parsePeerAddress(m_config->syncPeerAddress(),
+                                       quint16(m_config->syncPort()));
+        if (!parsed.ok) {
+            setStatus(QStringLiteral("直连地址无效：") + parsed.error);
+            Logger::get().warn("SyncBridge: 直连地址无效（{}）", parsed.error.toStdString());
             return;
         }
-        setStatus(QStringLiteral("请先与主机配对，或在下面「直连」里等对方连过来"));
-        Logger::get().warn("SyncBridge: 跳过同步（同步根 {} 个，没有配对凭据）", m_roots.size());
-        return;
+        Sync::Net::NetPeer peer;
+        peer.host                = parsed.host;
+        peer.port                = parsed.port;
+        peer.expectedFingerprint = m_config->syncPeerFingerprint();
+        peer.deviceId            = ensureDeviceId();
+        peer.deviceSecret        = QByteArray::fromBase64(m_config->syncPeerSecret().toLatin1());
+        peer.localListenPort     = m_netListenPort;
+
+        // 客户端这边"对端"是配对时写入 devices 的那台主机
+        const QList<DeviceRecord> devices = m_db.allDevices();
+        rounds.append(Round{ peer, devices.isEmpty() ? QStringLiteral("host") : devices.first().deviceId });
+    } else {
+        // 主机模式：反连每台记下过地址的设备，各跑一轮（串行，免得抢同一把锁）
+        const QList<DeviceRecord> devices = m_db.allDevices();
+        for (const DeviceRecord &dev : devices) {
+            Sync::Net::NetPeer peer;
+            if (peerForDevice(dev.deviceId, &peer))
+                rounds.append(Round{ peer, dev.deviceId });
+        }
+        if (rounds.isEmpty()) {
+            setStatus(devices.isEmpty()
+                          ? QStringLiteral("请先与主机配对，或在下面「直连」里等对方连过来")
+                          : QStringLiteral("主机模式：等对方连一次，记下地址后这里就能自动同步"));
+            if (devices.isEmpty())
+                Logger::get().warn("SyncBridge: 跳过同步（没有配对凭据）");
+            return;
+        }
     }
 
     setBusy(true);
@@ -1615,24 +1649,7 @@ void SyncBridge::syncNow()
     const QString name   = m_deviceName;
     const QString dbPath = m_dbPath;
 
-    // 已配对就再挂一条直连通道；参数在这里定死，避免工作线程里碰 m_config
-    Sync::Net::NetPeer netPeer;
-    if (hasPeerCredentials()) {
-        const Sync::Net::PeerAddress parsed =
-            Sync::Net::parsePeerAddress(m_config->syncPeerAddress(),
-                                       quint16(m_config->syncPort()));
-        if (parsed.ok) {
-            netPeer.host = parsed.host;
-            netPeer.port = parsed.port;
-            netPeer.expectedFingerprint = m_config->syncPeerFingerprint();
-            netPeer.deviceId = ensureDeviceId();
-            netPeer.deviceSecret = QByteArray::fromBase64(m_config->syncPeerSecret().toLatin1());
-        } else {
-            Logger::get().warn("SyncBridge: 直连地址无效（{}）", parsed.error.toStdString());
-        }
-    }
-
-    m_worker = QThread::create([this, roots, name, dbPath, netPeer] {
+    m_worker = QThread::create([this, roots, name, dbPath, rounds] {
         // 工作线程自带独立连接名 —— QSqlDatabase 连接不可跨线程
         Sync::SyncResult r;
         SyncDatabase workerDb(QStringLiteral("sync_worker"));
@@ -1640,22 +1657,36 @@ void SyncBridge::syncNow()
             r.status  = Sync::SyncResult::Aborted;
             r.message = QStringLiteral("无法打开 sync.db");
         } else {
-            Sync::SyncEngine engine;
-            engine.setDatabase(&workerDb);
-            engine.setRoots(roots);
-            engine.setDeviceName(name);
+            for (const Round &round : rounds) {
+                Sync::SyncEngine engine;
+                engine.setDatabase(&workerDb);
+                engine.setRoots(roots);
+                engine.setDeviceName(name);
+                engine.setBaselineDevice(round.baselineKey);
 
-            QList<std::shared_ptr<Sync::ITransport>> transports;
-            if (!netPeer.deviceSecret.isEmpty() && !netPeer.host.isEmpty()) {
-                transports.append(std::make_shared<Sync::Net::NetTransport>(netPeer));
-                Logger::get().info("SyncBridge: 已挂载直连通道 {}:{}", netPeer.host.toStdString(), netPeer.port);
+                QList<std::shared_ptr<Sync::ITransport>> transports;
+                transports.append(std::make_shared<Sync::Net::NetTransport>(round.peer));
+                engine.setTransports(transports);
+
+                connect(&engine, &Sync::SyncEngine::progress, this, &SyncBridge::onEngineProgress);
+                connect(&engine, &Sync::SyncEngine::fileHandled, this, &SyncBridge::onEngineFileHandled);
+
+                Logger::get().info("SyncBridge: 直连 {}:{}（基线 {}）",
+                                   round.peer.host.toStdString(), round.peer.port,
+                                   round.baselineKey.toStdString());
+                const Sync::SyncResult one = engine.sync();
+                if (rounds.size() == 1) {
+                    r = one;
+                } else {
+                    r.status     = (one.status == Sync::SyncResult::Ok) ? r.status : one.status;
+                    r.uploaded  += one.uploaded;
+                    r.downloaded += one.downloaded;
+                    r.conflicts += one.conflicts;
+                    r.deleted   += one.deleted;
+                    if (!one.message.isEmpty())
+                        r.message = one.message;
+                }
             }
-            engine.setTransports(transports);
-
-            connect(&engine, &Sync::SyncEngine::progress, this, &SyncBridge::onEngineProgress);
-            connect(&engine, &Sync::SyncEngine::fileHandled, this, &SyncBridge::onEngineFileHandled);
-
-            r = engine.sync();
             workerDb.close();
         }
 
