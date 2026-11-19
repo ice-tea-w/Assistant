@@ -83,6 +83,7 @@ private slots:
     void ensureDirUnderCreatesSegments();
 
     void databaseBaseline();
+    void baselineIsPerDevice();
     void databaseConflicts();
     void databaseDevices();
     void devicesSchemaMigrates();
@@ -353,6 +354,44 @@ void TestSync::databaseBaseline()
 
     db.close();
     QVERIFY(!db.isOpen());
+}
+
+void TestSync::baselineIsPerDevice()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    SyncDatabase db(QStringLiteral("test_baseline_device"));
+    QVERIFY(db.open(dir.path() + "/sync.db"));
+
+    FileState forHost;
+    forHost.size  = 10;
+    forHost.mtime = 100;
+    forHost.hash  = QStringLiteral("aaaa");
+
+    FileState forPeer;
+    forPeer.size  = 20;
+    forPeer.mtime = 200;
+    forPeer.hash  = QStringLiteral("bbbb");
+
+    // 默认（空串）是"没有设备维度"的兼容槽位
+    QVERIFY(db.upsertBaseline("a.txt", forHost, 1, "push"));
+    QVERIFY(db.upsertBaseline("a.txt", forPeer, 2, "push", "dev-B"));
+
+    QCOMPARE(db.baseline("a.txt")->hash, QStringLiteral("aaaa"));
+    QCOMPARE(db.baseline("a.txt", "dev-B")->hash, QStringLiteral("bbbb"));
+    QVERIFY(!db.baseline("a.txt", "dev-C").has_value());
+
+    QCOMPARE(db.allBaselinePaths().size(), 1);
+    QCOMPARE(db.allBaselinePaths("dev-B").size(), 1);
+    QVERIFY(db.allBaselinePaths("dev-C").isEmpty());
+
+    // 删一台设备不影响另一台
+    QVERIFY(db.removeBaseline("a.txt", "dev-B"));
+    QVERIFY(!db.baseline("a.txt", "dev-B").has_value());
+    QVERIFY(db.baseline("a.txt").has_value());
+
+    db.close();
 }
 
 void TestSync::databaseConflicts()

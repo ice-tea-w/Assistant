@@ -67,13 +67,17 @@ public:
     bool isOpen() const;
 
     // ---- sync_state（同步基线）----
-    std::optional<Sync::FileState> baseline(const QString &relPath) const;
+    // deviceId 是基线的隔离维度：主机同时同步多台设备时，各自的基线不能互相污染。
+    // 空串 = 单设备兼容模式（老库迁移过来的行都落在 '' 下）。
+    std::optional<Sync::FileState> baseline(const QString &relPath,
+                                           const QString &deviceId = QString()) const;
     bool upsertBaseline(const QString &relPath,
                         const Sync::FileState &state,
                         qint64 syncedAt,
-                        const QString &direction);       // "push" | "pull"
-    bool removeBaseline(const QString &relPath);
-    QList<QString> allBaselinePaths() const;
+                        const QString &direction,            // "push" | "pull"
+                        const QString &deviceId = QString());
+    bool removeBaseline(const QString &relPath, const QString &deviceId = QString());
+    QList<QString> allBaselinePaths(const QString &deviceId = QString()) const;
 
     // ---- conflicts ----
     bool insertConflict(const ConflictRecord &rec);

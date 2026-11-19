@@ -11,12 +11,14 @@ namespace {
 
 const char *kSchema[] = {
     R"(CREATE TABLE IF NOT EXISTS sync_state (
-        rel_path   TEXT PRIMARY KEY,
+        device_id  TEXT NOT NULL DEFAULT '',
+        rel_path   TEXT NOT NULL,
         size       INTEGER NOT NULL,
         mtime      INTEGER NOT NULL,
         hash       TEXT NOT NULL,
         synced_at  INTEGER NOT NULL,
-        direction  TEXT NOT NULL
+        direction  TEXT NOT NULL,
+        PRIMARY KEY (device_id, rel_path)
     ))",
 
     R"(CREATE TABLE IF NOT EXISTS conflicts (
@@ -94,10 +96,40 @@ bool migrateLegacyDevices(QSqlDatabase &db)
     return true;
 }
 
+/// 老库的 sync_state 主键只有 rel_path（基线是全局一份）。主机同时同步多台设备时
+/// 会互相污染，所以改成 (device_id, rel_path)。这里把旧表改名保留，新表由 kSchema 建。
+bool migrateLegacyBaseline(QSqlDatabase &db)
+{
+    QSqlQuery info(db);
+    if (!info.exec(QStringLiteral("PRAGMA table_info(sync_state)")))
+        return false;
+
+    bool hasTable = false;
+    bool hasDeviceId = false;
+    while (info.next()) {
+        hasTable = true;
+        if (info.value(1).toString() == QLatin1String("device_id"))
+            hasDeviceId = true;
+    }
+    if (!hasTable || hasDeviceId)
+        return true;
+
+    const QString legacy = QStringLiteral("sync_state_legacy_%1")
+                               .arg(QDateTime::currentSecsSinceEpoch());
+    QSqlQuery alter(db);
+    if (!alter.exec(QStringLiteral("ALTER TABLE sync_state RENAME TO %1").arg(legacy))) {
+        Logger::get().error("SyncDatabase: 旧基线表改名失败 — {}",
+                            alter.lastError().text().toStdString());
+        return false;
+    }
+    Logger::get().warn("SyncDatabase: 基线表缺 device_id，已改名保留为 {}，外层重建新表",
+                       legacy.toStdString());
+    return true;
+}
+
 } // namespace
 
-SyncDatabase::SyncDatabase(const QString &connectionName)
-    : m_connectionName(connectionName)
+SyncDatabase::SyncDatabase(const QString &connectionName)    : m_connectionName(connectionName)
 {
 }
 
@@ -125,6 +157,8 @@ bool SyncDatabase::open(const QString &filePath)
 bool SyncDatabase::createSchema()
 {
     if (!migrateLegacyDevices(m_db))
+        return false;
+    if (!migrateLegacyBaseline(m_db))
         return false;
 
     QSqlQuery q(m_db);
@@ -176,10 +210,15 @@ void SyncDatabase::close()
 
 // ---- sync_state ----
 
-std::optional<Sync::FileState> SyncDatabase::baseline(const QString &relPath) const
+std::optional<Sync::FileState> SyncDatabase::baseline(const QString &relPath,
+                                                     const QString &deviceId) const
 {
+    // 默认参数 QString() 是 null，直接绑进 NOT NULL 列会报约束失败
+    const QString dev = deviceId.isNull() ? QStringLiteral("") : deviceId;
     QSqlQuery q(m_db);
-    q.prepare(QStringLiteral("SELECT size, mtime, hash FROM sync_state WHERE rel_path = ?"));
+    q.prepare(QStringLiteral(
+        "SELECT size, mtime, hash FROM sync_state WHERE device_id = ? AND rel_path = ?"));
+    q.addBindValue(dev);
     q.addBindValue(relPath);
     if (!q.exec() || !q.next())
         return std::nullopt;
@@ -192,14 +231,17 @@ std::optional<Sync::FileState> SyncDatabase::baseline(const QString &relPath) co
 }
 
 bool SyncDatabase::upsertBaseline(const QString &relPath, const Sync::FileState &state,
-                                  qint64 syncedAt, const QString &direction)
+                                  qint64 syncedAt, const QString &direction,
+                                  const QString &deviceId)
 {
+    const QString dev = deviceId.isNull() ? QStringLiteral("") : deviceId;
     QSqlQuery q(m_db);
     q.prepare(QStringLiteral(
-        "INSERT INTO sync_state (rel_path, size, mtime, hash, synced_at, direction) "
-        "VALUES (?, ?, ?, ?, ?, ?) "
-        "ON CONFLICT(rel_path) DO UPDATE SET size=excluded.size, mtime=excluded.mtime, "
+        "INSERT INTO sync_state (device_id, rel_path, size, mtime, hash, synced_at, direction) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(device_id, rel_path) DO UPDATE SET size=excluded.size, mtime=excluded.mtime, "
         "hash=excluded.hash, synced_at=excluded.synced_at, direction=excluded.direction"));
+    q.addBindValue(dev);
     q.addBindValue(relPath);
     q.addBindValue(state.size);
     q.addBindValue(state.mtime);
@@ -214,19 +256,24 @@ bool SyncDatabase::upsertBaseline(const QString &relPath, const Sync::FileState 
     return true;
 }
 
-bool SyncDatabase::removeBaseline(const QString &relPath)
+bool SyncDatabase::removeBaseline(const QString &relPath, const QString &deviceId)
 {
+    const QString dev = deviceId.isNull() ? QStringLiteral("") : deviceId;
     QSqlQuery q(m_db);
-    q.prepare(QStringLiteral("DELETE FROM sync_state WHERE rel_path = ?"));
+    q.prepare(QStringLiteral("DELETE FROM sync_state WHERE device_id = ? AND rel_path = ?"));
+    q.addBindValue(dev);
     q.addBindValue(relPath);
     return q.exec();
 }
 
-QList<QString> SyncDatabase::allBaselinePaths() const
+QList<QString> SyncDatabase::allBaselinePaths(const QString &deviceId) const
 {
+    const QString dev = deviceId.isNull() ? QStringLiteral("") : deviceId;
     QList<QString> out;
     QSqlQuery q(m_db);
-    if (!q.exec(QStringLiteral("SELECT rel_path FROM sync_state")))
+    q.prepare(QStringLiteral("SELECT rel_path FROM sync_state WHERE device_id = ?"));
+    q.addBindValue(dev);
+    if (!q.exec())
         return out;
     while (q.next())
         out.append(q.value(0).toString());
