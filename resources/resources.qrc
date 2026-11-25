@@ -8,6 +8,7 @@
         <file>qml/RecentDownloadsPage.qml</file>
         <file>qml/SyncPage.qml</file>
         <file>qml/InsightPage.qml</file>
+        <file>qml/SecurityPage.qml</file>
         <file>qml/SettingsPage.qml</file>
         <file>qml/PluginsPage.qml</file>
         <file>qml/PluginCard.qml</file>

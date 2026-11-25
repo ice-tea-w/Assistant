@@ -22,6 +22,32 @@ from typing import Union
 #: icacls 的"禁止窗口"标志，避免桌面助手（无控制台）里闪黑框
 _CREATE_NO_WINDOW = 0x08000000
 
+#: Windows 文件属性：仅在线/离线占位（读取会触发从云端下载）
+FILE_ATTRIBUTE_OFFLINE = 0x0000_1000
+FILE_ATTRIBUTE_RECALL_ON_OPEN = 0x0004_0000
+FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS = 0x0040_0000
+
+
+def is_cloud_placeholder(path: Union[str, Path]) -> bool:
+    """判断是不是"仅在线"的云盘占位文件（OneDrive/SharePoint 等）。
+
+    这类文件在本地只有一个占位符，**读它会把整份内容从云端拉下来**：
+    扫描一个装满 OneDrive 的目录可能触发几 GB 下载，备份更是。扫描器据此
+    跳过正文（仍按文件名做风险提示），用户显式加 ``--include-cloud`` 才读取。
+    """
+    if os.name != "nt":
+        return False
+    try:
+        st = os.lstat(Path(path))
+    except OSError:
+        return False
+    attrs = getattr(st, "st_file_attributes", 0)
+    if not attrs:
+        return False
+    if attrs & FILE_ATTRIBUTE_RECALL_ON_OPEN:
+        return False  # 打开即召回的小文件，读取代价可接受
+    return bool(attrs & (FILE_ATTRIBUTE_OFFLINE | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS))
+
 
 def is_reparse_point(path: Union[str, Path]) -> bool:
     """判断路径是否是符号链接 / 目录联结 / 挂载点（不跟随链接本身）。
@@ -97,4 +123,4 @@ def restrict_acl(path: Union[str, Path]) -> bool:
         return False
 
 
-__all__ = ["is_reparse_point", "restrict_acl"]
+__all__ = ["is_cloud_placeholder", "is_reparse_point", "restrict_acl"]

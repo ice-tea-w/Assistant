@@ -30,6 +30,7 @@
 #include "ui/PanelBridge.h"
 #include "ui/PluginBridge.h"
 #include "ui/InboxBridge.h"
+#include "ui/SecurityBridge.h"
 #include "ui/MetricsBridge.h"
 #include "core/plugin/PluginCatalog.h"
 #include "core/plugin/PluginInstaller.h"
@@ -360,6 +361,7 @@ int main(int argc, char *argv[])
     // ---- main panel window (Phase 3 Step 1) ----
     // 常驻主面板：独立 engine，初始隐藏，由 🏠 按钮 / 托盘菜单触发显示。
     MetricsBridge metricsBridge(dbDir);
+    SecurityBridge security;
     QQmlApplicationEngine panelEngine;
     panelEngine.rootContext()->setContextProperty("config", &config);
     // 主面板也要用 backend：设置页「重建文件索引」是 AppBridge 的 Q_INVOKABLE
@@ -368,6 +370,7 @@ int main(int argc, char *argv[])
     panelEngine.rootContext()->setContextProperty("sync", &syncBridge);
     panelEngine.rootContext()->setContextProperty("inbox", &inboxBridge);
     panelEngine.rootContext()->setContextProperty("metrics", &metricsBridge);
+    panelEngine.rootContext()->setContextProperty("security", &security);
     panelEngine.rootContext()->setContextProperty("appVersion", QCoreApplication::applicationVersion());
 
     // Must be registered BEFORE the QML loads: MainPanel binds `pluginApi` to
@@ -376,6 +379,8 @@ int main(int argc, char *argv[])
     pluginManager.setEngine(&panelEngine);
 
     panelEngine.load(QUrl(QStringLiteral("qrc:/qml/MainPanel.qml")));
+    // 安全中心首屏不抢启动：延迟刷新；Python 缺失时静默降级。
+    QTimer::singleShot(800, &security, &SecurityBridge::refresh);
 
     // Plugins load after the engine exists but before the window is shown, so the
     // navigation list is complete on first paint instead of popping in later.

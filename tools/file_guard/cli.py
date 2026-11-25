@@ -20,6 +20,8 @@ import argparse
 import getpass
 import json
 import os
+import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -51,10 +53,11 @@ from .crypto import (
     rekey_file,
     verify_file,
 )
-from .errors import FileGuardError, PasswordError
+from .errors import FileGuardError, PasswordError, describe_os_error
 from .integrity import build_manifest, load_manifest, save_manifest, verify_manifest
 from .scan import SEVERITY_LABEL, SensitiveScanner
-from .watch import DirectoryWatcher, auto_encrypt_idle
+from .vault import Vault
+from .watch import DirectoryWatcher, auto_backup_changes, auto_encrypt_idle
 
 PROG = "file_guard"
 PASS_HINT = "密码"
@@ -70,6 +73,37 @@ def _human_size(num: int) -> str:
             return f"{value:.1f}{unit}"
         value /= 1024
     return f"{num}B"
+
+
+def _progress_reporter(label: str) -> Optional[tuple[Any, Any]]:
+    """给交互终端用的轻量进度输出（非 tty / --json / --quiet 时返回 None）。
+
+    加密/解密/备份大文件时，用户最怕"没反应"；这里按 1% 粒度刷新一行，
+    结束后把进度行擦掉，避免污染正常输出。
+    """
+    if not sys.stderr.isatty():
+        return None
+    state: dict[str, int] = {"percent": -1}
+
+    def report(done: int, total: int) -> None:
+        percent = int(done * 100 / total) if total else 100
+        if percent != state["percent"]:
+            state["percent"] = percent
+            print(f"\r{label} {percent:3d}%", end="", file=sys.stderr, flush=True)
+
+    def finish() -> None:
+        print("\r" + " " * (len(label) + 8) + "\r", end="", file=sys.stderr, flush=True)
+
+    return report, finish
+
+
+def _make_progress(args: argparse.Namespace, label: str) -> tuple[Optional[Any], Any]:
+    if getattr(args, "json", False) or getattr(args, "quiet", False):
+        return None, (lambda: None)
+    reporter = _progress_reporter(label)
+    if reporter is None:
+        return None, (lambda: None)
+    return reporter[0], reporter[1]
 
 
 def _load_config(args: argparse.Namespace) -> Config:
@@ -265,14 +299,19 @@ def cmd_encrypt(args: argparse.Namespace) -> int:
     outputs = _resolve_outputs(targets, out, decrypt=False)
     results = []
     for (path, _base), dst in zip(targets, outputs):
-        info = encrypt_file(
-            path,
-            dst,
-            password,
-            iterations=cfg.iterations,
-            chunk_size=cfg.chunk_size,
-            overwrite=args.force,
-        )
+        progress, finish = _make_progress(args, f"加密 {path.name}")
+        try:
+            info = encrypt_file(
+                path,
+                dst,
+                password,
+                iterations=cfg.iterations,
+                chunk_size=cfg.chunk_size,
+                overwrite=args.force,
+                progress=progress,
+            )
+        finally:
+            finish()
         audit.record(EVENT_ENCRYPT, path=path, detail=f"生成 {info['dst']}", container=info["dst"])
         if args.remove_source:
             path.unlink()
@@ -305,7 +344,11 @@ def cmd_decrypt(args: argparse.Namespace) -> int:
     outputs = _resolve_outputs(targets, out, decrypt=True)
     results = []
     for (path, _base), dst in zip(targets, outputs):
-        info = decrypt_file(path, dst, password, overwrite=args.force)
+        progress, finish = _make_progress(args, f"解密 {path.name}")
+        try:
+            info = decrypt_file(path, dst, password, overwrite=args.force, progress=progress)
+        finally:
+            finish()
         audit.record(EVENT_DECRYPT, path=path, detail=f"还原到 {info['dst']}")
         if args.remove_source:
             path.unlink()
@@ -376,6 +419,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
         throttle_bps=args.throttle,
         skip_paths=[cfg.home],
         progress=progress,
+        include_cloud=bool(getattr(args, "include_cloud", False)),
     )
     started = time.monotonic()
     try:
@@ -467,7 +511,15 @@ def cmd_backup(args: argparse.Namespace) -> int:
     audit = _make_audit(cfg, password)
     action = args.backup_action
     if action == "add":
-        results = store.backup_paths(args.paths, recursive=not args.no_recursive)
+        progress, finish = _make_progress(args, "备份")
+        try:
+            results = store.backup_paths(
+                args.paths,
+                recursive=not args.no_recursive,
+                progress=progress,
+            )
+        finally:
+            finish()
         for item in results:
             if item.get("skipped"):
                 if not args.json and not args.quiet:
@@ -500,10 +552,44 @@ def cmd_backup(args: argparse.Namespace) -> int:
             args.path,
             version=args.version,
             dest=args.dest,
+            dest_root=getattr(args, "dest_root", None),
+            strip_prefix=getattr(args, "strip_prefix", None),
             overwrite=args.force,
+            allow_conflict=bool(getattr(args, "allow_conflict", False)),
         )
-        audit.record(EVENT_RESTORE, path=args.path, detail=f"还原版本 {result['version']} 到 {result['restored_to']}")
-        _emit(args, result, f"[OK] 已还原 {result['path']}（版本 {result['version']}）-> {result['restored_to']}")
+        audit.record(
+            EVENT_RESTORE,
+            path=args.path,
+            detail=f"还原版本 {result['version']} 到 {result['restored_to']}"
+            + (f"（覆盖了未入档修改，已快照 v{result['preserved_current_version']}）"
+               if result.get("conflict") else ""),
+        )
+        text = f"[OK] 已还原 {result['path']}（版本 {result['version']}）-> {result['restored_to']}"
+        if result.get("conflict"):
+            text += f"\n     注意：目标文件此前有未入档修改，已自动快照为 v{result['preserved_current_version']}"
+        _emit(args, result, text)
+        return 0
+    if action == "diff":
+        result = store.diff(
+            args.path,
+            from_version=args.from_version,
+            to_version=args.to_version,
+        )
+        if args.json:
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        elif not args.quiet:
+            left, right = result["from"], result["to"]
+            if not result["changed"]:
+                print(f"v{left['version']} 与 v{right['version']} 内容一致（SHA-256 相同）")
+            else:
+                print(
+                    f"v{left['version']} -> v{right['version']}：{result['kind']} 差异，"
+                    f"大小 {result['size_delta']:+d} B"
+                )
+                if result["diff"]:
+                    print(result["diff"])
+                if result["truncated"]:
+                    print("（差异过长，已截断；可用 --json 获取完整结构）")
         return 0
     if action == "verify":
         result = store.verify(full=args.full)
@@ -534,6 +620,8 @@ def cmd_watch(args: argparse.Namespace) -> int:
     audit.record(EVENT_SETTINGS, detail="启动目录监听", roots=[str(p) for p in args.paths])
     if not args.json and not args.quiet:
         print(f"开始监听 {len(args.paths)} 个目录（Ctrl+C 退出）...")
+        if args.auto_backup:
+            print("已开启「监听到改动自动增量备份」：内容没变的文件会按增量规则跳过")
     if args.auto_encrypt is not None:
         idle_seconds = args.auto_encrypt * 60
         results = auto_encrypt_idle(
@@ -548,7 +636,22 @@ def cmd_watch(args: argparse.Namespace) -> int:
         if not args.json and not args.quiet:
             for item in results:
                 print(json.dumps(item, ensure_ascii=False))
-    total = watcher.run(audit, max_cycles=args.cycles)
+    on_changes = None
+    if args.auto_backup:
+        store = _make_backups(cfg, password)
+
+        def on_changes(changes):  # noqa: ANN001 - 回调签名由 DirectoryWatcher.run 约定
+            for item in auto_backup_changes(watcher, store, changes=changes, audit=audit):
+                if args.json or args.quiet:
+                    continue
+                if item.get("error"):
+                    print(f"[备份失败] {item['path']}：{item['error']}")
+                elif item.get("skipped"):
+                    print(f"[备份跳过] {item['path']}（内容未变）")
+                else:
+                    print(f"[备份] {item['path']} -> v{item.get('version')}")
+
+    total = watcher.run(audit, max_cycles=args.cycles, on_changes=on_changes)
     _emit(args, {"changes": total}, f"监听结束，共记录 {total} 个变更")
     return 0
 
@@ -603,6 +706,305 @@ def cmd_integrity(args: argparse.Namespace) -> int:
         )
         return 0 if result["ok"] else 5
     raise FileGuardError("未知的 integrity 子命令")
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
+    """一键自检：数据目录 / 审计链 / 备份索引 / 模块完整性 / 磁盘 / token。
+
+    适合装好环境后、以及"感觉哪里不对"时先跑一遍；输出 JSON 便于主程序展示。
+    """
+    cfg = _load_config(args)
+    checks: list[dict[str, Any]] = []
+
+    def add(name: str, ok: bool, detail: str, level: str = "error") -> None:
+        checks.append({"name": name, "ok": bool(ok), "detail": detail, "level": level})
+
+    # 1) 数据目录可写
+    try:
+        cfg.ensure_dirs()
+        probe = cfg.home / ".write-probe"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        add("数据目录可读写", True, str(cfg.home))
+    except OSError as exc:
+        add("数据目录可读写", False, f"{cfg.home}：{exc}")
+
+    # 1.1) 数据目录 ACL：不要共享给同机其他用户（否则 token/审计/备份暴露）
+    if os.name == "nt":
+        icacls = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "icacls.exe"
+        if icacls.exists():
+            try:
+                completed = subprocess.run(
+                    [str(icacls), str(cfg.home)],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=15,
+                    creationflags=0x08000000,
+                )
+                output = (completed.stdout or "") + (completed.stderr or "")
+                too_open = [
+                    name
+                    for name in ("Everyone", "BUILTIN\\Users", "Authenticated Users", "Users:")
+                    if name.lower() in output.lower()
+                ]
+                if too_open:
+                    add(
+                        "数据目录权限",
+                        False,
+                        f"ACL 过于宽松（含 {', '.join(too_open)}），同机其他用户可能读到 token/审计/备份；"
+                        "建议用 icacls 收紧到仅当前用户",
+                        level="warning",
+                    )
+                else:
+                    add("数据目录权限", True, "已限制为当前用户（未发现 Everyone/Users 授权）")
+            except (OSError, subprocess.SubprocessError) as exc:
+                add("数据目录权限", True, f"无法检查 ACL（{exc}），忽略", level="info")
+
+    # 2) 配置
+    if cfg.config_file.exists():
+        add("配置文件", True, str(cfg.config_file))
+    else:
+        add("配置文件", True, "未创建（使用默认参数，init 时会生成）", level="info")
+
+    # 3) 磁盘空间
+    try:
+        free = shutil.disk_usage(cfg.home).free
+        add("磁盘剩余空间", free > (64 << 20), f"{free / (1 << 30):.1f} GiB 可用", level="warning")
+    except OSError:
+        add("磁盘剩余空间", True, "无法获取（忽略）", level="info")
+
+    # 4) DPAPI 密码保险箱
+    vault = _vault(cfg)
+    if vault.available():
+        has_vault = vault.path.exists()
+        add(
+            "密码保险箱",
+            True,
+            "已保存密码（免密模式）" if has_vault else "未启用（每次输入密码）",
+            level="info",
+        )
+    else:
+        add("密码保险箱", True, "当前平台无 DPAPI（仅 Windows 可用）", level="info")
+
+    # 5) 需要密码的深度校验
+    password: Union[str, bytes, None] = None
+    try:
+        password = resolve_password(args, cfg)
+    except FileGuardError as exc:
+        add("密码", False, f"无法获取密码，跳过加密数据校验：{exc}")
+
+    if password is not None:
+        try:
+            audit = _make_audit(cfg, password)
+            result = audit.verify()
+            if result["records"] == 0:
+                add("审计日志哈希链", True, "暂无记录（新数据目录）", level="info")
+            elif result["ok"]:
+                add("审计日志哈希链", True, f"{result['records']} 条，链头 {result['head'][:16]}…")
+            else:
+                add("审计日志哈希链", False, "；".join(result["problems"][:2]))
+        except FileGuardError as exc:
+            add("审计日志哈希链", False, f"无法校验：{exc}")
+
+        if cfg.backup_dir.exists():
+            try:
+                store = _make_backups(cfg, password)
+                result = store.verify()
+                if result["ok"]:
+                    add("备份索引哈希链", True, f"索引 {result['index_records']} 条")
+                else:
+                    add("备份索引哈希链", False, "；".join(result["problems"][:2]))
+            except FileGuardError as exc:
+                add("备份索引哈希链", False, f"无法校验：{exc}")
+        else:
+            add("备份库", True, "暂无备份（尚未执行 backup）", level="info")
+
+        # 6) 模块完整性清单（可选）
+        if cfg.integrity_file.exists():
+            try:
+                manifest = load_manifest(cfg.integrity_file)
+                result = verify_manifest(Path(__file__).resolve().parent, manifest, password)
+                if result["ok"]:
+                    add("模块完整性", True, f"{result['checked']} 个文件校验通过")
+                else:
+                    add("模块完整性", False, "；".join(result["problems"][:2]))
+            except FileGuardError as exc:
+                add("模块完整性", False, str(exc))
+        else:
+            add("模块完整性", True, "未建清单（可选：integrity init）", level="info")
+
+    # 7) 本地服务 token
+    add(
+        "本地服务 token",
+        True,
+        "已生成（仅当前用户可读）" if cfg.token_file.exists() else "未生成（首次 serve 时创建）",
+        level="info",
+    )
+
+    errors = [item for item in checks if not item["ok"] and item["level"] == "error"]
+    warnings = [item for item in checks if not item["ok"] and item["level"] == "warning"]
+    payload = {
+        "ok": not errors,
+        "checks": checks,
+        "errors": len(errors),
+        "warnings": len(warnings),
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    elif not args.quiet:
+        icons = {"error": "X", "warning": "!", "info": "-"}
+        for item in checks:
+            mark = "OK" if item["ok"] else icons.get(item["level"], "X")
+            print(f"[{mark:>2}] {item['name']:<12} {item['detail']}")
+        print("-" * 60)
+        if errors:
+            print(f"未通过：{len(errors)} 项错误，{len(warnings)} 项警告")
+        else:
+            print(f"自检通过（{len(checks)} 项，{len(warnings)} 项警告）")
+    return 0 if not errors else 5
+
+
+# ---------------------------------------------------------------------------
+# 保险箱（DEK + 恢复码 + 文件名加密）
+# ---------------------------------------------------------------------------
+def _vault_for(cfg: Config) -> Vault:
+    return Vault(
+        cfg.home / "vault",
+        iterations=cfg.iterations,
+        log_iterations=cfg.log_iterations,
+        chunk_size=cfg.chunk_size,
+    )
+
+
+def _unlock_vault(args: argparse.Namespace, cfg: Config, vault: Vault) -> bytes:
+    """解锁顺序：--recovery-code / FG_RECOVERY_CODE → DPAPI 免密 → 交互口令。"""
+    code = getattr(args, "recovery_code", None) or os.environ.get("FG_RECOVERY_CODE")
+    if code:
+        return vault.unlock(recovery_code=code)
+    try:
+        return vault.unlock(use_dpapi=True)
+    except FileGuardError:
+        pass  # 没有 DPAPI 保险块，或换了 Windows 用户
+    password = resolve_password(args, cfg)
+    return vault.unlock(password=password)
+
+
+def cmd_vault(args: argparse.Namespace) -> int:
+    cfg = _load_config(args)
+    vault = _vault_for(cfg)
+    action = args.vault_action
+
+    if action == "init":
+        if vault.exists:
+            raise FileGuardError(f"保险箱已存在：{vault.directory}（如需重建请先手动移走）")
+        password = resolve_password(args, cfg, create=True, confirm=True, allow_vault=False)
+        info = vault.init(password, dpapi=not getattr(args, "no_dpapi", False))
+        text = (
+            f"保险箱已创建：{info['directory']}\n"
+            f"DPAPI 免密解锁：{'已启用' if info['dpapi'] else '未启用'}\n\n"
+            f"恢复码（只显示这一次，请抄到离线位置）：\n  {info['recovery_code']}\n\n"
+            "注意：恢复码等于第二把钥匙——泄露它等于泄露保险箱；"
+            "丢失恢复码且忘记口令，数据将无法恢复（本模块不设后门）。"
+        )
+        _emit(args, info, text)
+        return 0
+
+    if not vault.exists:
+        raise FileGuardError(f"保险箱不存在：{vault.directory}（先运行 file_guard vault init）")
+
+    if action == "info":
+        # 能免密就免密（DPAPI）；解不开也不打扰用户，只是文件数显示为 0
+        try:
+            vault.unlock(use_dpapi=True)
+        except FileGuardError:
+            pass
+        payload = vault.info()
+        _emit(args, payload, json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+
+    if action == "add":
+        _unlock_vault(args, cfg, vault)
+        results = []
+        for raw in args.paths:
+            item = vault.add_file(
+                raw,
+                note=getattr(args, "note", ""),
+                remove_source=bool(getattr(args, "remove_source", False)),
+            )
+            results.append(item)
+            if not args.json and not args.quiet:
+                extra = "（源文件已删除）" if item["removed_source"] else ""
+                print(f"[OK] 已放入保险箱：{item['name']} -> {item['container']}"
+                      f"（{_human_size(item['size'])}）{extra}")
+        _emit(args, {"results": results}, f"完成：{len(results)} 个文件已放入保险箱")
+        return 0
+
+    if action == "list":
+        _unlock_vault(args, cfg, vault)
+        files = vault.list_files()
+        if args.json:
+            print(json.dumps(files, ensure_ascii=False, indent=2))
+        elif not args.quiet:
+            if not files:
+                print("保险箱为空")
+            for index, item in enumerate(files, 1):
+                note = f"  # {item['note']}" if item.get("note") else ""
+                print(f"{index:>3}. {item['name']:<36} {_human_size(item['size']):>9}  "
+                      f"{item['ts']}{note}")
+        return 0
+
+    if action == "extract":
+        _unlock_vault(args, cfg, vault)
+        result = vault.extract(
+            args.target,
+            dest_dir=getattr(args, "out", None),
+            overwrite=bool(getattr(args, "force", False)),
+        )
+        _emit(args, result, f"[OK] 已取出 {result['name']} -> {result['restored_to']}")
+        return 0
+
+    if action == "verify":
+        _unlock_vault(args, cfg, vault)
+        result = vault.verify(full=not bool(getattr(args, "quick", False)))
+        text = (
+            ("[OK] 保险箱校验通过" if result["ok"] else "[X] 保险箱校验失败")
+            + f"：清单 {result['files']} 个文件，解密校验 {result['checked']} 个"
+            + ("\n  " + "\n  ".join(result["problems"]) if result["problems"] else "")
+        )
+        _emit(args, result, text)
+        return 0 if result["ok"] else 5
+
+    if action == "passwd":
+        old_password = resolve_password(args, cfg)
+        new_password = args.new_password or os.environ.get("FG_NEW_PASSWORD")
+        if not new_password:
+            if not sys.stdin.isatty():
+                raise PasswordError("非交互环境：请用 --new-password 或 FG_NEW_PASSWORD 提供新口令")
+            new_password = getpass.getpass("请输入新的保险箱口令：")
+            again = getpass.getpass("请再次输入新口令：")
+            if new_password != again:
+                raise PasswordError("两次输入的新口令不一致")
+        result = vault.change_password(old_password, new_password)
+        _emit(
+            args,
+            result,
+            "[OK] 保险箱口令已轮换（只重新包裹 DEK，容器与名称清单没有重加密）",
+        )
+        return 0
+
+    if action == "recovery":
+        password = resolve_password(args, cfg)
+        code = vault.show_recovery_code(password)
+        _emit(
+            args,
+            {"recovery_code": code},
+            f"恢复码：\n  {code}\n\n注意：恢复码等于第二把钥匙，请离线保存；泄露它等于泄露保险箱。",
+        )
+        return 0
+
+    raise FileGuardError(f"未知的 vault 子命令：{action}")
 
 
 # ---------------------------------------------------------------------------
@@ -673,6 +1075,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-size", type=int, default=2 << 20, help="单文件最大读取字节数")
     p.add_argument("--throttle", type=int, default=0, help="限速（字节/秒），0 表示不限")
     p.add_argument("--low-priority", action="store_true", help="降低进程优先级（Windows）")
+    p.add_argument("--include-cloud", action="store_true",
+                   help="读取云盘「仅在线」占位文件的正文（默认跳过，避免触发大批下载）")
     p.add_argument("--out", help="把 JSON 报告写入文件")
     p.set_defaults(func=cmd_scan)
 
@@ -709,7 +1113,26 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("path")
     q.add_argument("--version", type=int)
     q.add_argument("--dest")
+    q.add_argument(
+        "--dest-root",
+        help="跨机/异地还原：把原绝对路径映射到该根目录（去掉盘符后保留目录结构）",
+    )
+    q.add_argument(
+        "--strip-prefix",
+        help="配合 --dest-root：先裁掉旧机器上的路径前缀（例如 C:\\Users\\alice）",
+    )
     q.add_argument("--force", action="store_true")
+    q.add_argument(
+        "--allow-conflict",
+        action="store_true",
+        help="目标文件有未入档修改时仍强制覆盖（默认会先自动快照并拒绝）",
+    )
+    q.set_defaults(func=cmd_backup)
+
+    q = bsub.add_parser("diff", parents=[common], help="比较同一路径的两个备份版本")
+    q.add_argument("path")
+    q.add_argument("--from", dest="from_version", type=int, help="起始版本（默认：上一版）")
+    q.add_argument("--to", dest="to_version", type=int, help="目标版本（默认：最新版）")
     q.set_defaults(func=cmd_backup)
     q = bsub.add_parser("verify", parents=[common])
     q.add_argument("--full", action="store_true", help="逐个解密校验备份对象")
@@ -725,8 +1148,48 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--auto-encrypt", type=float, metavar="MIN",
                    help="空闲超过 N 分钟后自动加密（需配合密码/保险箱）")
     p.add_argument("--keep-source", action="store_true", help="自动加密后保留明文（默认删除）")
+    p.add_argument("--auto-backup", action="store_true",
+                   help="监听到新增/修改时自动做增量备份（内容没变会跳过）")
     p.add_argument("--cycles", type=int, help="只轮询 N 轮（调试用）")
     p.set_defaults(func=cmd_watch)
+
+    p = sub.add_parser("doctor", parents=[common],
+                       help="一键自检：数据目录/审计链/备份索引/完整性/磁盘/token")
+    p.set_defaults(func=cmd_doctor)
+
+    p = sub.add_parser("vault", parents=[common],
+                       help="保险箱：DEK + 恢复码 + 文件名加密（vault init/add/list/extract/verify/passwd）")
+    vsub = p.add_subparsers(dest="vault_action", required=True)
+    q = vsub.add_parser("init", parents=[common], help="创建保险箱并生成恢复码")
+    q.add_argument("--no-dpapi", action="store_true", help="不启用 DPAPI 免密解锁")
+    q.set_defaults(func=cmd_vault)
+    q = vsub.add_parser("add", parents=[common], help="把文件加密放进保险箱（容器名随机）")
+    q.add_argument("paths", nargs="+")
+    q.add_argument("--remove-source", action="store_true", help="放入成功后删除源文件")
+    q.add_argument("--note", default="", help="给文件加一条备注")
+    q.add_argument("--recovery-code", help="用恢复码解锁（默认口令 / DPAPI）")
+    q.set_defaults(func=cmd_vault)
+    q = vsub.add_parser("list", parents=[common], help="列出保险箱里的文件（原文件名仅解密可见）")
+    q.add_argument("--recovery-code")
+    q.set_defaults(func=cmd_vault)
+    q = vsub.add_parser("extract", parents=[common], help="取出文件并还原原文件名")
+    q.add_argument("target", help="序号（1 起）/ 容器名 / 原文件名")
+    q.add_argument("-o", "--out", help="输出目录（默认 <保险箱>/restored）")
+    q.add_argument("--force", action="store_true", help="覆盖已存在的目标文件")
+    q.add_argument("--recovery-code")
+    q.set_defaults(func=cmd_vault)
+    q = vsub.add_parser("verify", parents=[common], help="校验名称清单哈希链 + 逐个解密容器")
+    q.add_argument("--quick", action="store_true", help="只校验清单链，不解密容器")
+    q.add_argument("--recovery-code")
+    q.set_defaults(func=cmd_vault)
+    q = vsub.add_parser("passwd", parents=[common], help="轮换口令（只重包 DEK，容器不重加密）")
+    q.add_argument("--new-password")
+    q.add_argument("--recovery-code", help="忘记旧口令时用恢复码轮换")
+    q.set_defaults(func=cmd_vault)
+    q = vsub.add_parser("recovery", parents=[common], help="凭口令重新展示恢复码")
+    q.set_defaults(func=cmd_vault)
+    q = vsub.add_parser("info", parents=[common], help="查看保险箱信息")
+    q.set_defaults(func=cmd_vault)
 
     p = sub.add_parser("serve", parents=[common], help="启动本地 HTTP 服务供桌面助手调用")
     p.add_argument("--host", default="127.0.0.1", help="监听地址（默认只允许回环地址）")
@@ -749,6 +1212,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
+    # GBK 控制台遇到无法编码的字符（BOM、emoji、生僻字）默认会直接抛 UnicodeEncodeError，
+    # 把"打印报告"变成崩溃；这里统一降级为替换字符，保证命令能正常退出。
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")  # type: ignore[attr-defined]
+        except (AttributeError, OSError, ValueError):
+            pass
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
@@ -763,7 +1233,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print("\n已取消", file=sys.stderr)
         return 130
     except OSError as exc:
-        print(f"系统错误：{exc}", file=sys.stderr)
+        print(f"系统错误：{describe_os_error(exc)}", file=sys.stderr)
         return 1
 
 

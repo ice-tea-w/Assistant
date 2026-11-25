@@ -493,3 +493,17 @@ target_link_libraries(assistant_net_engine_tests PRIVATE
 add_test(NAME net_engine COMMAND assistant_net_engine_tests)
 set_tests_properties(net_engine PROPERTIES
     ENVIRONMENT "PATH=${VCPKG_BIN_DIR};${VCPKG_DBG_BIN_DIR};$ENV{PATH}")
+
+# ---------------------------------------------------------------------------
+# M3 安全模块 C++ 移植（src/security；纯 C++/Win32 CNG，不依赖 Qt/vcpkg）
+# ---------------------------------------------------------------------------
+file(GLOB SECURITY_CORE_SOURCES src/security/*.cpp)
+if(SECURITY_CORE_SOURCES)
+    add_executable(assistant_security_tests
+        tests/security_core_tests.cpp
+        ${SECURITY_CORE_SOURCES})
+    target_include_directories(assistant_security_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    target_link_libraries(assistant_security_tests PRIVATE bcrypt)
+    add_test(NAME assistant_security_tests
+             COMMAND assistant_security_tests "${CMAKE_SOURCE_DIR}/tests/security/data")
+endif()

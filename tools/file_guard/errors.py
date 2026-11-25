@@ -50,3 +50,53 @@ class ServiceError(FileGuardError):
 
 class UnsupportedPlatformError(FileGuardError):
     """当前平台不支持该功能（例如非 Windows 上使用 DPAPI）。"""
+
+
+#: Windows 常见错误码 → 可执行的提示（"拒绝访问"对用户没有信息量）
+_WINERROR_HINTS = {
+    5: "拒绝访问：文件可能被系统保护、目录只读，或需要更高权限",
+    19: "磁盘写保护：请移除写保护后重试",
+    32: "文件正被其他程序占用：请关闭占用它的程序（或稍等片刻）后重试",
+    33: "文件被锁定：可能正在被其他程序独占使用",
+    112: "磁盘空间不足：请清理空间或更换目标磁盘",
+    123: "文件名或路径包含非法字符",
+    206: "路径过长：请缩短路径，或在 Windows 中启用「长路径支持」",
+    87: "参数或路径格式不正确",
+    3: "路径不存在：请检查文件/目录是否已被移动或删除",
+}
+
+
+def describe_os_error(exc: OSError) -> str:
+    """把 OSError 翻译成"用户能照着做"的提示。
+
+    模块里大量操作最终都会落到文件系统（被占用、权限不足、路径过长、磁盘满），
+    直接抛 ``[WinError 32] 另一个程序正在使用此文件`` 对桌面助手的用户毫无帮助。
+    """
+    winerror = getattr(exc, "winerror", None)
+    if winerror in _WINERROR_HINTS:
+        return f"{_WINERROR_HINTS[winerror]}（{exc}）"
+    if isinstance(exc, PermissionError):
+        return f"没有访问权限（{exc}）"
+    if isinstance(exc, FileNotFoundError):
+        return f"文件或目录不存在（{exc}）"
+    if isinstance(exc, IsADirectoryError):
+        return f"目标是一个目录，不是文件（{exc}）"
+    if isinstance(exc, NotADirectoryError):
+        return f"路径中有部分不是目录（{exc}）"
+    if isinstance(exc, TimeoutError):
+        return f"操作超时（{exc}）"
+    return str(exc)
+
+
+__all__ = [
+    "ConfigError",
+    "CorruptContainerError",
+    "DecryptionError",
+    "FileGuardError",
+    "IntegrityError",
+    "PasswordError",
+    "ScanCancelledError",
+    "ServiceError",
+    "UnsupportedPlatformError",
+    "describe_os_error",
+]

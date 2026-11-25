@@ -1,39 +1,49 @@
-# Python 参考实现（不参与构建）
+# Python 安全模块（M3 参考实现 + 可运行原型）
 
-本目录是 M3 安全模块的**设计参考 + 可跑原型**，来自 `file_guard` 分支，不属于 C++ 工程，也不进 CMake。
+本目录是**安全模块的 Python 实现**，由主程序通过 `SecurityBridge`（QProcess + `--json`）调用，
+在「安全中心」页展示审计链、备份库、保险箱、敏感扫描。**不参与 CMake 构建**。
 
-## 目录
+## 组成
 
-| 路径 | 内容 |
-|---|---|
-| `docs/reference/file_guard/` | 设计文档：原项目 README、从设计方案到代码、安全评审与加固、框架临时验证报告 |
-| `tools/file_guard/*.py` | 10 个模块（`crypto` / `scan` / `audit` / `backup` / `watch` / `integrity` / `fsutil` / `service` / `cli` / `config`） |
-| `tools/file_guard/tests/` | 115 个 unittest（含 `test_security.py` 的 33 条安全评审回归） |
-| `tools/file_guard/examples/demo.py` | 无 UI 的端到端演示（临时目录里跑，结束自动清理） |
-| `tools/file_guard/scripts/` | 环境自检、临时验收、右键菜单注册、生成合同样例（需要 `python-docx`） |
+| 文件 | 职责 |
+| --- | --- |
+| `crypto.py` | FGC1 加密容器：PBKDF2 + 分块 AES-256-GCM + 原子写 + keyfile + DPAPI |
+| `vault.py` | 保险箱：DEK 模型 + 恢复码 + 名称加密 + 口令轮换（v0.6） |
+| `scan.py` | 敏感文件检测（身份证/银行卡/统一社会信用代码/手机号/合同/密钥） |
+| `audit.py` | 审计日志：逐条加密 + 随机 nonce + HMAC 链 + 高水位 |
+| `backup.py` | 内容寻址增量加密备份 + 版本回滚 + 冲突保护 + diff |
+| `watch.py` | 目录监听：改动自动备份 / 空闲自动加密（删明文前先校验） |
+| `fsutil.py` | 重解析点（junction）检测、云盘占位识别、ACL 收紧 |
+| `service.py` | 本地回环 HTTP JSON-RPC（token + Host/Origin + 异步 Job） |
+| `integrity.py` | 模块自校验清单（哈希 + HMAC 签名） |
+| `cli.py` / `config.py` / `errors.py` | 命令行、配置、退出码 |
 
-## 运行
+## 运行（仓库根目录）
 
 ```powershell
+# 依赖（建议独立 venv；主程序会自动探测 <repo>/.venv 或 tools/file_guard/.venv）
 pip install -r tools\file_guard\requirements.txt
 
-# CLI（在仓库根目录；tools 是命名空间包）
-python -m tools.file_guard --help
-
-# 单测：脚本自动把 tools/ 加进 PYTHONPATH，再按原工程的命令跑
-powershell -ExecutionPolicy Bypass -File tools\file_guard\run-tests.ps1
-
-# 演示
-$env:PYTHONPATH = "tools"; python tools\file_guard\examples\demo.py
+# 命令行：-m file_guard 需要 tools/ 在 PYTHONPATH 里
+$env:PYTHONPATH = "$PWD\tools"
+python -m file_guard --version
+python -m file_guard init --home "$env:LOCALAPPDATA\AssistantTeam\Assistant\security"
+python -m file_guard scan --help
 ```
 
-实测：Python 3.14.4 + cryptography 49.0.0 下 115 个用例全过（原工程写的是 Python 3.12 + cryptography 50）。
+主程序侧解释器探测顺序：`ASSISTANT_PYTHON` → `<repo>/.venv/Scripts/python.exe` →
+`tools/file_guard/.venv/Scripts/python.exe` → `PATH` 中的 `python`。
 
-## 边界（别当产品代码用）
+## 测试
 
-- 宿主的假设是 **Python**（主项目是 C++/Qt）；
-- 账本落**加密 JSONL**，不是主项目的 `security.db`；
-- `scan.py` 会**读正文**做内容匹配，与主项目"敏感发现默认关闭、先做路径/名称规则"的决策冲突。
+```powershell
+$env:PYTHONPATH = "$PWD\tools"
+python -m unittest discover -s tools\file_guard\tests -q    # 160 条
+python tools\file_guard\scripts\run_acceptance.py           # 52 项端到端验收
+```
 
-真正要移植的是四点设计：FGC1 容器头、审计链、DPAPI 密钥、junction 隔离。
-详见 `docs/reference/file_guard/从设计方案到代码.md` 与 `docs/devlog/2026-11-05.md`。
+## 与主程序的边界（M3 下一阶段）
+
+已接：`SecurityBridge` + 「安全中心」页（四张状态卡 + 体检/扫描/打开报告）。
+未接：`FileOpGateway` 受控操作网关、`IFilePolicy` 策略与审批、`security.db` 权威库
+（设计见 `docs/architecture/四模块完整架构.md` §6、`docs/architecture/文件系统四模块-关联与方案.md` §4.3）。

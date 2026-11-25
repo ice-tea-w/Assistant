@@ -14,7 +14,7 @@
 
 from __future__ import annotations
 
-__version__ = "0.2.0"
+__version__ = "0.6.0"
 
 from .audit import AuditLog, EncryptedLog, LogRecord  # noqa: E402
 from .backup import BackupStore  # noqa: E402
@@ -46,6 +46,12 @@ from .scan import (  # noqa: E402
     SensitiveScanner,
     scan_paths,
 )
+from .vault import (  # noqa: E402
+    Vault,
+    VaultInfo,
+    format_recovery_code,
+    normalize_recovery_code,
+)
 
 __all__ = [
     "AuditLog",
@@ -65,13 +71,17 @@ __all__ = [
     "ScanControl",
     "ScanReport",
     "SensitiveScanner",
+    "Vault",
+    "VaultInfo",
     "__version__",
     "decrypt_file",
     "encrypt_file",
+    "format_recovery_code",
     "generate_keyfile",
     "inspect_container",
     "is_container",
     "load_keyfile_material",
+    "normalize_recovery_code",
     "rekey_file",
     "scan_paths",
     "verify_file",

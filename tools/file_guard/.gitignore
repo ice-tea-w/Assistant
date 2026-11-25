@@ -1,3 +1,10 @@
-﻿__pycache__/
+__pycache__/
 *.pyc
 .venv/
+.pytest_cache/
+*.egg-info/
+report.json
+# 演示/运行产物：加密容器不进仓库
+*.fgc
+# 验收演示的临时现场
+_accept-*/

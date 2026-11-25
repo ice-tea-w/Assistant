@@ -80,3 +80,7 @@ docs/slides/check_deck_*.py
 # æœ¬åœ°æ¼”ç¤º/æ‰“åŒ…äº§ç‰©ï¼ˆtools/plugin-pack.ps1ã€tools/demo-market.ps1ï¼‰
 dist/
 build-tests/
+
+# °²È«Ä£¿éÑİÊ¾ÏÖ³¡
+_accept-*/
+

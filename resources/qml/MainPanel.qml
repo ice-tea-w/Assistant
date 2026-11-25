@@ -53,6 +53,7 @@ ApplicationWindow {
         { "key": "downloads","icon": "download", "label": "最近下载" },
         { "key": "sync",     "icon": "sync",     "label": "设备同步" },
         { "key": "insight",  "icon": "chart",    "label": "数据看板" },
+        { "key": "security", "icon": "shield", "label": "安全防护" },
         { "key": "plugins",  "icon": "plugin",   "label": "插件市场" }
     ]
 
@@ -102,6 +103,7 @@ ApplicationWindow {
         case "downloads": return "qrc:/qml/RecentDownloadsPage.qml"
         case "sync":      return "qrc:/qml/SyncPage.qml"
         case "insight":   return "qrc:/qml/InsightPage.qml"
+        case "security": return "qrc:/qml/SecurityPage.qml"
         case "plugins":   return "qrc:/qml/PluginsPage.qml"
         case "settings":  return "qrc:/qml/SettingsPage.qml"
         }
