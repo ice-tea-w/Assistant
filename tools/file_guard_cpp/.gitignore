@@ -1,0 +1,5 @@
+﻿build/
+build-cmake/
+_fg_test_work/
+*.user
+.vs/
