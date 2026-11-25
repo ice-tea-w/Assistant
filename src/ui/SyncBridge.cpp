@@ -1489,10 +1489,11 @@ void SyncBridge::fetchIncoming()
     if (m_fetchBusy)
         return;
 
-    // 投递现在由服务端直接写进收件箱（`_inbox/<发送者>/<文件>` → 收件箱），
-    // 主机侧不需要「领取」；连接方去拉主机的收件箱反而是错的（那是主机自己的文件）。
-    if (m_netRunning || !hasPeerCredentials()) {
-        setSendStatus(QStringLiteral("对方发来的文件会直接进收件箱，不用手动收取"));
+    // 能「领取」的只有主机暂存在自己发件箱、等本机来取的那部分（`_outbox/<本机 deviceId>/`）。
+    // 正常投递由服务端直接写进收件箱（`_inbox/<发送者>/<文件>` → 收件箱），不用领取；
+    // 主机自己没有可拉的发件箱。
+    if (!hasPeerCredentials()) {
+        setSendStatus(QStringLiteral("你是主机：对端发来的文件会直接进收件箱，不用收取"));
         return;
     }
 
@@ -1525,8 +1526,8 @@ void SyncBridge::fetchIncoming()
         }
 
         for (const Sync::RemoteFileInfo &info : remote) {
-            // 主机上只有一个投递箱，谁发的都在 `_inbox/` 里
-            if (!info.relPath.startsWith(QStringLiteral("_inbox/"), Qt::CaseInsensitive))
+            // 只领主机上发给本机的发件箱区；主机自己的收件箱不归我（那是它收到的文件）
+            if (!info.relPath.startsWith(boxPrefix, Qt::CaseInsensitive))
                 continue;
 
             const QString tmp = QDir::tempPath()

@@ -102,7 +102,9 @@ cmake --build build --config Debug
       投递不再落进同步范围；`Sync::isReservedDeliveryPath()` 让引擎两侧跳过投递箱
       （否则投递文件会被当同步内容来回传）；桥新增 `queueSend` / `sendQueuedNow` / `removeQueuedItem`，
       页面「发送文件」卡常显（选择文件 / 立即发送 / 收件箱）。投递是**客户端→主机**单向：
-      对端一 push 就落进主机收件箱，不需要「领取」；`fetchIncoming()` 因此对主机早退
+      对端一 push 就落进主机收件箱，不需要「领取」；`fetchIncoming()` 因此对主机早退。
+      连接方「收取文件」领的是主机发件箱 `_outbox/<本机 deviceId>/`（2026-11-19 修：旧版按
+      `_inbox/` 过滤，会误拉主机自己的收件箱；且「监听中就早退」让暂存文件永远取不走）
 - [x] 反向连接第一步（2026-11-19）：`Hello` 带 `listenPort`，服务端认证通过时
       `emit peerReachable(deviceId, address, port)`；`devices` 表加 `last_address` / `last_port`
       （老库用 `PRAGMA table_info` + `ALTER TABLE` 补列）→ 主机也有了对端的可达地址；

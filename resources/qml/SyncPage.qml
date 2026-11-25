@@ -16,7 +16,7 @@ Rectangle {
     readonly property color accentColor: Style.accentColor
     readonly property color borderColor: Style.borderColor
     readonly property color panelColor: Style.panelColor
-    // 自己是主机：有配对的设备、但没有对端地址（主机只被连，不主动连人）
+    // 自己是主机：有配对的设备、但没有对端地址（对端凭据只在连接方那一侧）
     readonly property bool hostMode: !sync.peerPaired && sync.pairedDevices.length > 0
 
     // 自检结果（点「自检」后填充，多行）
@@ -127,10 +127,10 @@ Rectangle {
                         wrapMode: Text.WordWrap
                         color: syncPage.mutedColor
                         font.pixelSize: Style.captionSize
-                        text: "不经过共享目录：主机开一个端口，连接方拿 6 位码配对。"
-                              + "走 ASYN v2 over TLS，只有主机出示证书，客户端靠口令认证。\n"
-                              + "配对之后由连接方点「立即同步」发起：两边按「本地 / 上次基线 / 对端清单」比对，"
-                              + "只传差异、双向生效。主机是被连的一方，不用点同步，等对方来拉即可。"
+                        text: "不经过共享目录：两台各开一个端口，用 6 位码配一次对。"
+                              + "走 ASYN v2 over TLS，只有服务端出示证书，客户端靠口令认证。\n"
+                              + "配对之后两边都能发起「立即同步」：按「本地 / 上次基线 / 对端清单」比对，"
+                              + "只传差异、双向生效；主机也会主动连回连过它的设备。"
                     }
 
                     ColumnLayout {
@@ -337,7 +337,7 @@ Rectangle {
                             wrapMode: Text.WordWrap
                             color: syncPage.mutedColor
                             font.pixelSize: Style.captionSize
-                            text: "已与主机配对；每轮同步会同时挂载直连通道。"
+                            text: "已与主机配对；同步和发送都走直连，不经过共享目录。"
                         }
 
                         Button {
@@ -697,8 +697,8 @@ Rectangle {
 
                     Text {
                         visible: syncPage.hostMode
-                        text: "主机模式：这台机器不主动连人，所以没有「立即发送」；"
-                              + "选的文件会先放进发件箱，对方连上来点「收取文件」时取走。"
+                        text: "主机模式：「立即发送」要的是连接方的对端凭据，这里用不了；"
+                              + "选的文件会先进本机发件箱，对方连上来点「收取文件」时取走。"
                               + "对方发给你的文件会直接进收件箱。"
                         color: syncPage.mutedColor
                         font.pixelSize: Style.captionSize
@@ -892,31 +892,6 @@ Rectangle {
                 font.pixelSize: Style.captionSize
                 wrapMode: Text.WordWrap
                 Layout.fillWidth: true
-            }
-
-            // ---- 收件箱：仍绑共享目录的 _投递/，直连版投递（B 阶段）做完前先藏起来 ----
-            RowLayout {
-                visible: false
-                spacing: 8
-
-                Text {
-                    text: "收件箱"
-                    color: syncPage.mutedColor
-                    font.pixelSize: 12
-                }
-
-                Text {
-                    text: sync.inboxDir
-                    color: syncPage.mutedColor
-                    font.pixelSize: Style.captionSize
-                    elide: Text.ElideMiddle
-                    Layout.fillWidth: true
-                }
-
-                Button {
-                    text: "打开"
-                    onClicked: sync.openInbox()
-                }
             }
 
             Text {
