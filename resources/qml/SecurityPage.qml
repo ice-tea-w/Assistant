@@ -41,6 +41,7 @@ Rectangle {
         if (state === "ok") return Style.success
         if (state === "error") return Style.danger
         if (state === "running") return Style.warning
+        if (state === "warn") return Style.warning
         return Style.text3
     }
 
@@ -251,11 +252,18 @@ Rectangle {
                     font.family: Style.fontFamily
                 }
 
-                Repeater {
+                ListView {
+                    id: stepList
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    clip: true
+                    spacing: 2
                     model: page.steps
+                    boundsBehavior: Flickable.StopAtBounds
+                    onCountChanged: positionViewAtEnd()
 
-                    RowLayout {
-                        Layout.fillWidth: true
+                    delegate: RowLayout {
+                        width: stepList.width
                         spacing: 8
 
                         Rectangle {
@@ -286,9 +294,9 @@ Rectangle {
                             font.family: Style.fontFamily
                         }
                     }
-                }
 
-                Item { Layout.fillHeight: true }
+                    ScrollBar.vertical: ScrollBar {}
+                }
             }
         }
     }

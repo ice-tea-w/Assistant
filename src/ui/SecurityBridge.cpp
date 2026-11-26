@@ -36,6 +36,36 @@ QString humanSize(quint64 bytes)
     return QStringLiteral("%1 MB").arg(bytes / (1024.0 * 1024.0), 0, 'f', 1);
 }
 
+void writeScanReportFile(const QString &dir, const file_guard::scan::Report &report,
+                         const QString &target)
+{
+    QString text;
+    text += QStringLiteral("Assistant 敏感扫描报告\n");
+    text += QStringLiteral("扫描目标：%1\n").arg(target);
+    text += QStringLiteral("扫描时间：%1\n\n")
+                .arg(QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")));
+    text += QStringLiteral("共 %1 个文件 · 高 %2 / 中 %3 / 低 %4\n\n")
+                .arg(report.filesScanned)
+                .arg(report.high)
+                .arg(report.medium)
+                .arg(report.low);
+    for (const auto &file : report.results) {
+        for (const auto &finding : file.findings) {
+            text += QStringLiteral("%1（行 %2）\n").arg(toQString(file.path)).arg(finding.line);
+            text += QStringLiteral("  规则：%1\n").arg(QString::fromStdString(finding.rule));
+            text += QStringLiteral("  样例：%1\n\n").arg(QString::fromStdString(finding.sample));
+        }
+    }
+    if (report.results.empty() || report.high == 0)
+        text += QStringLiteral("未发现高置信度敏感信息。\n");
+
+    QFile out(dir + QStringLiteral("/scan-report.txt"));
+    if (out.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        out.write(text.toUtf8());
+        out.close();
+    }
+}
+
 } // namespace
 
 SecurityBridge::SecurityBridge(QObject *parent)
@@ -211,6 +241,7 @@ void SecurityBridge::runNextStep()
 
     QString title;
     QString detail;
+    QString stateOverride; // 非空时覆盖 ok/error 状态（如扫描发现=warn）
     bool ok = true;
     switch (m_stepIndex) {
     case 0:
@@ -234,6 +265,41 @@ void SecurityBridge::runNextStep()
         checkVault(&detail);
         ok = true; // 未初始化不是错误
         break;
+    case 5: {
+        title = QStringLiteral("敏感扫描");
+        const QString downloads = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
+        if (downloads.isEmpty() || !QFileInfo::exists(downloads)) {
+            detail = QStringLiteral("下载目录不存在，已跳过");
+            ok = false;
+            break;
+        }
+        try {
+            const auto report = file_guard::scan::scanPath(toPath(downloads), true);
+            m_scanDetail = QStringLiteral("%1 个文件 · 高 %2 / 中 %3 / 低 %4")
+                               .arg(report.filesScanned)
+                               .arg(report.high)
+                               .arg(report.medium)
+                               .arg(report.low);
+            writeScanReportFile(dataDir(), report, downloads);
+            try {
+                const std::filesystem::path home = toPath(dataDir());
+                const auto raw = file_guard::util::readAll(home / "app.key");
+                file_guard::audit::AuditLog audit(home / "audit",
+                                                  file_guard::util::hexEncode(raw), 100'000);
+                audit.append("scan", "assistant", downloads.toStdString());
+            } catch (...) {
+            }
+            detail = m_scanDetail;
+            ok = (report.high == 0);
+            if (!ok)
+                stateOverride = QStringLiteral("warn");
+        } catch (const std::exception &ex) {
+            detail = QStringLiteral("扫描失败：%1").arg(QString::fromUtf8(ex.what()));
+            ok = false;
+            stateOverride = QStringLiteral("error");
+        }
+        break;
+    }
     default:
         title = QStringLiteral("汇总");
         detail = QStringLiteral("审计 %1 条 · 备份 %2 个 · 保险箱%3")
@@ -244,10 +310,14 @@ void SecurityBridge::runNextStep()
         break;
     }
 
-    appendStep(title, ok ? QStringLiteral("ok") : QStringLiteral("error"), detail);
+    appendStep(title,
+               stateOverride.isEmpty()
+                   ? (ok ? QStringLiteral("ok") : QStringLiteral("error"))
+                   : stateOverride,
+               detail);
     ++m_stepIndex;
 
-    if (m_stepIndex >= 6) {
+    if (m_stepIndex >= 7) {
         m_summary = QStringLiteral("安全模块 %1 · 审计 %2 条 · 备份 %3 个 · 保险箱%4")
                         .arg(m_version)
                         .arg(m_auditRecords)
@@ -308,36 +378,7 @@ void SecurityBridge::runScan(const QString &path)
                            .arg(report.medium)
                            .arg(report.low);
 
-        // 明细报告（点击「敏感扫描」卡时打开）
-        QString scanReport;
-        scanReport += QStringLiteral("Assistant 敏感扫描报告\n");
-        scanReport += QStringLiteral("扫描目标：%1\n").arg(target);
-        scanReport += QStringLiteral("扫描时间：%1\n\n")
-                          .arg(QDateTime::currentDateTime().toString(
-                              QStringLiteral("yyyy-MM-dd HH:mm:ss")));
-        scanReport += QStringLiteral("共 %1 个文件 · 高 %2 / 中 %3 / 低 %4\n\n")
-                          .arg(report.filesScanned)
-                          .arg(report.high)
-                          .arg(report.medium)
-                          .arg(report.low);
-        for (const auto &file : report.results) {
-            for (const auto &finding : file.findings) {
-                scanReport += QStringLiteral("%1（行 %2）\n")
-                                  .arg(toQString(file.path))
-                                  .arg(finding.line);
-                scanReport += QStringLiteral("  规则：%1\n")
-                                  .arg(QString::fromStdString(finding.rule));
-                scanReport += QStringLiteral("  样例：%1\n\n")
-                                  .arg(QString::fromStdString(finding.sample));
-            }
-        }
-        if (report.results.empty() || report.high == 0)
-            scanReport += QStringLiteral("未发现高置信度敏感信息。\n");
-        QFile scanOut(dataDir() + QStringLiteral("/scan-report.txt"));
-        if (scanOut.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-            scanOut.write(scanReport.toUtf8());
-            scanOut.close();
-        }
+        writeScanReportFile(dataDir(), report, target);
         try {
             const std::filesystem::path home = toPath(dataDir());
             const auto raw = file_guard::util::readAll(home / "app.key");
