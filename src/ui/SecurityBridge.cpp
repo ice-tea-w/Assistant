@@ -246,7 +246,9 @@ void SecurityBridge::startNext()
     if (m_current.id != QLatin1String("version"))
         args << QStringLiteral("--home") << m_home;
 
-    m_proc->setWorkingDirectory(m_toolsDir);
+    // `python -m file_guard` 要求 tools/ 在 sys.path 上；工作目录设成
+    // tools/file_guard 会变成 "No module named file_guard"（cwd 里只有包内模块）。
+    m_proc->setWorkingDirectory(QFileInfo(m_toolsDir).absolutePath());
     m_proc->start(m_python, args);
     m_timeout->start();
 }
@@ -329,6 +331,7 @@ void SecurityBridge::buildCards()
     }
 
     // 审计链
+    bool auditUninitialized = false;
     {
         QString state = QStringLiteral("empty");
         QString detail = QStringLiteral("尚未校验");
@@ -337,11 +340,22 @@ void SecurityBridge::buildCards()
             const bool ok = log.value(QStringLiteral("ok")).toBool(false);
             const int records = log.value(QStringLiteral("records")).toInt(0);
             const QString head = log.value(QStringLiteral("head")).toString();
-            state = ok ? QStringLiteral("ok") : QStringLiteral("error");
-            detail = ok ? QStringLiteral("%1 条记录 · 链头 %2")
-                              .arg(records)
-                              .arg(head.left(12))
-                        : QStringLiteral("哈希链校验失败");
+            if (ok) {
+                state = QStringLiteral("ok");
+                detail = QStringLiteral("%1 条记录 · 链头 %2")
+                             .arg(records)
+                             .arg(head.left(12));
+            } else if (log.value(QStringLiteral("error")).toObject()
+                           .value(QStringLiteral("type")).toString()
+                       == QLatin1String("PasswordError")) {
+                // 还没 init / 没给口令：这是"未配置"，不是哈希链损坏，别吓用户
+                state = QStringLiteral("empty");
+                detail = QStringLiteral("未初始化 · 先运行 init（或设置 FG_PASSWORD）");
+                auditUninitialized = true;
+            } else {
+                state = QStringLiteral("error");
+                detail = QStringLiteral("哈希链校验失败");
+            }
         }
         addCard(QStringLiteral("audit"), QStringLiteral("审计链"), state, detail);
     }
@@ -403,7 +417,9 @@ void SecurityBridge::buildCards()
 
     // 头部摘要
     m_healthDetail.clear();
-    if (m_results.contains(QStringLiteral("doctor"))) {
+    if (auditUninitialized) {
+        m_healthDetail = QStringLiteral("未初始化");
+    } else if (m_results.contains(QStringLiteral("doctor"))) {
         const QJsonObject doctor = m_results.value(QStringLiteral("doctor"));
         const bool ok = doctor.value(QStringLiteral("ok")).toBool(false);
         const QJsonArray checks = doctor.value(QStringLiteral("checks")).toArray();
@@ -413,7 +429,10 @@ void SecurityBridge::buildCards()
     QString summary = QStringLiteral("安全模块 v%1").arg(m_version.isEmpty() ? QStringLiteral("?") : m_version);
     if (!m_healthDetail.isEmpty())
         summary += QStringLiteral(" · ") + m_healthDetail;
-    summary += QStringLiteral(" · 审计 %1").arg(cards.at(0).toMap().value(QStringLiteral("detail")).toString());
+    // 未初始化时不再重复"审计 未初始化…"（卡片里已有说明），避免头部被截断。
+    const QVariantMap auditCard = cards.value(0).toMap();
+    if (auditCard.value(QStringLiteral("state")).toString() != QLatin1String("empty"))
+        summary += QStringLiteral(" · 审计 %1").arg(auditCard.value(QStringLiteral("detail")).toString());
     m_summary = summary;
     m_cards = cards;
 }
@@ -424,7 +443,7 @@ void SecurityBridge::openReport()
         QDesktopServices::openUrl(QUrl::fromLocalFile(m_lastReport));
         return;
     }
-    emit toast(QStringLiteral("未找到验收报告：docs/框架临时验证报告.md"));
+    emit toast(QStringLiteral("未找到验收报告：docs/security/M3-现状与验收.md"));
 }
 
 void SecurityBridge::openDataDir()

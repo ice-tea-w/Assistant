@@ -76,21 +76,30 @@ Rectangle {
                                 name: page.cardIcon(modelData.key)
                                 size: 16
                                 iconColor: Style.text2
+                                Layout.alignment: Qt.AlignTop
                             }
-                            Text {
+                            ColumnLayout {
                                 Layout.fillWidth: true
-                                text: modelData.title
-                                color: Style.text
-                                font.pixelSize: 13
-                                font.weight: Font.DemiBold
-                                font.family: Style.fontFamily
-                            }
-                            Text {
-                                text: page.stateText(modelData.state)
-                                color: page.stateColor(modelData.state)
-                                font.pixelSize: 11
-                                font.weight: Font.DemiBold
-                                font.family: Style.fontFamily
+                                spacing: 2
+                                Text {
+                                    Layout.fillWidth: true
+                                    Layout.minimumWidth: 0
+                                    text: modelData.title
+                                    color: Style.text
+                                    font.pixelSize: 13
+                                    font.weight: Font.DemiBold
+                                    font.family: Style.fontFamily
+                                    elide: Text.ElideRight
+                                }
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: page.stateText(modelData.state)
+                                    color: page.stateColor(modelData.state)
+                                    font.pixelSize: 11
+                                    font.weight: Font.DemiBold
+                                    font.family: Style.fontFamily
+                                    elide: Text.ElideRight
+                                }
                             }
                         }
 

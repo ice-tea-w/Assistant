@@ -72,7 +72,8 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
 
 # AppIndexer uses the Windows Shell Link COM interface (IShellLink, SHGetKnownFolderPath)
 if(WIN32)
-    target_link_libraries(${PROJECT_NAME} PRIVATE shell32 ole32 crypt32 advapi32)
+    # bcrypt：src/security 的 CNG（AES-GCM / PBKDF2 / SHA-256）依赖
+    target_link_libraries(${PROJECT_NAME} PRIVATE shell32 ole32 crypt32 advapi32 bcrypt)
 endif()
 
 # ---- Qt 部署 ----

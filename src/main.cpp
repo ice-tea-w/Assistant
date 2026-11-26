@@ -407,11 +407,12 @@ int main(int argc, char *argv[])
 
     // 调试开关：带 --show-panel 启动时立即弹主面板（界面检查/截图用）；
     // 附加 --page=N 可直接打开指定页（0 待办 / 1 记事本 / 2 剪贴板 / 3 最近下载 /
-    // 4 设备同步 / 5 设置 / 6 插件市场）。主面板导航用 key，不再用索引。
+    // 4 设备同步 / 5 数据看板 / 6 设置 / 7 插件市场 / 8 安全中心）。主面板导航用 key，不再用索引。
     if (qApp->arguments().contains(QStringLiteral("--show-panel"))) {
         QTimer::singleShot(400, &app, [&]() {
             static const char *kPageKeys[] = { "todo", "notes", "clip", "downloads",
-                                               "sync", "insight", "settings", "plugins" };
+                                               "sync", "insight", "settings", "plugins",
+                                               "security" };
             for (const QString &arg : qApp->arguments()) {
                 if (!arg.startsWith(QStringLiteral("--page=")))
                     continue;
