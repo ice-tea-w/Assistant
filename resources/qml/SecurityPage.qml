@@ -179,16 +179,14 @@ Rectangle {
                 }
             }
 
-            AppButton {
-                text: "扫描下载目录"
-                icon: "search"
-                enabled: !(typeof security !== "undefined" && security.busy)
-                onClicked: {
-                    if (typeof security !== "undefined")
-                        security.runScan("")
-                }
-            }
 
+            AppButton {
+                text: "重置审计链"
+                icon: "history"
+                variant: "ghost"
+                enabled: !page.healthRunning
+                onClicked: resetDialog.open()
+            }
             AppButton {
                 text: "打开安全报告"
                 icon: "external"
@@ -298,6 +296,29 @@ Rectangle {
                     ScrollBar.vertical: ScrollBar {}
                 }
             }
+        }
+    }
+
+    Dialog {
+        id: resetDialog
+        title: "重置审计链"
+        modal: true
+        anchors.centerIn: parent
+        width: 380
+
+        contentItem: Text {
+            text: "历史审计记录将被清空，且不可恢复。\n重置后会写入一条「手动重置」记录。确定继续吗？"
+            color: Style.text
+            font.pixelSize: 12
+            font.family: Style.fontFamily
+            wrapMode: Text.WordWrap
+        }
+
+        standardButtons: Dialog.Cancel | Dialog.Ok
+
+        onAccepted: {
+            if (typeof security !== "undefined")
+                security.resetAudit()
         }
     }
 }

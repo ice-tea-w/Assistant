@@ -75,6 +75,8 @@ SecurityBridge::SecurityBridge(QObject *parent)
     // 演示/截图用：设置环境变量 FG_SECURITY_AUTORUN=1 时启动后自动跑一次体检
     if (qEnvironmentVariableIsSet("FG_SECURITY_AUTORUN"))
         QTimer::singleShot(600, this, &SecurityBridge::runSelfCheck);
+    if (qEnvironmentVariableIsSet("FG_SECURITY_RESET_AUDIT"))
+        QTimer::singleShot(600, this, &SecurityBridge::resetAudit);
 }
 
 QString SecurityBridge::dataDir() const
@@ -482,6 +484,35 @@ void SecurityBridge::openDataDir()
 {
     QDir().mkpath(dataDir());
     QDesktopServices::openUrl(QUrl::fromLocalFile(dataDir()));
+}
+
+void SecurityBridge::resetAudit()
+{
+    const std::filesystem::path home = toPath(dataDir());
+    const std::filesystem::path auditDir = home / "audit";
+    std::error_code ec;
+    std::filesystem::create_directories(auditDir, ec);
+
+    // 删除现有审计文件（不可恢复）
+    for (auto &entry : std::filesystem::directory_iterator(auditDir, ec)) {
+        const auto name = entry.path().filename().string();
+        if (name.rfind("audit.", 0) == 0)
+            std::filesystem::remove(entry.path(), ec);
+    }
+
+    // 重建并写入一条“手动重置”记录
+    try {
+        const auto raw = file_guard::util::readAll(home / "app.key");
+        file_guard::audit::AuditLog audit(auditDir, file_guard::util::hexEncode(raw), 100'000);
+        audit.append("audit.reset", "assistant", "手动重置审计链");
+        m_auditOk = true;
+        Logger::get().info("SecurityBridge: audit chain reset by user");
+        emit toast(QStringLiteral("审计链已重置"));
+    } catch (const std::exception &ex) {
+        Logger::get().error("SecurityBridge: audit reset failed — {}", ex.what());
+        emit toast(QStringLiteral("重置失败：%1").arg(QString::fromUtf8(ex.what())));
+    }
+    refresh();
 }
 
 void SecurityBridge::openCard(const QString &key)

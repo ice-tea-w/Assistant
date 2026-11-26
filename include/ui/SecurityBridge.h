@@ -37,6 +37,9 @@ public:
     Q_INVOKABLE void refresh();
     Q_INVOKABLE void runSelfCheck();
     Q_INVOKABLE void runScan(const QString &path);
+
+    /// 清空审计链并写入一条“手动重置”记录（不可恢复）
+    Q_INVOKABLE void resetAudit();
     Q_INVOKABLE void openReport();
     Q_INVOKABLE void openDataDir();
 
