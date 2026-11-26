@@ -84,6 +84,7 @@ Rectangle {
                 AppCard {
                     property string cardKey: modelData.key
                     Layout.fillWidth: true
+                    Layout.minimumWidth: 110
                     Layout.preferredHeight: 130
 
                     ColumnLayout {
@@ -116,6 +117,7 @@ Rectangle {
                         Text {
                             Layout.fillWidth: true
                             Layout.fillHeight: true
+                            Layout.minimumWidth: 0
                             text: modelData.detail
                             color: Style.text2
                             font.pixelSize: 12
@@ -197,14 +199,12 @@ Rectangle {
                 }
             }
 
+
             AppButton {
-                text: "打开数据目录"
-                icon: "folder"
+                text: "账号与登录"
+                icon: "lock"
                 variant: "ghost"
-                onClicked: {
-                    if (typeof security !== "undefined")
-                        security.openDataDir()
-                }
+                onClicked: accountDialog.open()
             }
 
             Item { Layout.fillWidth: true }
@@ -321,4 +321,9 @@ Rectangle {
                 security.resetAudit()
         }
     }
+
+    AccountDialog {
+        id: accountDialog
+    }
+
 }

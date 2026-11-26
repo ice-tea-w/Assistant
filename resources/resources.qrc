@@ -10,6 +10,8 @@
         <file>qml/InsightPage.qml</file>
         <file>qml/SecurityPage.qml</file>
         <file>qml/SettingsPage.qml</file>
+        <file>qml/LoginDialog.qml</file>
+        <file>qml/AccountDialog.qml</file>
         <file>qml/PluginsPage.qml</file>
         <file>qml/PluginCard.qml</file>
         <file>qml/Style.qml</file>

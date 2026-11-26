@@ -497,4 +497,10 @@ ApplicationWindow {
         onPressed: panelWindow.startSystemResize(Qt.BottomEdge)
         z: 60
     }
+
+    // 未登录时弹出的登录窗（含离线继续）
+    LoginDialog {
+        id: loginDialog
+    }
+
 }

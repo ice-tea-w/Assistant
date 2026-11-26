@@ -897,4 +897,45 @@ Rectangle {
         fileMode: FileDialog.OpenFiles
         onAccepted: sync.queueSend(selectedFiles)
     }
+    // ---- 登录限制遮罩（离线/未登录）----
+    Rectangle {
+        anchors.fill: parent
+        z: 100
+        visible: (typeof auth !== "undefined") && !auth.signedIn
+        color: Qt.rgba(0, 0, 0, 0.45)
+
+        ColumnLayout {
+            anchors.centerIn: parent
+            spacing: 10
+
+            AppIcon {
+                name: "lock"
+                size: 28
+                iconColor: Style.text
+                Layout.alignment: Qt.AlignHCenter
+            }
+            Text {
+                text: "该功能需要登录后使用"
+                color: Style.text
+                font.pixelSize: 15
+                font.weight: Font.DemiBold
+                font.family: Style.fontFamily
+                Layout.alignment: Qt.AlignHCenter
+            }
+            Text {
+                text: "当前为离线模式，登录后可解除限制"
+                color: Style.text2
+                font.pixelSize: 12
+                font.family: Style.fontFamily
+                Layout.alignment: Qt.AlignHCenter
+            }
+            AppButton {
+                text: "登录"
+                variant: "primary"
+                Layout.alignment: Qt.AlignHCenter
+                onClicked: if (typeof auth !== "undefined") auth.requestLogin()
+            }
+        }
+    }
+
 }

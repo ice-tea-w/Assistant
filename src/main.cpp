@@ -30,6 +30,7 @@
 #include "ui/PanelBridge.h"
 #include "ui/PluginBridge.h"
 #include "ui/InboxBridge.h"
+#include "ui/AuthBridge.h"
 #include "ui/SecurityBridge.h"
 #include "ui/MetricsBridge.h"
 #include "core/plugin/PluginCatalog.h"
@@ -76,6 +77,7 @@ int main(int argc, char *argv[])
 
     // ---- config (load before anything that needs it) ----
     ConfigManager config;
+AuthBridge auth;
     config.load();
 
     // ---- logging (init after config so we can read logLevel) ----
@@ -276,6 +278,7 @@ int main(int argc, char *argv[])
     // ---- expose objects to QML ----
     engine.rootContext()->setContextProperty("backend", &backend);
     engine.rootContext()->setContextProperty("config",  &config);
+    engine.rootContext()->setContextProperty("auth",    &auth);
     engine.rootContext()->setContextProperty("appVersion", QCoreApplication::applicationVersion());
     engine.load(QUrl(QStringLiteral("qrc:/qml/MainWindow.qml")));
 
@@ -364,6 +367,7 @@ int main(int argc, char *argv[])
     SecurityBridge security;
     QQmlApplicationEngine panelEngine;
     panelEngine.rootContext()->setContextProperty("config", &config);
+    panelEngine.rootContext()->setContextProperty("auth", &auth);
     // 主面板也要用 backend：设置页「重建文件索引」是 AppBridge 的 Q_INVOKABLE
     panelEngine.rootContext()->setContextProperty("backend", &backend);
     panelEngine.rootContext()->setContextProperty("panel", &panel);

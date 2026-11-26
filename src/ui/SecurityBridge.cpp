@@ -267,6 +267,19 @@ void SecurityBridge::runNextStep()
         checkVault(&detail);
         ok = true; // 未初始化不是错误
         break;
+    case 6: {
+        title = QStringLiteral("账号与登录");
+        const std::filesystem::path accountFile = toPath(dataDir()) / "account.json";
+        if (std::filesystem::exists(accountFile)) {
+            detail = QStringLiteral("已设置本地账号（未登录时功能受限）");
+            ok = true;
+        } else {
+            detail = QStringLiteral("未设置本地账号（离线模式受限）");
+            ok = false;
+            stateOverride = QStringLiteral("warn");
+        }
+        break;
+    }
     case 5: {
         title = QStringLiteral("敏感扫描");
         const QString downloads = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
@@ -319,7 +332,7 @@ void SecurityBridge::runNextStep()
                detail);
     ++m_stepIndex;
 
-    if (m_stepIndex >= 7) {
+    if (m_stepIndex >= 8) {
         m_summary = QStringLiteral("安全模块 %1 · 审计 %2 条 · 备份 %3 个 · 保险箱%4")
                         .arg(m_version)
                         .arg(m_auditRecords)
