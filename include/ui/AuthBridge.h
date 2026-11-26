@@ -36,6 +36,7 @@ public:
     Q_INVOKABLE void requestLogin();
     Q_INVOKABLE void saveAccount(const QString &user, const QString &password);
     Q_INVOKABLE void changePassword(const QString &oldPassword, const QString &newPassword);
+    Q_INVOKABLE void changeUserName(const QString &newName);
     Q_INVOKABLE void switchAccount();
     Q_INVOKABLE void logout();
 

@@ -323,6 +323,43 @@ void AuthBridge::changePassword(const QString &oldPassword, const QString &newPa
     }
 }
 
+void AuthBridge::changeUserName(const QString &newName)
+{
+    if (!m_signedIn) {
+        setStatus(QStringLiteral("请先登录再更改用户名"));
+        emit toast(QStringLiteral("请先登录"));
+        return;
+    }
+    const QString name = newName.trimmed();
+    if (name.isEmpty()) {
+        setStatus(QStringLiteral("用户名不能为空"));
+        emit toast(QStringLiteral("用户名不能为空"));
+        return;
+    }
+    if (name == m_user) {
+        setStatus(QStringLiteral("新用户名与当前相同"));
+        return;
+    }
+
+    auto obj = readAccountObject();
+    if (obj.isEmpty()) {
+        setStatus(QStringLiteral("账号数据读取失败"));
+        return;
+    }
+    obj.insert(QStringLiteral("user"), name);
+    obj.insert(QStringLiteral("signedIn"), true);
+    try {
+        writeAccountObject(obj);
+        m_user = name;
+        setStatus(QStringLiteral("账号：已登录（%1）").arg(name));
+        Logger::get().info("AuthBridge: username changed to {}", name.toStdString());
+        emit toast(QStringLiteral("用户名已更改"));
+        emit changed();
+    } catch (const std::exception &ex) {
+        setStatus(QStringLiteral("保存失败：%1").arg(QString::fromUtf8(ex.what())));
+    }
+}
+
 void AuthBridge::switchAccount()
 {
     m_signedIn = false;

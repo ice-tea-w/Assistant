@@ -35,7 +35,7 @@ Dialog {
             Layout.fillWidth: true
             text: dlg.hasAccount
                   ? "登录后可解除离线模式的功能限制；没有网络也可以登录（本地校验）。"
-                  : "本机还没有账号：请先在 设置 → 账号 创建，或先离线继续。"
+                  : "本机还没有账号：请先在 设置 → 账号 注册账号，或先离线继续。"
             color: Style.text2
             font.pixelSize: 12
             font.family: Style.fontFamily
