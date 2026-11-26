@@ -44,6 +44,18 @@ Rectangle {
         return Style.text3
     }
 
+    function cardHint(key) {
+        if (key === "audit")
+            return "审计链：重要操作会写成一条带 HMAC 的链式记录，改一条就会断链。\n这里显示当前记录数和最新链头；点击打开审计目录。"
+        if (key === "backup")
+            return "备份库：文件版本备份的加密索引。\n显示已有版本数和总大小；点击打开备份目录。"
+        if (key === "vault")
+            return "保险箱：用口令加密文件的容器。\n这里只显示是否已初始化（解锁需要口令）；点击打开保险箱目录。"
+        if (key === "scan")
+            return "敏感扫描：检查身份证、银行卡、手机号、统一社会信用代码等敏感信息，结果已打码。\n点击查看扫描报告（没有报告时会提示先扫描）。"
+        return ""
+    }
+
     function notify(text) {
         if (typeof toast !== "undefined")
             toast.show(text, "success")
@@ -69,6 +81,7 @@ Rectangle {
                 model: page.cardData
 
                 AppCard {
+                    property string cardKey: modelData.key
                     Layout.fillWidth: true
                     Layout.preferredHeight: 130
 
@@ -117,6 +130,31 @@ Rectangle {
                             font.pixelSize: 11
                             font.weight: Font.DemiBold
                             font.family: Style.fontFamily
+                        }
+                    }
+
+                    MouseArea {
+                        id: cardArea
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            if (typeof security !== "undefined")
+                                security.openCard(modelData.key)
+                        }
+                        ToolTip {
+                            id: cardTip
+                            visible: cardArea.containsMouse
+                            delay: 350
+                            timeout: 15000
+                            contentItem: Text {
+                                width: 300
+                                text: page.cardHint(cardKey)
+                                color: Style.text
+                                font.pixelSize: 12
+                                font.family: Style.fontFamily
+                                wrapMode: Text.WordWrap
+                            }
                         }
                     }
                 }

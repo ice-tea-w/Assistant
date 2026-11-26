@@ -40,6 +40,9 @@ public:
     Q_INVOKABLE void openReport();
     Q_INVOKABLE void openDataDir();
 
+    /// 点击卡片：打开对应目录/报告（audit/backup/vault/scan）
+    Q_INVOKABLE void openCard(const QString &key);
+
 signals:
     void changed();
     void healthChanged();

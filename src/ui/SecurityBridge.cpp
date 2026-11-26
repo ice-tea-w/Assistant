@@ -307,6 +307,37 @@ void SecurityBridge::runScan(const QString &path)
                            .arg(report.high)
                            .arg(report.medium)
                            .arg(report.low);
+
+        // 明细报告（点击「敏感扫描」卡时打开）
+        QString scanReport;
+        scanReport += QStringLiteral("Assistant 敏感扫描报告\n");
+        scanReport += QStringLiteral("扫描目标：%1\n").arg(target);
+        scanReport += QStringLiteral("扫描时间：%1\n\n")
+                          .arg(QDateTime::currentDateTime().toString(
+                              QStringLiteral("yyyy-MM-dd HH:mm:ss")));
+        scanReport += QStringLiteral("共 %1 个文件 · 高 %2 / 中 %3 / 低 %4\n\n")
+                          .arg(report.filesScanned)
+                          .arg(report.high)
+                          .arg(report.medium)
+                          .arg(report.low);
+        for (const auto &file : report.results) {
+            for (const auto &finding : file.findings) {
+                scanReport += QStringLiteral("%1（行 %2）\n")
+                                  .arg(toQString(file.path))
+                                  .arg(finding.line);
+                scanReport += QStringLiteral("  规则：%1\n")
+                                  .arg(QString::fromStdString(finding.rule));
+                scanReport += QStringLiteral("  样例：%1\n\n")
+                                  .arg(QString::fromStdString(finding.sample));
+            }
+        }
+        if (report.results.empty() || report.high == 0)
+            scanReport += QStringLiteral("未发现高置信度敏感信息。\n");
+        QFile scanOut(dataDir() + QStringLiteral("/scan-report.txt"));
+        if (scanOut.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            scanOut.write(scanReport.toUtf8());
+            scanOut.close();
+        }
         try {
             const std::filesystem::path home = toPath(dataDir());
             const auto raw = file_guard::util::readAll(home / "app.key");
@@ -410,4 +441,30 @@ void SecurityBridge::openDataDir()
 {
     QDir().mkpath(dataDir());
     QDesktopServices::openUrl(QUrl::fromLocalFile(dataDir()));
+}
+
+void SecurityBridge::openCard(const QString &key)
+{
+    const QString home = dataDir();
+    QDir().mkpath(home);
+    const auto openPath = [](const QString &path) {
+        QDesktopServices::openUrl(QUrl::fromLocalFile(path));
+    };
+
+    if (key == QStringLiteral("audit")) {
+        QDir().mkpath(home + QStringLiteral("/audit"));
+        openPath(home + QStringLiteral("/audit"));
+    } else if (key == QStringLiteral("backup")) {
+        QDir().mkpath(home + QStringLiteral("/backups"));
+        openPath(home + QStringLiteral("/backups"));
+    } else if (key == QStringLiteral("vault")) {
+        QDir().mkpath(home + QStringLiteral("/vault"));
+        openPath(home + QStringLiteral("/vault"));
+    } else if (key == QStringLiteral("scan")) {
+        const QString scanReport = home + QStringLiteral("/scan-report.txt");
+        if (QFileInfo::exists(scanReport))
+            openPath(scanReport);
+        else
+            emit toast(QStringLiteral("还没有扫描记录，先点「扫描下载目录」"));
+    }
 }
