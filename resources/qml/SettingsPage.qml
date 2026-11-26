@@ -225,9 +225,10 @@ Rectangle {
                                                auth.saveAccount(accountUserField.text, accountPassField.text)
                             }
                             AppButton {
-                                text: "登录"
+                                text: (typeof auth !== "undefined" && auth.loginLocked) ? "已锁定" : "登录"
                                 variant: "primary"
                                 visible: typeof auth !== "undefined" && auth.hasAccount
+                                enabled: !(typeof auth !== "undefined" && auth.loginLocked)
                                 onClicked: if (typeof auth !== "undefined")
                                                auth.login(accountUserField.text, accountPassField.text)
                             }

@@ -4,6 +4,7 @@
 #include "file_guard/crypto.h"
 #include "file_guard/util.h"
 
+#include <QDateTime>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QStandardPaths>
@@ -74,6 +75,18 @@ void writeAccountObject(const QJsonObject &obj)
 AuthBridge::AuthBridge(QObject *parent)
     : QObject(parent)
 {
+    m_lockTimer = new QTimer(this);
+    m_lockTimer->setInterval(1000);
+    QObject::connect(m_lockTimer, &QTimer::timeout, this, [this] {
+        if (lockRemainingMs() > 0) {
+            emit changed();
+        } else {
+            m_lockTimer->stop();
+            setStatus(QStringLiteral("锁定已解除，可以重新登录"));
+            emit changed();
+        }
+    });
+
     load();
 
     if (qEnvironmentVariableIsSet("FG_AUTH_SELFTEST")) {
@@ -104,6 +117,15 @@ AuthBridge::AuthBridge(QObject *parent)
             saveAccount(spec.left(sep), spec.mid(sep + 1));
             logout();
         }
+    } else if (qEnvironmentVariableIsSet("FG_AUTH_LOCKTEST")) {
+        for (int i = 0; i < 5; ++i)
+            login(QStringLiteral("demo"), QStringLiteral("wrong"));
+    } else if (qEnvironmentVariableIsSet("FG_AUTH_UNLOCK")) {
+        m_failedAttempts = 0;
+        m_lockUntilMs = 0;
+        updateSecurityState(0, 0);
+        setStatus(QStringLiteral("账号：已登录（%1）").arg(m_user));
+        emit changed();
     } else if (qEnvironmentVariableIsSet("FG_AUTH_OFFLINE")) {
         continueOffline();
     } else if (qEnvironmentVariableIsSet("FG_AUTH_LOGIN")) {
@@ -127,6 +149,12 @@ void AuthBridge::load()
         m_hasAccount = true;
         m_user = user;
         m_signedIn = obj.value(QStringLiteral("signedIn")).toBool();
+        m_failedAttempts = obj.value(QStringLiteral("failedAttempts")).toInt(0);
+        m_lockUntilMs = static_cast<qint64>(obj.value(QStringLiteral("lockUntil")).toDouble(0));
+        if (m_lockUntilMs <= QDateTime::currentMSecsSinceEpoch())
+            m_lockUntilMs = 0;
+        if (m_lockUntilMs > 0)
+            startLockTimer();
     }
 
     // 旧位置迁移到 DPAPI 加密的新位置，并删除明文旧文件
@@ -193,6 +221,11 @@ bool AuthBridge::verifyPassword(const QString &user, const QString &password) co
 
 void AuthBridge::login(const QString &user, const QString &password)
 {
+    if (loginLocked()) {
+        setStatus(QStringLiteral("登录已锁定，请 %1 秒后重试").arg(lockRemainingSeconds()));
+        emit toast(QStringLiteral("登录已锁定，请稍后重试"));
+        return;
+    }
     if (!m_hasAccount) {
         setStatus(QStringLiteral("本机还没有账号，请到 设置 → 账号 创建"));
         emit toast(QStringLiteral("请先在设置中创建账号"));
@@ -204,14 +237,32 @@ void AuthBridge::login(const QString &user, const QString &password)
         return;
     }
     if (!verifyPassword(trimmed, password)) {
-        setStatus(QStringLiteral("账号或密码错误"));
-        emit toast(QStringLiteral("登录失败：账号或密码错误"));
+        ++m_failedAttempts;
+        if (m_failedAttempts >= 5) {
+            m_failedAttempts = 0;
+            m_lockUntilMs = QDateTime::currentMSecsSinceEpoch() + 10 * 60 * 1000;
+            updateSecurityState(m_failedAttempts, m_lockUntilMs);
+            startLockTimer();
+            setStatus(QStringLiteral("连续错误 5 次，已锁定 10 分钟"));
+            Logger::get().warn("AuthBridge: too many failures, locked 10 minutes");
+            emit toast(QStringLiteral("连续错误 5 次，账号已锁定 10 分钟"));
+        } else {
+            updateSecurityState(m_failedAttempts, 0);
+            setStatus(QStringLiteral("账号或密码错误（第 %1/5 次）").arg(m_failedAttempts));
+            emit toast(QStringLiteral("账号或密码错误（第 %1/5 次）").arg(m_failedAttempts));
+        }
+        emit changed();
         return;
     }
 
     m_signedIn = true;
     m_offline = false;
     m_user = trimmed;
+    m_failedAttempts = 0;
+    m_lockUntilMs = 0;
+    if (m_lockTimer)
+        m_lockTimer->stop();
+    updateSecurityState(0, 0);
     saveSession(true);
     setStatus(QStringLiteral("账号：已登录（%1）").arg(m_user));
     Logger::get().info("AuthBridge: login ok user={}", m_user.toStdString());
@@ -380,6 +431,37 @@ void AuthBridge::logout()
     Logger::get().info("AuthBridge: logout");
     emit toast(QStringLiteral("已退出登录"));
     emit changed();
+}
+
+qint64 AuthBridge::lockRemainingMs() const
+{
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    return m_lockUntilMs > now ? (m_lockUntilMs - now) : 0;
+}
+
+int AuthBridge::lockRemainingSeconds() const
+{
+    const qint64 ms = lockRemainingMs();
+    return static_cast<int>((ms + 999) / 1000);
+}
+
+void AuthBridge::updateSecurityState(int failedAttempts, qint64 lockUntilMs)
+{
+    auto obj = readAccountObject();
+    if (obj.isEmpty())
+        return;
+    obj.insert(QStringLiteral("failedAttempts"), failedAttempts);
+    obj.insert(QStringLiteral("lockUntil"), static_cast<double>(lockUntilMs));
+    try {
+        writeAccountObject(obj);
+    } catch (...) {
+    }
+}
+
+void AuthBridge::startLockTimer()
+{
+    if (m_lockTimer && !m_lockTimer->isActive())
+        m_lockTimer->start();
 }
 
 void AuthBridge::setStatus(const QString &text)

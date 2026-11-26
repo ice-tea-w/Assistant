@@ -60,6 +60,18 @@ Dialog {
 
         Text {
             Layout.fillWidth: true
+            visible: dlg.hasAuth && auth.loginLocked
+            text: (dlg.hasAuth && auth.loginLocked)
+                  ? "登录已锁定：" + auth.lockRemainingSeconds + " 秒后重试"
+                  : ""
+            color: Style.warning
+            font.pixelSize: 11
+            font.family: Style.fontFamily
+            wrapMode: Text.WordWrap
+        }
+
+        Text {
+            Layout.fillWidth: true
             visible: dlg.errorText !== ""
             text: dlg.errorText
             color: Style.danger
@@ -76,7 +88,8 @@ Dialog {
                 text: "登录"
                 variant: "primary"
                 visible: dlg.hasAccount
-                enabled: dlg.hasAuth && userField.text.length > 0 && passField.text.length > 0
+                enabled: dlg.hasAuth && !auth.loginLocked
+                         && userField.text.length > 0 && passField.text.length > 0
                 onClicked: dlg.tryLogin()
             }
 
@@ -106,7 +119,7 @@ Dialog {
         if (!hasAuth) return
         auth.login(userField.text, passField.text)
         if (!auth.signedIn) {
-            errorText = "登录失败：请检查账号和密码"
+            errorText = auth.statusText
             passField.text = ""
         } else {
             errorText = ""

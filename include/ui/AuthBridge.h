@@ -2,6 +2,7 @@
 
 #include <QObject>
 #include <QString>
+#include <QTimer>
 
 /// 账号与登录状态（本地账号，离线可用）
 ///
@@ -20,6 +21,8 @@ class AuthBridge : public QObject
     Q_PROPERTY(bool needsLogin READ needsLogin NOTIFY changed)
     Q_PROPERTY(QString userName READ userName NOTIFY changed)
     Q_PROPERTY(QString statusText READ statusText NOTIFY changed)
+    Q_PROPERTY(bool loginLocked READ loginLocked NOTIFY changed)
+    Q_PROPERTY(int lockRemainingSeconds READ lockRemainingSeconds NOTIFY changed)
 
 public:
     explicit AuthBridge(QObject *parent = nullptr);
@@ -30,6 +33,8 @@ public:
     bool needsLogin() const { return !m_signedIn && !m_offline; }
     QString userName() const { return m_user; }
     QString statusText() const { return m_status; }
+    bool loginLocked() const { return lockRemainingMs() > 0; }
+    int lockRemainingSeconds() const;
 
     Q_INVOKABLE void login(const QString &user, const QString &password);
     Q_INVOKABLE void continueOffline();
@@ -49,10 +54,16 @@ private:
     void saveSession(bool signedIn);
     bool verifyPassword(const QString &user, const QString &password) const;
     void setStatus(const QString &text);
+    qint64 lockRemainingMs() const;
+    void updateSecurityState(int failedAttempts, qint64 lockUntilMs);
+    void startLockTimer();
 
     bool m_signedIn = false;
     bool m_hasAccount = false;
     bool m_offline = false;
     QString m_user;
     QString m_status;
+    int m_failedAttempts = 0;
+    qint64 m_lockUntilMs = 0;
+    QTimer *m_lockTimer = nullptr;
 };
