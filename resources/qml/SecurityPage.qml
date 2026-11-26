@@ -3,7 +3,7 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import "components"
 
-// 安全中心（M3）：主程序侧只做展示与触发，能力由 tools/file_guard（Python）提供。
+// 安全中心（M3）：C++ 安全模块（tools/file_guard_cpp）直接编译进主程序，无 Python 依赖。
 // 数据全部来自 SecurityBridge 的 `--json` 探针，异步、失败降级，不阻塞界面。
 Rectangle {
     id: page
@@ -136,7 +136,7 @@ Rectangle {
             }
 
             AppButton {
-                text: "打开验收报告"
+                text: "打开安全报告"
                 icon: "external"
                 variant: "ghost"
                 onClicked: {
@@ -187,9 +187,9 @@ Rectangle {
                     color: Style.text2
                     font.pixelSize: 12
                     font.family: Style.fontFamily
-                    text: "安全中心把 M3 安全模块（Python，tools/file_guard v0.6.0）接进主程序：" +
+                    text: "安全中心把 C++ 安全模块（tools/file_guard_cpp v1.0.0）直接编译进主程序：" +
                           "审计链校验、备份库、保险箱、敏感扫描。所有调用都是异步子进程 + --json，" +
-                          "不阻塞界面；Python 模块缺失时降级为只读状态，不影响主程序启动。"
+                          "审计链 / 备份 / 保险箱 / 扫描全部走 C++ 实现，不启动外部进程。"
                 }
 
                 Text {

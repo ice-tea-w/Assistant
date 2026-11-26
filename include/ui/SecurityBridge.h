@@ -1,24 +1,17 @@
 #pragma once
 
-#include <QJsonObject>
-#include <QMap>
 #include <QObject>
-#include <QQueue>
 #include <QString>
-#include <QStringList>
 #include <QVariantList>
-#include <QVector>
 
-class QProcess;
-class QTimer;
-
-/// M3 安全模块的 QML↔Python 桥。
+/// 安全中心桥（**C++ 直连版**）
 ///
-/// 主程序侧只负责"展示 + 触发"，真正的安全能力在 `tools/file_guard`（Python）。
-/// 约定：
-///   * 只调用白名单子命令 + `--json`，参数数组交给 QProcess，不拼 shell；
-///   * 全部异步、带超时；Python 缺失时降级为只读状态，绝不阻塞启动；
-///   * 数据目录固定在 `%LOCALAPPDATA%/<App>/security`，不碰用户真实 `~/.file_guard`。
+/// 直接调用编译进主程序的 C++ 安全模块（tools/file_guard_cpp）：
+/// 审计链校验、备份库、保险箱状态、敏感扫描；不再依赖 Python / QProcess。
+///
+/// 数据目录：%LOCALAPPDATA%/AssistantTeam/Assistant/security
+/// 其中 app.key 是 DPAPI 不涉及的应用密钥（随机 32B，ACL 收紧），
+/// 用于审计/备份的本地加密索引（不是用户口令，避免启动时要求输入密码）。
 class SecurityBridge : public QObject
 {
     Q_OBJECT
@@ -31,10 +24,6 @@ class SecurityBridge : public QObject
 
 public:
     explicit SecurityBridge(QObject *parent = nullptr);
-    ~SecurityBridge() override;
-
-    /// 一般不需要调用：会自动从可执行文件向上找仓库根目录（含 tools/file_guard）。
-    void setRepoRoot(const QString &repoRoot);
 
     bool available() const { return m_available; }
     bool busy() const { return m_busy; }
@@ -43,15 +32,10 @@ public:
     QVariantList cards() const { return m_cards; }
     QString lastReport() const { return m_lastReport; }
 
-    /// 刷新四张状态卡：doctor / log verify / backup list / vault info。
     Q_INVOKABLE void refresh();
-    /// 体检（与 refresh 相同，但会先给 UI 一个"正在检查"的提示）。
     Q_INVOKABLE void runSelfCheck();
-    /// 扫描目录（空路径 = Downloads）。
     Q_INVOKABLE void runScan(const QString &path);
-    /// 打开端到端验收报告（docs/框架临时验证报告.md）。
     Q_INVOKABLE void openReport();
-    /// 打开安全模块数据目录。
     Q_INVOKABLE void openDataDir();
 
 signals:
@@ -59,40 +43,24 @@ signals:
     void toast(const QString &text);
 
 private:
-    struct Probe {
-        QString id;
-        QStringList args;
-        bool json = true;
-    };
-
-    void probeEnvironment();
-    void enqueue(const QVector<Probe> &probes);
-    void startNext();
-    void onProbeFinished(int exitCode);
-    void handleTimeout();
-    void failFast(const QString &message);
     void buildCards();
+    void writeReport() const;
+    QString dataDir() const;
 
-    static QString locateRepoRoot();
-    static QString locatePython(const QString &repoRoot);
-
-    QString m_repoRoot;
-    QString m_toolsDir;
-    QString m_python;
-    QString m_home;
-    QString m_version;
-    QString m_summary;
-    QString m_lastReport;
-    QVariantList m_cards;
-    bool m_available = false;
+    bool m_available = true;
     bool m_busy = false;
+    QString m_version = QStringLiteral("1.0.0 (C++)");
+    QString m_summary = QStringLiteral("正在检查…");
+    QVariantList m_cards;
+    QString m_lastReport;
 
-    QQueue<Probe> m_queue;
-    Probe m_current;
-    QProcess *m_proc = nullptr;
-    QTimer *m_timeout = nullptr;
-    bool m_abandon = false;   ///< 超时被 kill 时置位，避免 finished 与 startNext 双重推进
-    QMap<QString, QJsonObject> m_results;
-    QString m_scanDetail;
-    QString m_healthDetail;
+    // 最近一次检查结果
+    bool m_auditOk = false;
+    quint64 m_auditRecords = 0;
+    QString m_auditHead;
+    int m_backupCount = 0;
+    quint64 m_backupBytes = 0;
+    bool m_backupOk = false;
+    bool m_vaultExists = false;
+    QString m_scanDetail = QStringLiteral("未扫描");
 };

@@ -75,6 +75,25 @@ if(WIN32)
     target_link_libraries(${PROJECT_NAME} PRIVATE shell32 ole32 crypt32 advapi32)
 endif()
 
+# ---- C++ 安全模块（tools/file_guard_cpp，直接编译进主程序，无 Python 依赖）----
+set(FG_SECURITY_DIR "${CMAKE_SOURCE_DIR}/tools/file_guard_cpp")
+if(EXISTS "${FG_SECURITY_DIR}/include/file_guard/file_guard.h")
+    target_sources(${PROJECT_NAME} PRIVATE
+        ${FG_SECURITY_DIR}/src/util.cpp
+        ${FG_SECURITY_DIR}/src/crypto.cpp
+        ${FG_SECURITY_DIR}/src/scan.cpp
+        ${FG_SECURITY_DIR}/src/audit.cpp
+        ${FG_SECURITY_DIR}/src/config.cpp
+        ${FG_SECURITY_DIR}/src/vault.cpp
+        ${FG_SECURITY_DIR}/src/backup.cpp
+        ${FG_SECURITY_DIR}/src/watch.cpp
+        ${FG_SECURITY_DIR}/src/service.cpp
+        ${FG_SECURITY_DIR}/src/integrity.cpp
+        ${FG_SECURITY_DIR}/src/zipx.cpp)
+    target_include_directories(${PROJECT_NAME} PRIVATE ${FG_SECURITY_DIR}/include)
+    target_link_libraries(${PROJECT_NAME} PRIVATE bcrypt crypt32 ws2_32)
+endif()
+
 # ---- Qt 部署 ----
 # 开发阶段：在 exe 旁生成 qt.conf，指向 vcpkg 的 Qt6 安装目录。
 # qt.conf 负责：platforms/、qml/ 的路径（Qt 内部查找）
@@ -494,16 +513,3 @@ add_test(NAME net_engine COMMAND assistant_net_engine_tests)
 set_tests_properties(net_engine PROPERTIES
     ENVIRONMENT "PATH=${VCPKG_BIN_DIR};${VCPKG_DBG_BIN_DIR};$ENV{PATH}")
 
-# ---------------------------------------------------------------------------
-# M3 安全模块 C++ 移植（src/security；纯 C++/Win32 CNG，不依赖 Qt/vcpkg）
-# ---------------------------------------------------------------------------
-file(GLOB SECURITY_CORE_SOURCES src/security/*.cpp)
-if(SECURITY_CORE_SOURCES)
-    add_executable(assistant_security_tests
-        tests/security_core_tests.cpp
-        ${SECURITY_CORE_SOURCES})
-    target_include_directories(assistant_security_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
-    target_link_libraries(assistant_security_tests PRIVATE bcrypt)
-    add_test(NAME assistant_security_tests
-             COMMAND assistant_security_tests "${CMAKE_SOURCE_DIR}/tests/security/data")
-endif()

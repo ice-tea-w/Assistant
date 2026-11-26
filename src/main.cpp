@@ -411,7 +411,8 @@ int main(int argc, char *argv[])
     if (qApp->arguments().contains(QStringLiteral("--show-panel"))) {
         QTimer::singleShot(400, &app, [&]() {
             static const char *kPageKeys[] = { "todo", "notes", "clip", "downloads",
-                                               "sync", "insight", "settings", "plugins" };
+                                               "sync", "insight", "settings", "plugins",
+                                               "security" };
             for (const QString &arg : qApp->arguments()) {
                 if (!arg.startsWith(QStringLiteral("--page=")))
                     continue;
