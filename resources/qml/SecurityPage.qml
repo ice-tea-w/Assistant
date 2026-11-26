@@ -199,6 +199,16 @@ Rectangle {
                 }
             }
 
+            AppButton {
+                text: "打开数据目录"
+                icon: "folder"
+                variant: "ghost"
+                onClicked: {
+                    if (typeof security !== "undefined")
+                        security.openDataDir()
+                }
+            }
+
 
             Item { Layout.fillWidth: true }
         }

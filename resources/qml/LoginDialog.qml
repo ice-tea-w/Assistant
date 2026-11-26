@@ -35,7 +35,7 @@ Dialog {
             Layout.fillWidth: true
             text: dlg.hasAccount
                   ? "登录后可解除离线模式的功能限制；没有网络也可以登录（本地校验）。"
-                  : "本机还没有账号：请先在 安全防护 → 账号与登录 创建，或先离线继续。"
+                  : "本机还没有账号：请先在 设置 → 账号 创建，或先离线继续。"
             color: Style.text2
             font.pixelSize: 12
             font.family: Style.fontFamily
@@ -94,7 +94,7 @@ Dialog {
 
         Text {
             Layout.fillWidth: true
-            text: "离线模式下：设备同步、插件市场不可用；账号密码可在 安全防护 → 账号与登录 修改。"
+            text: "离线模式下：设备同步、插件市场不可用；账号密码可在 设置 → 账号 修改。"
             color: Style.text3
             font.pixelSize: 10
             font.family: Style.fontFamily

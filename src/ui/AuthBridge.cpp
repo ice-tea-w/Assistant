@@ -4,8 +4,6 @@
 #include "file_guard/crypto.h"
 #include "file_guard/util.h"
 
-#include <QDir>
-#include <QFile>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QStandardPaths>
@@ -14,11 +12,61 @@
 
 namespace {
 
-std::filesystem::path accountPath()
+std::filesystem::path authDir()
 {
     const QString dir = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation);
-    return std::filesystem::path(
-        (dir + QStringLiteral("/security/account.json")).toStdWString());
+    return std::filesystem::path((dir + QStringLiteral("/.auth")).toStdWString());
+}
+
+std::filesystem::path accountPath()
+{
+    return authDir() / "account.dat";
+}
+
+// 旧版本位置：security/account.json（明文 JSON），首次启动自动迁移
+std::filesystem::path legacyAccountPath()
+{
+    const QString dir = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation);
+    return std::filesystem::path((dir + QStringLiteral("/security/account.json")).toStdWString());
+}
+
+QJsonObject readAccountObject()
+{
+    try {
+        const auto path = accountPath();
+        if (std::filesystem::exists(path)) {
+            const auto encrypted = file_guard::util::readAll(path);
+            const auto plain = file_guard::util::dpapiUnprotect(encrypted);
+            const auto doc = QJsonDocument::fromJson(
+                QByteArray(reinterpret_cast<const char *>(plain.data()),
+                           static_cast<int>(plain.size())));
+            if (doc.isObject())
+                return doc.object();
+            return {};
+        }
+        const auto legacy = legacyAccountPath();
+        if (std::filesystem::exists(legacy)) {
+            const auto raw = file_guard::util::readAll(legacy);
+            const auto doc = QJsonDocument::fromJson(
+                QByteArray(reinterpret_cast<const char *>(raw.data()),
+                           static_cast<int>(raw.size())));
+            if (doc.isObject())
+                return doc.object();
+        }
+    } catch (...) {
+    }
+    return {};
+}
+
+void writeAccountObject(const QJsonObject &obj)
+{
+    std::error_code ignored;
+    std::filesystem::create_directories(authDir(), ignored);
+    const auto plain = QJsonDocument(obj).toJson(QJsonDocument::Compact).toStdString();
+    file_guard::crypto::Bytes bytes(plain.begin(), plain.end());
+    const auto encrypted = file_guard::util::dpapiProtect(bytes);
+    file_guard::util::writeAll(accountPath(), encrypted);
+    file_guard::util::restrictAcl(accountPath());
 }
 
 } // namespace
@@ -32,11 +80,14 @@ AuthBridge::AuthBridge(QObject *parent)
         saveAccount(QStringLiteral("demo"), QStringLiteral("Passw0rd123"));
         const bool loginOk = verifyPassword(QStringLiteral("demo"), QStringLiteral("Passw0rd123"));
         const bool wrongRejected = !verifyPassword(QStringLiteral("demo"), QStringLiteral("bad"));
+        changePassword(QStringLiteral("Passw0rd123"), QStringLiteral("NewPassw0rd!"));
+        const bool changedOk = verifyPassword(QStringLiteral("demo"), QStringLiteral("NewPassw0rd!"));
+        Logger::get().info("AuthBridge selftest: login_ok={} wrong_rejected={} change_ok={}",
+                           loginOk, wrongRejected, changedOk);
         logout();
-        Logger::get().info("AuthBridge selftest: login_ok={} wrong_rejected={} has_account={}",
-                           loginOk, wrongRejected, hasAccount());
         std::error_code ignored;
         std::filesystem::remove(accountPath(), ignored);
+        std::filesystem::remove(legacyAccountPath(), ignored);
         m_hasAccount = false;
         m_user.clear();
         m_signedIn = false;
@@ -61,62 +112,54 @@ AuthBridge::AuthBridge(QObject *parent)
 
 void AuthBridge::load()
 {
-    const auto path = accountPath();
-    QFile file(QString::fromStdWString(path.wstring()));
+    const auto obj = readAccountObject();
     m_hasAccount = false;
     m_signedIn = false;
     m_user.clear();
 
-    if (file.open(QIODevice::ReadOnly)) {
-        const auto doc = QJsonDocument::fromJson(file.readAll());
-        file.close();
-        if (doc.isObject()) {
-            const auto obj = doc.object();
-            const QString user = obj.value(QStringLiteral("user")).toString();
-            const QString hash = obj.value(QStringLiteral("hash")).toString();
-            if (!user.isEmpty() && hash.size() == 64) {
-                m_hasAccount = true;
-                m_user = user;
-                m_signedIn = obj.value(QStringLiteral("signedIn")).toBool();
-            }
+    const QString user = obj.value(QStringLiteral("user")).toString();
+    const QString hash = obj.value(QStringLiteral("hash")).toString();
+    if (!user.isEmpty() && hash.size() == 64) {
+        m_hasAccount = true;
+        m_user = user;
+        m_signedIn = obj.value(QStringLiteral("signedIn")).toBool();
+    }
+
+    // 旧位置迁移到 DPAPI 加密的新位置，并删除明文旧文件
+    if (m_hasAccount && std::filesystem::exists(legacyAccountPath())
+        && !std::filesystem::exists(accountPath())) {
+        try {
+            writeAccountObject(obj);
+            std::error_code ignored;
+            std::filesystem::remove(legacyAccountPath(), ignored);
+            Logger::get().info("AuthBridge: migrated account storage to DPAPI");
+        } catch (...) {
         }
     }
 
-    setStatus(m_signedIn ? QStringLiteral("安全中心账号：已登录（%1）").arg(m_user)
-                         : QStringLiteral("安全中心账号：未登录（离线模式部分功能受限）"));
+    setStatus(m_signedIn ? QStringLiteral("账号：已登录（%1）").arg(m_user)
+                         : (m_hasAccount ? QStringLiteral("账号：未登录（可离线登录）")
+                                         : QStringLiteral("账号：未设置（离线模式受限）")));
     emit changed();
 }
 
-void AuthBridge::saveSession(bool signedIn) const
+void AuthBridge::saveSession(bool signedIn)
 {
-    const auto path = accountPath();
-    QFile file(QString::fromStdWString(path.wstring()));
-    if (file.open(QIODevice::ReadOnly)) {
-        auto doc = QJsonDocument::fromJson(file.readAll());
-        file.close();
-        if (!doc.isObject())
-            return;
-        auto obj = doc.object();
-        obj.insert(QStringLiteral("signedIn"), signedIn);
-        if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-            file.write(QJsonDocument(obj).toJson(QJsonDocument::Compact));
-            file.close();
-        }
+    auto obj = readAccountObject();
+    if (obj.isEmpty())
+        return;
+    obj.insert(QStringLiteral("signedIn"), signedIn);
+    try {
+        writeAccountObject(obj);
+    } catch (...) {
     }
 }
 
 bool AuthBridge::verifyPassword(const QString &user, const QString &password) const
 {
-    const auto path = accountPath();
-    QFile file(QString::fromStdWString(path.wstring()));
-    if (!file.open(QIODevice::ReadOnly))
+    const auto obj = readAccountObject();
+    if (obj.isEmpty())
         return false;
-    const auto doc = QJsonDocument::fromJson(file.readAll());
-    file.close();
-    if (!doc.isObject())
-        return false;
-
-    const auto obj = doc.object();
     if (obj.value(QStringLiteral("user")).toString() != user)
         return false;
 
@@ -138,7 +181,6 @@ bool AuthBridge::verifyPassword(const QString &user, const QString &password) co
     const auto actual = file_guard::crypto::pbkdf2(password.toStdString(), salt, iterations, 32);
     const auto actualHex = QString::fromStdString(file_guard::util::hexEncode(actual));
 
-    // 常量时间比较，避免按字节提前返回
     unsigned char diff = 0;
     for (int i = 0; i < expected.size(); ++i)
         diff |= static_cast<unsigned char>(expected.at(i).toLatin1() != actualHex.at(i));
@@ -148,7 +190,7 @@ bool AuthBridge::verifyPassword(const QString &user, const QString &password) co
 void AuthBridge::login(const QString &user, const QString &password)
 {
     if (!m_hasAccount) {
-        setStatus(QStringLiteral("本机还没有账号，请先到 安全防护 → 账号与登录 创建"));
+        setStatus(QStringLiteral("本机还没有账号，请到 设置 → 账号 创建"));
         emit toast(QStringLiteral("请先在设置中创建账号"));
         return;
     }
@@ -167,7 +209,7 @@ void AuthBridge::login(const QString &user, const QString &password)
     m_offline = false;
     m_user = trimmed;
     saveSession(true);
-    setStatus(QStringLiteral("安全中心账号：已登录（%1）").arg(m_user));
+    setStatus(QStringLiteral("账号：已登录（%1）").arg(m_user));
     Logger::get().info("AuthBridge: login ok user={}", m_user.toStdString());
     emit toast(QStringLiteral("登录成功"));
     emit changed();
@@ -209,26 +251,73 @@ void AuthBridge::saveAccount(const QString &user, const QString &password)
     const auto hash = file_guard::crypto::pbkdf2(password.toStdString(), salt, 100'000, 32);
 
     QJsonObject obj;
-    obj.insert(QStringLiteral("version"), 1);
+    obj.insert(QStringLiteral("version"), 2);
     obj.insert(QStringLiteral("user"), name);
     obj.insert(QStringLiteral("salt"), QString::fromStdString(file_guard::util::hexEncode(salt)));
     obj.insert(QStringLiteral("iterations"), 100'000);
     obj.insert(QStringLiteral("hash"), QString::fromStdString(file_guard::util::hexEncode(hash)));
     obj.insert(QStringLiteral("signedIn"), true);
-
-    const auto path = accountPath();
-    std::error_code ignored;
-    std::filesystem::create_directories(path.parent_path(), ignored);
-    file_guard::util::writeText(path, QJsonDocument(obj).toJson(QJsonDocument::Compact).toStdString());
-    file_guard::util::restrictAcl(path);
+    writeAccountObject(obj);
 
     m_hasAccount = true;
     m_signedIn = true;
     m_offline = false;
     m_user = name;
-    setStatus(QStringLiteral("安全中心账号已保存并登录：%1").arg(name));
+    setStatus(QStringLiteral("账号：已保存并登录（%1）").arg(name));
     Logger::get().info("AuthBridge: account saved user={}", name.toStdString());
     emit toast(QStringLiteral("账号已保存"));
+    emit changed();
+}
+
+void AuthBridge::changePassword(const QString &oldPassword, const QString &newPassword)
+{
+    if (!m_signedIn) {
+        setStatus(QStringLiteral("请先登录再更换密码"));
+        emit toast(QStringLiteral("请先登录"));
+        return;
+    }
+    if (newPassword.size() < 6) {
+        setStatus(QStringLiteral("新密码至少 6 位"));
+        emit toast(QStringLiteral("新密码至少 6 位"));
+        return;
+    }
+    if (!verifyPassword(m_user, oldPassword)) {
+        setStatus(QStringLiteral("当前密码错误"));
+        emit toast(QStringLiteral("当前密码错误"));
+        return;
+    }
+
+    auto obj = readAccountObject();
+    if (obj.isEmpty()) {
+        setStatus(QStringLiteral("账号数据读取失败"));
+        return;
+    }
+    const auto salt = file_guard::crypto::randomBytes(16);
+    const auto hash = file_guard::crypto::pbkdf2(newPassword.toStdString(), salt, 100'000, 32);
+    obj.insert(QStringLiteral("version"), 2);
+    obj.insert(QStringLiteral("salt"), QString::fromStdString(file_guard::util::hexEncode(salt)));
+    obj.insert(QStringLiteral("iterations"), 100'000);
+    obj.insert(QStringLiteral("hash"), QString::fromStdString(file_guard::util::hexEncode(hash)));
+    obj.insert(QStringLiteral("signedIn"), true);
+    try {
+        writeAccountObject(obj);
+        setStatus(QStringLiteral("密码已更新"));
+        Logger::get().info("AuthBridge: password changed user={}", m_user.toStdString());
+        emit toast(QStringLiteral("密码已更新"));
+        emit changed();
+    } catch (const std::exception &ex) {
+        setStatus(QStringLiteral("保存失败：%1").arg(QString::fromUtf8(ex.what())));
+    }
+}
+
+void AuthBridge::switchAccount()
+{
+    m_signedIn = false;
+    m_offline = false;
+    saveSession(false);
+    setStatus(QStringLiteral("请登录其他账号（本机账号已保留）"));
+    Logger::get().info("AuthBridge: switch account requested");
+    emit toast(QStringLiteral("请登录其他账号"));
     emit changed();
 }
 

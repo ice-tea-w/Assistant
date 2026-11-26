@@ -269,7 +269,8 @@ void SecurityBridge::runNextStep()
         break;
     case 6: {
         title = QStringLiteral("账号与登录");
-        const std::filesystem::path accountFile = toPath(dataDir()) / "account.json";
+        const std::filesystem::path accountFile =
+            toPath(dataDir()).parent_path() / ".auth" / "account.dat";
         if (std::filesystem::exists(accountFile)) {
             detail = QStringLiteral("已设置本地账号（未登录时功能受限）");
             ok = true;

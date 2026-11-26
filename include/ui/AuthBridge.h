@@ -5,10 +5,12 @@
 
 /// 账号与登录状态（本地账号，离线可用）
 ///
-/// - 账号密码只保存在本机 `%LOCALAPPDATA%/AssistantTeam/Assistant/account.json`，
-///   口令用 PBKDF2-HMAC-SHA256（随机盐 + 100000 次迭代）存哈希，不存明文；
-/// - 登录是本地校验，不需要联网（离线登录）；
-/// - 未登录/离线模式下部分功能受限（设备同步、插件市场由 QML 遮罩拦截）。
+/// 安全设计：
+/// - 凭据文件放在本机 `%LOCALAPPDATA%/AssistantTeam/Assistant/.auth/account.dat`，
+///   整个 JSON 用 Windows DPAPI（当前用户）加密，文件里没有明文口令；
+/// - 口令用 PBKDF2-HMAC-SHA256（随机盐 + 100000 次迭代）存哈希；
+/// - 登录/校验均在本地完成，不需要联网（离线登录）；
+/// - 界面只显示状态，不展示存储路径。
 class AuthBridge : public QObject
 {
     Q_OBJECT
@@ -33,6 +35,8 @@ public:
     Q_INVOKABLE void continueOffline();
     Q_INVOKABLE void requestLogin();
     Q_INVOKABLE void saveAccount(const QString &user, const QString &password);
+    Q_INVOKABLE void changePassword(const QString &oldPassword, const QString &newPassword);
+    Q_INVOKABLE void switchAccount();
     Q_INVOKABLE void logout();
 
 signals:
@@ -41,7 +45,7 @@ signals:
 
 private:
     void load();
-    void saveSession(bool signedIn) const;
+    void saveSession(bool signedIn);
     bool verifyPassword(const QString &user, const QString &password) const;
     void setStatus(const QString &text);
 
