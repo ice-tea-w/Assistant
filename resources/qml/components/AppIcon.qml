@@ -45,6 +45,7 @@ Item {
         "close":       "M18 6 6 18M6 6l12 12",
         "minimize":    "M5 12h14",
         "maximize":    "M5 5h14v14H5z",
+        "restore":     "M9 9h11v11H9zM5 15V4h11v5",
         "chevronDown": "M6 9l6 6 6-6",
         "chevronRight":"M9 6l6 6-6 6",
         "trash":       "M4 6h16M9 6V4h6v2M6 6l1 15h10l1-15M10 10v7M14 10v7",

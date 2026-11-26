@@ -217,6 +217,12 @@ void SecurityBridge::startNext()
         m_proc->setProcessChannelMode(QProcess::SeparateChannels);
         QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
         m_proc->setProcessEnvironment(env);
+#ifdef Q_OS_WIN
+        // file_guard.exe 是控制台程序；GUI 父进程启动它时默认会弹一个黑框。
+        // CREATE_NO_WINDOW 让探针完全静默（--json 走管道，不依赖控制台）。
+        m_proc->setCreateProcessArgumentsModifier(
+            [](QProcess::CreateProcessArguments *args) { args->flags |= 0x08000000; });
+#endif
 
         connect(m_proc, &QProcess::finished, this,
                 [this](int exitCode, QProcess::ExitStatus status) {
