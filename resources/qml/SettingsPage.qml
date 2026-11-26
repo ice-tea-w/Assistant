@@ -23,6 +23,7 @@ Rectangle {
         { "icon": "settings", "label": "通用" },
         { "icon": "filter",   "label": "文件索引" },
         { "icon": "inbox",    "label": "收件箱" },
+        { "icon": "lock",     "label": "账号" },
         { "icon": "info",     "label": "关于" }
     ]
 
@@ -38,7 +39,7 @@ Rectangle {
 
     function jumpTo(index) {
         activeSection = index
-        var targets = [generalSection, fileSection, inboxSection, aboutSection]
+        var targets = [generalSection, fileSection, inboxSection, accountSection, aboutSection]
         settingsFlick.contentY = Math.max(0, targets[index].y - 4)
     }
 
@@ -903,6 +904,89 @@ Rectangle {
                                     font.family: Style.fontFamily
                                 }
                             }
+                        }
+                    }
+                }
+
+                // ================= 账号（独立栏） =================
+                AppCard {
+                    id: accountSection
+                    Layout.fillWidth: true
+
+                    Component.onCompleted: {
+                        if (typeof auth !== "undefined" && auth.userName !== "")
+                            accountUserField.text = auth.userName
+                    }
+
+                    ColumnLayout {
+                        width: parent.width
+                        spacing: 8
+
+                        Text {
+                            text: "账号与密码"
+                            color: Style.text
+                            font.pixelSize: Style.fontSubtitle
+                            font.weight: Font.DemiBold
+                            font.family: Style.fontFamily
+                        }
+
+                        Text {
+                            Layout.fillWidth: true
+                            text: (typeof auth !== "undefined") ? auth.statusText : "账号模块未就绪"
+                            color: (typeof auth !== "undefined" && auth.signedIn)
+                                   ? Style.success : Style.text2
+                            font.pixelSize: 11
+                            font.family: Style.fontFamily
+                            wrapMode: Text.WordWrap
+                        }
+
+                        AppTextField {
+                            id: accountUserField
+                            Layout.fillWidth: true
+                            placeholder: "账号"
+                        }
+                        AppTextField {
+                            id: accountPassField
+                            Layout.fillWidth: true
+                            placeholder: "密码（至少 6 位）"
+                            echoMode: TextInput.Password
+                            onAccepted: if (typeof auth !== "undefined")
+                                            auth.saveAccount(accountUserField.text, accountPassField.text)
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+
+                            AppButton {
+                                text: "保存账号"
+                                variant: "primary"
+                                onClicked: if (typeof auth !== "undefined")
+                                               auth.saveAccount(accountUserField.text, accountPassField.text)
+                            }
+                            AppButton {
+                                text: "登录"
+                                variant: "ghost"
+                                visible: typeof auth !== "undefined" && auth.hasAccount && !auth.signedIn
+                                onClicked: if (typeof auth !== "undefined")
+                                               auth.login(accountUserField.text, accountPassField.text)
+                            }
+                            AppButton {
+                                text: "退出登录"
+                                variant: "ghost"
+                                visible: typeof auth !== "undefined" && auth.signedIn
+                                onClicked: if (typeof auth !== "undefined") auth.logout()
+                            }
+                            Item { Layout.fillWidth: true }
+                        }
+
+                        Text {
+                            Layout.fillWidth: true
+                            text: "账号只保存在本机安全模块数据目录（security/account.json），密码用 PBKDF2 存哈希；不联网也能登录。离线登录时设备同步、插件市场等功能受限。"
+                            color: Style.text3
+                            font.pixelSize: 10
+                            font.family: Style.fontFamily
+                            wrapMode: Text.WordWrap
                         }
                     }
                 }

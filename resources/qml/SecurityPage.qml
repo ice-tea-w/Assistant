@@ -200,13 +200,6 @@ Rectangle {
             }
 
 
-            AppButton {
-                text: "账号与登录"
-                icon: "lock"
-                variant: "ghost"
-                onClicked: accountDialog.open()
-            }
-
             Item { Layout.fillWidth: true }
         }
 
@@ -322,8 +315,6 @@ Rectangle {
         }
     }
 
-    AccountDialog {
-        id: accountDialog
-    }
+
 
 }
