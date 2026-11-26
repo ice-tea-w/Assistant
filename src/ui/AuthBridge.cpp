@@ -80,10 +80,14 @@ AuthBridge::AuthBridge(QObject *parent)
         saveAccount(QStringLiteral("demo"), QStringLiteral("Passw0rd123"));
         const bool loginOk = verifyPassword(QStringLiteral("demo"), QStringLiteral("Passw0rd123"));
         const bool wrongRejected = !verifyPassword(QStringLiteral("demo"), QStringLiteral("bad"));
+        saveAccount(QStringLiteral("hacker"), QStringLiteral("hacked123"));
+        const bool overwriteRejected =
+            verifyPassword(QStringLiteral("demo"), QStringLiteral("Passw0rd123"));
         changePassword(QStringLiteral("Passw0rd123"), QStringLiteral("NewPassw0rd!"));
         const bool changedOk = verifyPassword(QStringLiteral("demo"), QStringLiteral("NewPassw0rd!"));
-        Logger::get().info("AuthBridge selftest: login_ok={} wrong_rejected={} change_ok={}",
-                           loginOk, wrongRejected, changedOk);
+        Logger::get().info(
+            "AuthBridge selftest: login_ok={} wrong_rejected={} overwrite_rejected={} change_ok={}",
+            loginOk, wrongRejected, overwriteRejected, changedOk);
         logout();
         std::error_code ignored;
         std::filesystem::remove(accountPath(), ignored);
@@ -235,6 +239,15 @@ void AuthBridge::requestLogin()
 
 void AuthBridge::saveAccount(const QString &user, const QString &password)
 {
+    // 安全：已有账号时禁止“保存账号”覆盖（否则可绕过旧密码校验）。
+    // 修改密码必须走 changePassword（校验旧密码）；换账号请用「切换账号」。
+    if (m_hasAccount) {
+        setStatus(QStringLiteral("账号已存在：修改密码请用「更换密码」，登录请用「登录」"));
+        emit toast(QStringLiteral("已存在账号，不能直接覆盖"));
+        Logger::get().warn("AuthBridge: saveAccount blocked — account already exists");
+        return;
+    }
+
     const QString name = user.trimmed();
     if (name.isEmpty()) {
         setStatus(QStringLiteral("账号不能为空"));

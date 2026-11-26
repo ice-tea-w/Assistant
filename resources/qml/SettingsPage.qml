@@ -205,6 +205,7 @@ Rectangle {
                             AppButton {
                                 text: "保存账号"
                                 variant: "primary"
+                                visible: typeof auth !== "undefined" && !auth.hasAccount
                                 onClicked: if (typeof auth !== "undefined")
                                                auth.saveAccount(accountUserField.text, accountPassField.text)
                             }
@@ -234,10 +235,12 @@ Rectangle {
                             Layout.fillWidth: true
                             Layout.preferredHeight: 1
                             color: Style.line
+                            visible: typeof auth !== "undefined" && auth.signedIn
                         }
 
                         Text {
                             text: "更换密码"
+                            visible: typeof auth !== "undefined" && auth.signedIn
                             color: Style.text2
                             font.pixelSize: 11
                             font.family: Style.fontFamily
@@ -246,6 +249,7 @@ Rectangle {
                         RowLayout {
                             Layout.fillWidth: true
                             spacing: 8
+                            visible: typeof auth !== "undefined" && auth.signedIn
                             AppTextField {
                                 id: oldPassField
                                 Layout.fillWidth: true
