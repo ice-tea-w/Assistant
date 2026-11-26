@@ -462,9 +462,13 @@ void SecurityBridge::openCard(const QString &key)
         openPath(home + QStringLiteral("/vault"));
     } else if (key == QStringLiteral("scan")) {
         const QString scanReport = home + QStringLiteral("/scan-report.txt");
-        if (QFileInfo::exists(scanReport))
+        if (QFileInfo::exists(scanReport)) {
             openPath(scanReport);
-        else
-            emit toast(QStringLiteral("还没有扫描记录，先点「扫描下载目录」"));
+        } else {
+            emit toast(QStringLiteral("还没有扫描记录，正在扫描下载目录…"));
+            runScan(QString());
+            if (QFileInfo::exists(scanReport))
+                openPath(scanReport);
+        }
     }
 }
