@@ -12,12 +12,13 @@
 class QProcess;
 class QTimer;
 
-/// M3 安全模块的 QML↔Python 桥。
+/// M3 安全模块的 QML↔C++ 桥。
 ///
-/// 主程序侧只负责"展示 + 触发"，真正的安全能力在 `tools/file_guard`（Python）。
+/// 主程序侧只负责"展示 + 触发"，真正的安全能力在 `tools/file_guard_cpp`
+/// （C++ 主线，编译产物 file_guard.exe；Python 版只作为验收基准）。
 /// 约定：
 ///   * 只调用白名单子命令 + `--json`，参数数组交给 QProcess，不拼 shell；
-///   * 全部异步、带超时；Python 缺失时降级为只读状态，绝不阻塞启动；
+///   * 全部异步、带超时；file_guard.exe 缺失时降级为只读状态，绝不阻塞启动；
 ///   * 数据目录固定在 `%LOCALAPPDATA%/<App>/security`，不碰用户真实 `~/.file_guard`。
 class SecurityBridge : public QObject
 {
@@ -74,11 +75,10 @@ private:
     void buildCards();
 
     static QString locateRepoRoot();
-    static QString locatePython(const QString &repoRoot);
+    static QString locateExecutable(const QString &repoRoot);
 
     QString m_repoRoot;
-    QString m_toolsDir;
-    QString m_python;
+    QString m_exe;
     QString m_home;
     QString m_version;
     QString m_summary;

@@ -50,6 +50,7 @@ struct Args {
     std::string event;
     std::string detail;
     std::string note;
+    std::string minRisk;
     std::string recoveryCode;
     std::string destRoot;
     std::string stripPrefix;
@@ -100,6 +101,7 @@ Args parseArgs(const std::vector<std::string> &arguments)
         else if (key == "event") { next(&args.event); }
         else if (key == "detail") { next(&args.detail); }
         else if (key == "note") { next(&args.note); }
+        else if (key == "min-risk") { next(&args.minRisk); }
         else if (key == "recovery-code") { next(&args.recoveryCode); }
         else if (key == "dest-root") { next(&args.destRoot); }
         else if (key == "strip-prefix") { next(&args.stripPrefix); }
@@ -169,6 +171,55 @@ std::string humanSize(std::uint64_t bytes)
     if (bytes < 1024 * 1024)
         return std::to_string(bytes / 1024) + " KB";
     return std::to_string(bytes / (1024 * 1024)) + " MB";
+}
+
+// ---- JSON 输出辅助（供主程序 SecurityBridge 消费）----
+
+int severityRank(scan::Severity severity)
+{
+    switch (severity) {
+    case scan::Severity::High:
+        return 3;
+    case scan::Severity::Medium:
+        return 2;
+    case scan::Severity::Low:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+const char *severityKey(scan::Severity severity)
+{
+    switch (severity) {
+    case scan::Severity::High:
+        return "high";
+    case scan::Severity::Medium:
+        return "medium";
+    case scan::Severity::Low:
+        return "low";
+    default:
+        return "info";
+    }
+}
+
+const char *errorTypeName(ErrorCode code)
+{
+    switch (code) {
+    case ErrorCode::InvalidArgument:
+        return "ArgumentError";
+    case ErrorCode::Password:
+        return "PasswordError";
+    case ErrorCode::Corrupt:
+        return "IntegrityError";
+    case ErrorCode::Integrity:
+        return "IntegrityError";
+    case ErrorCode::Io:
+        return "IoError";
+    case ErrorCode::Platform:
+        return "PlatformError";
+    }
+    return "Error";
 }
 
 int cmdInit(const Args &args)
@@ -325,20 +376,71 @@ int cmdInfo(const Args &args)
 
 int cmdScan(const Args &args)
 {
+    if (args.positional.empty())
+        throw SecurityError(ErrorCode::InvalidArgument, "用法：scan <路径> [--min-risk high|medium|low]");
+    int minRank = 0;
+    if (args.minRisk == "high")
+        minRank = 3;
+    else if (args.minRisk == "medium")
+        minRank = 2;
+    else if (args.minRisk == "low")
+        minRank = 1;
+
     const scan::Report report = scan::scanPath(util::fromUtf8(args.positional.at(0)), true);
+    std::size_t high = 0;
+    std::size_t medium = 0;
+    std::size_t low = 0;
+    std::string items;
     for (const auto &file : report.results) {
+        std::string findings;
         for (const auto &finding : file.findings) {
-            std::cout << "[" << (finding.severity == scan::Severity::High ? "高" :
-                                 finding.severity == scan::Severity::Medium ? "中" : "低")
-                      << "] " << util::pathUtf8(file.path) << "  " << finding.rule
-                      << "  " << finding.sample << "\n";
+            if (severityRank(finding.severity) < minRank)
+                continue;
+            if (finding.severity == scan::Severity::High)
+                ++high;
+            else if (finding.severity == scan::Severity::Medium)
+                ++medium;
+            else if (finding.severity == scan::Severity::Low)
+                ++low;
+            if (!findings.empty())
+                findings += ",";
+            findings += "{\"rule\":\"" + util::jsonEscape(finding.rule) +
+                        "\",\"severity\":\"" + severityKey(finding.severity) +
+                        "\",\"sample\":\"" + util::jsonEscape(finding.sample) +
+                        "\",\"line\":" + std::to_string(finding.line) + "}";
         }
-        if (file.skipped && !args.quiet)
+        if (!findings.empty()) {
+            if (!items.empty())
+                items += ",";
+            items += "{\"path\":\"" + util::jsonEscape(util::pathUtf8(file.path)) +
+                     "\",\"findings\":[" + findings + "]}";
+        }
+        if (!args.json && file.skipped && !args.quiet)
             std::cout << "[跳过] " << util::pathUtf8(file.path) << "  " << file.reason << "\n";
     }
-    std::cout << "扫描完成：文件 " << report.filesScanned << "，跳过 " << report.filesSkipped
-              << "，高 " << report.high << " / 中 " << report.medium << " / 低 " << report.low << "\n";
-    return (report.high + report.medium) > 0 ? 1 : 0;
+
+    if (args.json) {
+        std::cout << "{\"summary\":{\"files\":" << report.filesScanned
+                  << ",\"skipped\":" << report.filesSkipped
+                  << ",\"high\":" << high
+                  << ",\"medium\":" << medium
+                  << ",\"low\":" << low
+                  << "},\"files\":[" << items << "]}\n";
+    } else {
+        for (const auto &file : report.results) {
+            for (const auto &finding : file.findings) {
+                if (severityRank(finding.severity) < minRank)
+                    continue;
+                std::cout << "[" << (finding.severity == scan::Severity::High ? "高" :
+                                     finding.severity == scan::Severity::Medium ? "中" : "低")
+                          << "] " << util::pathUtf8(file.path) << "  " << finding.rule
+                          << "  " << finding.sample << "\n";
+            }
+        }
+        std::cout << "扫描完成：文件 " << report.filesScanned << "，跳过 " << report.filesSkipped
+                  << "，高 " << high << " / 中 " << medium << " / 低 " << low << "\n";
+    }
+    return (high + medium) > 0 ? 1 : 0;
 }
 
 int cmdLog(const Args &args)
@@ -386,11 +488,18 @@ int cmdLog(const Args &args)
     }
     if (action == "verify") {
         const audit::VerifyResult result = log.verify();
-        std::cout << (result.ok ? "[OK] 审计链校验通过" : "[X] 审计链校验失败")
-                  << "：记录 " << result.records << " 条";
-        if (!result.ok)
-            std::cout << "（" << result.firstProblem << "）";
-        std::cout << "\n";
+        if (args.json) {
+            std::cout << "{\"ok\":" << (result.ok ? "true" : "false")
+                      << ",\"records\":" << result.records
+                      << ",\"head\":\"" << util::jsonEscape(result.head) << "\""
+                      << ",\"problems\":" << result.problems << "}\n";
+        } else {
+            std::cout << (result.ok ? "[OK] 审计链校验通过" : "[X] 审计链校验失败")
+                      << "：记录 " << result.records << " 条";
+            if (!result.ok)
+                std::cout << "（" << result.firstProblem << "）";
+            std::cout << "\n";
+        }
         return result.ok ? 0 : 5;
     }
     for (const auto &record : log.tail(20))
@@ -412,7 +521,22 @@ int cmdBackup(const Args &args)
         return 0;
     }
     if (action == "list") {
-        for (const auto &entry : store.list())
+        const auto entries = store.list();
+        if (args.json) {
+            std::string items;
+            for (const auto &entry : entries) {
+                if (!items.empty())
+                    items += ",";
+                items += "{\"path\":\"" + util::jsonEscape(entry.path) +
+                         "\",\"version\":" + std::to_string(entry.version) +
+                         ",\"size\":" + std::to_string(entry.size) +
+                         ",\"sha256\":\"" + util::jsonEscape(entry.sha256) +
+                         "\",\"mtime\":" + std::to_string(entry.mtime) + "}";
+            }
+            std::cout << "{\"items\":[" << items << "]}\n";
+            return 0;
+        }
+        for (const auto &entry : entries)
             std::cout << entry.path << "  v" << entry.version << "  " << humanSize(entry.size)
                       << "  " << entry.sha256.substr(0, 12) << "…\n";
         return 0;
@@ -514,6 +638,56 @@ int cmdVault(const Args &args)
     Config config = loadConfig(args);
     Vault vault(config.vaultDir(), config.iterations, config.logIterations);
     const std::string action = args.positional.empty() ? "" : args.positional[0];
+
+    // info 不强制口令：没口令也能报告容器数/DPAPI，文件数才需要解锁。
+    if (action == "info") {
+        const bool exists = vault.exists();
+        std::size_t containers = 0;
+        std::error_code ec;
+        const std::filesystem::path containersDir = config.vaultDir() / "containers";
+        if (std::filesystem::is_directory(containersDir, ec)) {
+            for (const auto &entry : std::filesystem::directory_iterator(containersDir, ec)) {
+                if (entry.is_regular_file(ec) && entry.path().extension() == ".fgc")
+                    ++containers;
+            }
+        }
+        bool dpapi = false;
+        if (exists) {
+            const std::string keys = util::readText(config.vaultDir() / "vault.keys");
+            const std::string marker = "dpapi_dek=";
+            const std::size_t pos = keys.find(marker);
+            if (pos != std::string::npos) {
+                const std::size_t valueStart = pos + marker.size();
+                dpapi = valueStart < keys.size() && keys[valueStart] != '\r' &&
+                        keys[valueStart] != '\n';
+            }
+        }
+        std::size_t files = 0;
+        if (exists) {
+            try {
+                if (!args.recoveryCode.empty())
+                    vault.unlockWithRecovery(args.recoveryCode);
+                else
+                    vault.unlock(resolvePassword(args, config));
+                files = vault.list().size();
+            } catch (const std::exception &) {
+                files = 0;   // 没有口令就只报容器数
+            }
+        }
+        if (args.json) {
+            std::cout << "{\"directory\":\"" << util::jsonEscape(util::pathUtf8(config.vaultDir()))
+                      << "\",\"exists\":" << (exists ? "true" : "false")
+                      << ",\"files\":" << files
+                      << ",\"containers\":" << containers
+                      << ",\"dpapi\":" << (dpapi ? "true" : "false") << "}\n";
+        } else {
+            std::cout << "保险箱：" << util::pathUtf8(config.vaultDir()) << "\n"
+                      << "  文件：" << files << "，容器：" << containers
+                      << "，DPAPI：" << (dpapi ? "已启用" : "未启用") << "\n";
+        }
+        return 0;
+    }
+
     const std::string password =
         action == "create" ? resolvePassword(args, config, true)
                            : (args.recoveryCode.empty() ? resolvePassword(args, config) : std::string());
@@ -572,8 +746,6 @@ int cmdVault(const Args &args)
         std::cout << "[OK] 口令已轮换（容器与清单未重加密）\n";
         return 0;
     }
-    if (action == "info")
-        std::cout << "保险箱：" << util::pathUtf8(config.vaultDir()) << "\n";
     return 0;
 }
 
@@ -711,45 +883,82 @@ int cmdDoctor(const Args &args)
 {
     Config config = loadConfig(args);
     int problems = 0;
-    std::cout << "安全模块自检\n";
+    std::string checks;   // JSON 片段
+    const auto addCheck = [&](const std::string &name, bool ok, const std::string &detail) {
+        if (!checks.empty())
+            checks += ",";
+        checks += "{\"name\":\"" + util::jsonEscape(name) +
+                  "\",\"ok\":" + (ok ? "true" : "false") +
+                  ",\"detail\":\"" + util::jsonEscape(detail) + "\"}";
+    };
+
+    if (!args.json)
+        std::cout << "安全模块自检\n";
     std::error_code error;
     std::filesystem::create_directories(config.home, error);
     const std::filesystem::path probe = config.home / ".write_probe";
     std::ofstream(probe) << "ok";
     const bool writable = std::filesystem::exists(probe, error);
     std::filesystem::remove(probe, error);
-    std::cout << "  [ " << (writable ? "OK" : "!!") << " ] 数据目录可写  "
-              << util::pathUtf8(config.home) << "\n";
     if (!writable)
         ++problems;
+    addCheck("home", writable, util::pathUtf8(config.home));
+    if (!args.json)
+        std::cout << "  [ " << (writable ? "OK" : "!!") << " ] 数据目录可写  "
+                  << util::pathUtf8(config.home) << "\n";
 
-    const std::string password = util::envOr("FG_PASSWORD", "");
+    // 口令来源与其它命令一致（--password / FG_PASSWORD / dpapi.bin）；json 模式不会交互提问。
+    std::string password;
+    try {
+        password = resolvePassword(args, config);
+    } catch (const std::exception &) {
+        password.clear();
+    }
     if (!password.empty()) {
         try {
             audit::AuditLog log(config.auditDir(), password, config.logIterations);
             const auto verify = log.verify();
-            std::cout << "  [ " << (verify.ok ? "OK" : "!!") << " ] 审计链  " << verify.records
-                      << " 条\n";
             if (!verify.ok)
                 ++problems;
+            addCheck("audit", verify.ok,
+                     std::to_string(verify.records) + " 条记录");
+            if (!args.json)
+                std::cout << "  [ " << (verify.ok ? "OK" : "!!") << " ] 审计链  "
+                          << verify.records << " 条\n";
         } catch (const std::exception &ex) {
-            std::cout << "  [ !! ] 审计链  " << ex.what() << "\n";
             ++problems;
+            addCheck("audit", false, ex.what());
+            if (!args.json)
+                std::cout << "  [ !! ] 审计链  " << ex.what() << "\n";
         }
         try {
             BackupStore store(config.backupDir(), password, config.iterations, config.logIterations);
             const auto verify = store.verify(false);
-            std::cout << "  [ " << (verify.ok ? "OK" : "!!") << " ] 备份索引  "
-                      << store.objectCount() << " 个对象\n";
             if (!verify.ok)
                 ++problems;
+            addCheck("backup", verify.ok,
+                     std::to_string(store.objectCount()) + " 个对象");
+            if (!args.json)
+                std::cout << "  [ " << (verify.ok ? "OK" : "!!") << " ] 备份索引  "
+                          << store.objectCount() << " 个对象\n";
         } catch (const std::exception &ex) {
-            std::cout << "  [ !! ] 备份索引  " << ex.what() << "\n";
+            ++problems;
+            addCheck("backup", false, ex.what());
+            if (!args.json)
+                std::cout << "  [ !! ] 备份索引  " << ex.what() << "\n";
         }
     } else {
-        std::cout << "  [ -- ] 审计/备份：未设置 FG_PASSWORD，跳过\n";
+        addCheck("password", true, "未设置口令，审计/备份检查已跳过");
+        if (!args.json)
+            std::cout << "  [ -- ] 审计/备份：未设置口令，跳过\n";
     }
-    std::cout << (problems == 0 ? "自检通过" : "自检发现问题") << "\n";
+
+    if (args.json) {
+        std::cout << "{\"ok\":" << (problems == 0 ? "true" : "false")
+                  << ",\"checks\":[" << checks << "]}\n";
+    } else {
+        std::cout << (problems == 0 ? "自检通过" : "自检发现问题") << "\n";
+    }
     return problems == 0 ? 0 : 5;
 }
 
@@ -793,9 +1002,10 @@ int main()
         return 0;
     }
 
+    Args args;
     try {
         const std::string command = arguments[1];
-        Args args = parseArgs(arguments);
+        args = parseArgs(arguments);
 
         if (command == "init") return cmdInit(args);
         if (command == "encrypt") return cmdEncrypt(args);
@@ -813,16 +1023,26 @@ int main()
         if (command == "integrity") return cmdIntegrity(args);
         if (command == "doctor") return cmdDoctor(args);
         if (command == "version") {
-            std::cout << "file_guard C++ " << "1.0.0" << "\n";
+            std::cout << "file_guard 1.0.0\n";
             return 0;
         }
         std::cerr << "未知命令：" << command << "\n";
         return 2;
     } catch (const SecurityError &error) {
-        std::cerr << "错误：" << error.what() << "\n";
+        if (args.json) {
+            std::cout << "{\"ok\":false,\"error\":{\"type\":\"" << errorTypeName(error.code())
+                      << "\",\"message\":\"" << util::jsonEscape(error.what()) << "\"}}\n";
+        } else {
+            std::cerr << "错误：" << error.what() << "\n";
+        }
         return static_cast<int>(error.code());
     } catch (const std::exception &error) {
-        std::cerr << "错误：" << error.what() << "\n";
+        if (args.json) {
+            std::cout << "{\"ok\":false,\"error\":{\"type\":\"Error\",\"message\":\""
+                      << util::jsonEscape(error.what()) << "\"}}\n";
+        } else {
+            std::cerr << "错误：" << error.what() << "\n";
+        }
         return 1;
     }
 }

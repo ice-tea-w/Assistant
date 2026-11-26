@@ -196,9 +196,9 @@ Rectangle {
                     color: Style.text2
                     font.pixelSize: 12
                     font.family: Style.fontFamily
-                    text: "安全中心把 M3 安全模块（Python，tools/file_guard v0.6.0）接进主程序：" +
+                    text: "安全中心把 M3 安全模块（C++，tools/file_guard_cpp v1.0.0）接进主程序：" +
                           "审计链校验、备份库、保险箱、敏感扫描。所有调用都是异步子进程 + --json，" +
-                          "不阻塞界面；Python 模块缺失时降级为只读状态，不影响主程序启动。"
+                          "不阻塞界面；file_guard.exe 缺失时降级为只读状态，不影响主程序启动。"
                 }
 
                 Text {

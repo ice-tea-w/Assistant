@@ -72,8 +72,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
 
 # AppIndexer uses the Windows Shell Link COM interface (IShellLink, SHGetKnownFolderPath)
 if(WIN32)
-    # bcrypt：src/security 的 CNG（AES-GCM / PBKDF2 / SHA-256）依赖
-    target_link_libraries(${PROJECT_NAME} PRIVATE shell32 ole32 crypt32 advapi32 bcrypt)
+    target_link_libraries(${PROJECT_NAME} PRIVATE shell32 ole32 crypt32 advapi32)
 endif()
 
 # ---- Qt 部署 ----
@@ -496,15 +495,16 @@ set_tests_properties(net_engine PROPERTIES
     ENVIRONMENT "PATH=${VCPKG_BIN_DIR};${VCPKG_DBG_BIN_DIR};$ENV{PATH}")
 
 # ---------------------------------------------------------------------------
-# M3 安全模块 C++ 移植（src/security；纯 C++/Win32 CNG，不依赖 Qt/vcpkg）
+# M3 安全模块：唯一 C++ 主线 = tools/file_guard_cpp（fg_core + file_guard.exe）
+#   * 独立构建：tools/file_guard_cpp/CMakeLists.txt（也可单独 cmake）
+#   * 主程序不链接 fg_core，只通过 file_guard.exe --json 调用（SecurityBridge）
 # ---------------------------------------------------------------------------
-file(GLOB SECURITY_CORE_SOURCES src/security/*.cpp)
-if(SECURITY_CORE_SOURCES)
-    add_executable(assistant_security_tests
-        tests/security_core_tests.cpp
-        ${SECURITY_CORE_SOURCES})
-    target_include_directories(assistant_security_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
-    target_link_libraries(assistant_security_tests PRIVATE bcrypt)
-    add_test(NAME assistant_security_tests
-             COMMAND assistant_security_tests "${CMAKE_SOURCE_DIR}/tests/security/data")
-endif()
+add_subdirectory(tools/file_guard_cpp)
+add_dependencies(${PROJECT_NAME} file_guard)
+
+# 把 file_guard.exe 拷到 Assistant.exe 旁边，SecurityBridge 按固定路径查找。
+add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        $<TARGET_FILE:file_guard>
+        $<TARGET_FILE_DIR:${PROJECT_NAME}>/file_guard.exe
+    COMMENT "Copy file_guard.exe next to Assistant")

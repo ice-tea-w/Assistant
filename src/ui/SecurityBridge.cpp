@@ -77,43 +77,45 @@ QString SecurityBridge::locateRepoRoot()
     }
 
     for (const QString &candidate : candidates) {
-        const QFileInfo module(candidate + QStringLiteral("/tools/file_guard/__init__.py"));
+        const QFileInfo module(candidate
+                               + QStringLiteral("/tools/file_guard_cpp/include/file_guard/file_guard.h"));
         if (module.isFile())
             return QDir(candidate).absolutePath();
     }
     return {};
 }
 
-QString SecurityBridge::locatePython(const QString &repoRoot)
+QString SecurityBridge::locateExecutable(const QString &repoRoot)
 {
-    const QString envPython = qEnvironmentVariable("ASSISTANT_PYTHON");
-    if (!envPython.isEmpty() && QFileInfo(envPython).isFile())
-        return envPython;
+    QStringList candidates;
+    const QString envExe = qEnvironmentVariable("ASSISTANT_FILE_GUARD");
+    if (!envExe.isEmpty())
+        candidates << envExe;
 
-    const QStringList localVenvs = {
-        repoRoot + QStringLiteral("/.venv/Scripts/python.exe"),
-        repoRoot + QStringLiteral("/tools/file_guard/.venv/Scripts/python.exe"),
-    };
-    for (const QString &path : localVenvs) {
-        if (QFileInfo(path).isFile())
-            return path;
+    // 正常路径：CMake POST_BUILD 把 file_guard.exe 拷到 Assistant.exe 旁边。
+    candidates << QCoreApplication::applicationDirPath() + QStringLiteral("/file_guard.exe");
+
+    if (!repoRoot.isEmpty()) {
+        candidates << repoRoot + QStringLiteral("/build/Debug/file_guard.exe");
+        candidates << repoRoot + QStringLiteral("/build/Release/file_guard.exe");
+        candidates << repoRoot + QStringLiteral("/build/fg-cpp/Debug/file_guard.exe");
+        candidates << repoRoot + QStringLiteral("/build/fg-cpp/Release/file_guard.exe");
+        candidates << repoRoot + QStringLiteral("/tools/file_guard_cpp/build/Debug/file_guard.exe");
+        candidates << repoRoot + QStringLiteral("/tools/file_guard_cpp/build-cmake/Release/file_guard.exe");
     }
-
-    const QString python = QStandardPaths::findExecutable(QStringLiteral("python"));
-    if (!python.isEmpty())
-        return python;
-    return QStandardPaths::findExecutable(QStringLiteral("python3"));
+    for (const QString &path : candidates) {
+        if (QFileInfo(path).isFile())
+            return QDir::cleanPath(path);
+    }
+    return {};
 }
 
 void SecurityBridge::probeEnvironment()
 {
     if (m_repoRoot.isEmpty())
         m_repoRoot = locateRepoRoot();
-    m_toolsDir = m_repoRoot + QStringLiteral("/tools/file_guard");
-    m_python = m_repoRoot.isEmpty() ? QString() : locatePython(m_repoRoot);
-
-    const bool moduleOk = QFileInfo(m_toolsDir + QStringLiteral("/__init__.py")).isFile();
-    m_available = !m_python.isEmpty() && moduleOk;
+    m_exe = locateExecutable(m_repoRoot);
+    m_available = !m_exe.isEmpty();
 
     m_home = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation)
              + QStringLiteral("/security");
@@ -122,7 +124,7 @@ void SecurityBridge::probeEnvironment()
     m_lastReport = m_repoRoot + QStringLiteral("/docs/security/M3-现状与验收.md");
 
     if (!m_available)
-        m_summary = QStringLiteral("未找到 Python 安全模块（tools/file_guard）");
+        m_summary = QStringLiteral("未找到 C++ 安全模块（file_guard.exe）");
 }
 
 // ---------------------------------------------------------------------------
@@ -145,7 +147,7 @@ void SecurityBridge::refresh()
     emit changed();
 
     const QVector<Probe> probes = {
-        { QStringLiteral("version"), { QStringLiteral("--version") }, false },
+        { QStringLiteral("version"), { QStringLiteral("version") }, false },
         { QStringLiteral("doctor"), { QStringLiteral("doctor") }, true },
         { QStringLiteral("log"), { QStringLiteral("log"), QStringLiteral("verify") }, true },
         { QStringLiteral("backup"), { QStringLiteral("backup"), QStringLiteral("list") }, true },
@@ -163,7 +165,7 @@ void SecurityBridge::runSelfCheck()
 void SecurityBridge::runScan(const QString &path)
 {
     if (!m_available) {
-        emit toast(QStringLiteral("未找到 Python 安全模块"));
+        emit toast(QStringLiteral("未找到 C++ 安全模块（file_guard.exe）"));
         return;
     }
     if (m_busy) {
@@ -214,8 +216,6 @@ void SecurityBridge::startNext()
         m_proc = new QProcess(this);
         m_proc->setProcessChannelMode(QProcess::SeparateChannels);
         QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-        env.insert(QStringLiteral("PYTHONIOENCODING"), QStringLiteral("utf-8"));
-        env.insert(QStringLiteral("PYTHONUTF8"), QStringLiteral("1"));
         m_proc->setProcessEnvironment(env);
 
         connect(m_proc, &QProcess::finished, this,
@@ -239,17 +239,15 @@ void SecurityBridge::startNext()
         });
     }
 
-    QStringList args = { QStringLiteral("-m"), QStringLiteral("file_guard") };
-    args += m_current.args;
+    QStringList args = m_current.args;
     if (m_current.json)
         args << QStringLiteral("--json");
     if (m_current.id != QLatin1String("version"))
         args << QStringLiteral("--home") << m_home;
 
-    // `python -m file_guard` 要求 tools/ 在 sys.path 上；工作目录设成
-    // tools/file_guard 会变成 "No module named file_guard"（cwd 里只有包内模块）。
-    m_proc->setWorkingDirectory(QFileInfo(m_toolsDir).absolutePath());
-    m_proc->start(m_python, args);
+    // 直接调用 C++ 主线 file_guard.exe（工作目录 = exe 所在目录）。
+    m_proc->setWorkingDirectory(QFileInfo(m_exe).absolutePath());
+    m_proc->start(m_exe, args);
     m_timeout->start();
 }
 
@@ -320,8 +318,8 @@ void SecurityBridge::buildCards()
     };
 
     if (!m_available) {
-        const QString detail = QStringLiteral("未找到 Python 模块或解释器；"
-                                              "请确认 tools/file_guard 存在（可选 .venv）");
+        const QString detail = QStringLiteral("未找到 C++ 安全模块；"
+                                              "请构建 tools/file_guard_cpp（file_guard.exe 应与主程序同目录）");
         addCard(QStringLiteral("audit"), QStringLiteral("审计链"), QStringLiteral("empty"), detail);
         addCard(QStringLiteral("backup"), QStringLiteral("备份库"), QStringLiteral("empty"), detail);
         addCard(QStringLiteral("vault"), QStringLiteral("保险箱"), QStringLiteral("empty"), detail);
