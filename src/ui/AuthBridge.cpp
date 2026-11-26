@@ -411,6 +411,79 @@ void AuthBridge::changeUserName(const QString &newName)
     }
 }
 
+void AuthBridge::replaceAccount(const QString &user, const QString &password,
+                                const QString &currentPassword)
+{
+    if (loginLocked()) {
+        setStatus(QStringLiteral("登录已锁定，请 %1 秒后重试").arg(lockRemainingSeconds()));
+        emit toast(QStringLiteral("登录已锁定，请稍后重试"));
+        return;
+    }
+    if (!m_hasAccount) {
+        saveAccount(user, password);
+        return;
+    }
+
+    // 已有账号：必须用当前密码确认，避免绕过登录直接覆盖账号
+    if (!verifyPassword(m_user, currentPassword)) {
+        ++m_failedAttempts;
+        if (m_failedAttempts >= 5) {
+            m_failedAttempts = 0;
+            m_lockUntilMs = QDateTime::currentMSecsSinceEpoch() + 10 * 60 * 1000;
+            updateSecurityState(m_failedAttempts, m_lockUntilMs);
+            startLockTimer();
+            setStatus(QStringLiteral("连续错误 5 次，已锁定 10 分钟"));
+            emit toast(QStringLiteral("连续错误 5 次，账号已锁定 10 分钟"));
+        } else {
+            updateSecurityState(m_failedAttempts, 0);
+            setStatus(QStringLiteral("当前密码错误（第 %1/5 次）").arg(m_failedAttempts));
+            emit toast(QStringLiteral("当前密码错误（第 %1/5 次）").arg(m_failedAttempts));
+        }
+        emit changed();
+        return;
+    }
+
+    const QString name = user.trimmed();
+    if (name.isEmpty()) {
+        setStatus(QStringLiteral("账号不能为空"));
+        emit toast(QStringLiteral("请填写账号"));
+        return;
+    }
+    if (password.size() < 6) {
+        setStatus(QStringLiteral("密码至少 6 位"));
+        emit toast(QStringLiteral("密码至少 6 位"));
+        return;
+    }
+
+    const auto salt = file_guard::crypto::randomBytes(16);
+    const auto hash = file_guard::crypto::pbkdf2(password.toStdString(), salt, 100'000, 32);
+
+    QJsonObject obj;
+    obj.insert(QStringLiteral("version"), 2);
+    obj.insert(QStringLiteral("user"), name);
+    obj.insert(QStringLiteral("salt"), QString::fromStdString(file_guard::util::hexEncode(salt)));
+    obj.insert(QStringLiteral("iterations"), 100'000);
+    obj.insert(QStringLiteral("hash"), QString::fromStdString(file_guard::util::hexEncode(hash)));
+    obj.insert(QStringLiteral("signedIn"), true);
+    obj.insert(QStringLiteral("failedAttempts"), 0);
+    obj.insert(QStringLiteral("lockUntil"), 0.0);
+    try {
+        writeAccountObject(obj);
+        m_hasAccount = true;
+        m_signedIn = true;
+        m_offline = false;
+        m_user = name;
+        m_failedAttempts = 0;
+        m_lockUntilMs = 0;
+        setStatus(QStringLiteral("账号：已注册并登录（%1）").arg(name));
+        Logger::get().info("AuthBridge: account replaced/registered user={}", name.toStdString());
+        emit toast(QStringLiteral("账号已注册"));
+        emit changed();
+    } catch (const std::exception &ex) {
+        setStatus(QStringLiteral("保存失败：%1").arg(QString::fromUtf8(ex.what())));
+    }
+}
+
 void AuthBridge::switchAccount()
 {
     m_signedIn = false;

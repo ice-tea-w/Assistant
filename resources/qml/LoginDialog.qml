@@ -3,19 +3,21 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import "components"
 
-// 登录弹窗：启动 / 进入主面板时，未登录且未选择离线则弹出。
-// 账号校验在本地完成（PBKDF2），不联网；也可以选择离线继续（部分功能受限）。
+// 登录弹窗：未登录时弹出，可直接登录、注册账号或离线继续。
+// 账号校验在本地完成（PBKDF2），不联网；离线继续则部分功能受限。
 Dialog {
     id: dlg
 
     modal: true
     anchors.centerIn: parent
-    width: 380
-    title: "登录 Assistant"
+    width: 400
+    title: dlg.registerMode ? "注册账号" : "登录 Assistant"
     closePolicy: Popup.NoAutoClose
 
     readonly property bool hasAuth: (typeof auth !== "undefined")
     readonly property bool hasAccount: hasAuth && auth.hasAccount
+    readonly property bool registerMode2: registerMode
+    property bool registerMode: false
     property string errorText: ""
 
     visible: hasAuth && auth.needsLogin
@@ -33,37 +35,70 @@ Dialog {
 
         Text {
             Layout.fillWidth: true
-            text: dlg.hasAccount
-                  ? "登录后可解除离线模式的功能限制；没有网络也可以登录（本地校验）。"
-                  : "本机还没有账号：请先在 设置 → 账号 注册账号，或先离线继续。"
+            text: dlg.registerMode
+                  ? (dlg.hasAccount
+                        ? "用当前密码确认后，可注册并切换到新的本机账号。"
+                        : "填写账号和密码，注册本机账号（离线可用）。")
+                  : (dlg.hasAccount
+                        ? "登录后可解除离线模式的功能限制；没有网络也可以登录（本地校验）。"
+                        : "本机还没有账号：可以直接注册，或先离线继续。")
             color: Style.text2
             font.pixelSize: 12
             font.family: Style.fontFamily
             wrapMode: Text.WordWrap
         }
 
-        AppTextField {
-            id: userField
+        // ---- 登录模式 ----
+        ColumnLayout {
             Layout.fillWidth: true
-            visible: dlg.hasAccount
-            placeholder: "账号"
+            spacing: 8
+            visible: dlg.hasAccount && !dlg.registerMode
+
+            AppTextField {
+                id: userField
+                Layout.fillWidth: true
+                placeholder: "账号"
+            }
+            AppTextField {
+                id: passField
+                Layout.fillWidth: true
+                placeholder: "密码"
+                echoMode: TextInput.Password
+                onAccepted: dlg.tryLogin()
+            }
         }
 
-        AppTextField {
-            id: passField
+        // ---- 注册模式（无账号时也走这里）----
+        ColumnLayout {
             Layout.fillWidth: true
-            visible: dlg.hasAccount
-            placeholder: "密码"
-            echoMode: TextInput.Password
-            onAccepted: dlg.tryLogin()
+            spacing: 8
+            visible: dlg.registerMode || !dlg.hasAccount
+
+            AppTextField {
+                id: curPassField
+                Layout.fillWidth: true
+                visible: dlg.hasAccount && dlg.registerMode
+                placeholder: "当前密码（确认身份）"
+                echoMode: TextInput.Password
+            }
+            AppTextField {
+                id: regUserField
+                Layout.fillWidth: true
+                placeholder: "账号"
+            }
+            AppTextField {
+                id: regPassField
+                Layout.fillWidth: true
+                placeholder: "密码（至少 6 位）"
+                echoMode: TextInput.Password
+                onAccepted: dlg.tryRegister()
+            }
         }
 
         Text {
             Layout.fillWidth: true
             visible: dlg.hasAuth && auth.loginLocked
-            text: (dlg.hasAuth && auth.loginLocked)
-                  ? "登录已锁定：" + auth.lockRemainingSeconds + " 秒后重试"
-                  : ""
+            text: "登录已锁定：" + auth.lockRemainingSeconds + " 秒后重试"
             color: Style.warning
             font.pixelSize: 11
             font.family: Style.fontFamily
@@ -87,10 +122,18 @@ Dialog {
             AppButton {
                 text: "登录"
                 variant: "primary"
-                visible: dlg.hasAccount
+                visible: dlg.hasAccount && !dlg.registerMode
                 enabled: dlg.hasAuth && !auth.loginLocked
                          && userField.text.length > 0 && passField.text.length > 0
                 onClicked: dlg.tryLogin()
+            }
+
+            AppButton {
+                text: "注册账号"
+                variant: "primary"
+                visible: dlg.registerMode || !dlg.hasAccount
+                enabled: dlg.hasAuth && !(dlg.hasAccount && dlg.registerMode && auth.loginLocked)
+                onClicked: dlg.tryRegister()
             }
 
             AppButton {
@@ -103,6 +146,16 @@ Dialog {
             }
 
             Item { Layout.fillWidth: true }
+
+            AppButton {
+                text: dlg.registerMode ? "返回登录" : "注册新账号"
+                variant: "ghost"
+                visible: dlg.registerMode || dlg.hasAccount
+                onClicked: {
+                    dlg.registerMode = !dlg.registerMode
+                    dlg.errorText = ""
+                }
+            }
         }
 
         Text {
@@ -118,19 +171,32 @@ Dialog {
     function tryLogin() {
         if (!hasAuth) return
         auth.login(userField.text, passField.text)
-        if (!auth.signedIn) {
-            errorText = auth.statusText
+        errorText = auth.signedIn ? "" : auth.statusText
+        if (!auth.signedIn)
             passField.text = ""
+    }
+
+    function tryRegister() {
+        if (!hasAuth) return
+        if (hasAccount && registerMode) {
+            auth.replaceAccount(regUserField.text, regPassField.text, curPassField.text)
         } else {
-            errorText = ""
+            auth.saveAccount(regUserField.text, regPassField.text)
         }
+        errorText = auth.signedIn ? "" : auth.statusText
+        if (!auth.signedIn)
+            regPassField.text = ""
     }
 
     onVisibleChanged: {
         if (visible) {
             errorText = ""
+            registerMode = !hasAccount
             passField.text = ""
+            regPassField.text = ""
+            curPassField.text = ""
             userField.text = (hasAuth && auth.hasAccount) ? auth.userName : ""
+            regUserField.text = (hasAuth && auth.hasAccount) ? auth.userName : ""
         }
     }
 }

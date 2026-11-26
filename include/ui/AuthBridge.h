@@ -42,6 +42,9 @@ public:
     Q_INVOKABLE void saveAccount(const QString &user, const QString &password);
     Q_INVOKABLE void changePassword(const QString &oldPassword, const QString &newPassword);
     Q_INVOKABLE void changeUserName(const QString &newName);
+    /// 注册/替换本机账号：已有账号时必须提供当前密码
+    Q_INVOKABLE void replaceAccount(const QString &user, const QString &password,
+                                    const QString &currentPassword);
     Q_INVOKABLE void switchAccount();
     Q_INVOKABLE void logout();
 
