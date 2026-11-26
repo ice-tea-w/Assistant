@@ -508,3 +508,35 @@ add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
         $<TARGET_FILE:file_guard>
         $<TARGET_FILE_DIR:${PROJECT_NAME}>/file_guard.exe
     COMMENT "Copy file_guard.exe next to Assistant")
+
+# ---------------------------------------------------------------------------
+# 发布 staging：scripts/deploy.ps1 把 Release 程序 + Qt 依赖整理到 dist/Assistant-<ver>/
+#   cmake --build build --config Release --target deploy
+#   Inno Setup 再拿 dist 里的目录编译安装包（installer/Assistant.iss）
+# ---------------------------------------------------------------------------
+install(TARGETS ${PROJECT_NAME} file_guard RUNTIME DESTINATION .)
+
+add_custom_target(deploy
+    COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_SOURCE_DIR}/scripts/deploy.ps1"
+            -BuildDir "${CMAKE_BINARY_DIR}"
+            -Config $<CONFIG>
+    DEPENDS ${PROJECT_NAME} file_guard
+    COMMENT "Stage Assistant distribution into dist/Assistant-<version>")
+
+find_program(ISCC_EXECUTABLE
+    NAMES ISCC
+    PATHS "C:/Program Files (x86)/Inno Setup 6"
+          "C:/Program Files/Inno Setup 6"
+          "$ENV{LOCALAPPDATA}/Programs/Inno Setup 6")
+
+if(ISCC_EXECUTABLE)
+    add_custom_target(installer
+        COMMAND ${ISCC_EXECUTABLE}
+                /DMyAppVersion=${PROJECT_VERSION}
+                /DMySourceDir=${CMAKE_SOURCE_DIR}/dist/Assistant-${PROJECT_VERSION}
+                /DMyOutputDir=${CMAKE_SOURCE_DIR}/dist
+                ${CMAKE_SOURCE_DIR}/installer/Assistant.iss
+        DEPENDS deploy
+        COMMENT "Build Inno Setup installer into dist/")
+endif()

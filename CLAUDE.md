@@ -58,6 +58,21 @@ cmake --build build --config Debug
 
 `windeployqt` 在 vcpkg 版 Qt 不可用。
 
+## 打包与发布（v0.3.0 起）
+
+```powershell
+cmake --build build --config Release --target deploy     # → dist\Assistant-<ver>\
+cmake --build build --config Release --target installer  # → dist\Assistant-<ver>-setup.exe
+```
+
+- `deploy` 调 `scripts/deploy.ps1`：拷 exe/file_guard.exe + Release Qt DLL + `Qt6/plugins` + `Qt6/qml`
+  + `sqlite3.dll`，用 dumpbin 递归解析依赖，生成 `Prefix=.` 的 qt.conf；
+- `installer` 用 Inno Setup 6（脚本 `installer/Assistant.iss`，ISCC 自动查找，含
+  `%LOCALAPPDATA%\Programs\Inno Setup 6`）；
+- per-user 装到 `%LOCALAPPDATA%\Programs\Assistant`；数据仍在 `%LOCALAPPDATA%\AssistantTeam\Assistant`，
+  升级/卸载都不碰；固定 AppId 支持覆盖升级；
+- 未签名，首次运行可能被 SmartScreen 拦；自动更新暂未做。细节见 `docs/packaging.md`。
+
 ## 当前开发阶段
 
 **v0.4.0 文件子系统 A + B + C（S9）+ D（S10）+ E（S11 完整）** + **M4 插件市场已合并**（2026-11-12）
