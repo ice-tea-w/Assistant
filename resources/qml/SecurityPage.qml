@@ -3,15 +3,17 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import "components"
 
-// 安全中心（M3）：C++ 安全模块（tools/file_guard_cpp）直接编译进主程序，无 Python 依赖。
-// 数据全部来自 SecurityBridge 的 `--json` 探针，异步、失败降级，不阻塞界面。
+// 安全中心（M3）：C++ 安全模块直接编译进主程序。
+// 上半部分是四张状态卡，下半部分是「运行体检」的逐步过程。
 Rectangle {
     id: page
     color: "transparent"
 
     readonly property var cardData: (typeof security !== "undefined" && security.cards)
                                     ? security.cards : []
-    readonly property bool busy: (typeof security !== "undefined") && security.busy
+    readonly property var steps: (typeof security !== "undefined" && security.healthSteps)
+                                 ? security.healthSteps : []
+    readonly property bool healthRunning: (typeof security !== "undefined") && security.healthRunning
 
     function stateColor(state) {
         if (state === "ok") return Style.success
@@ -24,8 +26,7 @@ Rectangle {
         if (state === "ok") return "正常"
         if (state === "error") return "异常"
         if (state === "warn") return "有发现"
-        if (state === "empty") return "未初始化"
-        return "待检查"
+        return ""
     }
 
     function cardIcon(key) {
@@ -34,6 +35,13 @@ Rectangle {
         if (key === "vault") return "lock"
         if (key === "scan") return "eye"
         return "shield"
+    }
+
+    function stepColor(state) {
+        if (state === "ok") return Style.success
+        if (state === "error") return Style.danger
+        if (state === "running") return Style.warning
+        return Style.text3
     }
 
     function notify(text) {
@@ -50,9 +58,7 @@ Rectangle {
             Layout.fillWidth: true
             Layout.preferredHeight: 48
             title: "安全中心"
-            subtitle: (typeof security !== "undefined")
-                      ? security.summary
-                      : "安全模块未连接（Missing SecurityBridge）"
+            subtitle: (typeof security !== "undefined") ? security.summary : "安全模块未就绪"
         }
 
         RowLayout {
@@ -64,11 +70,11 @@ Rectangle {
 
                 AppCard {
                     Layout.fillWidth: true
-                    Layout.preferredHeight: 116
+                    Layout.preferredHeight: 130
 
                     ColumnLayout {
                         anchors.fill: parent
-                        spacing: 6
+                        spacing: 8
 
                         RowLayout {
                             spacing: 8
@@ -85,12 +91,11 @@ Rectangle {
                                 font.weight: Font.DemiBold
                                 font.family: Style.fontFamily
                             }
-                            Text {
-                                text: page.stateText(modelData.state)
+                            Rectangle {
+                                width: 7
+                                height: 7
+                                radius: 4
                                 color: page.stateColor(modelData.state)
-                                font.pixelSize: 11
-                                font.weight: Font.DemiBold
-                                font.family: Style.fontFamily
                             }
                         }
 
@@ -105,6 +110,14 @@ Rectangle {
                             maximumLineCount: 3
                             font.family: Style.fontFamily
                         }
+
+                        Text {
+                            text: page.stateText(modelData.state)
+                            color: page.stateColor(modelData.state)
+                            font.pixelSize: 11
+                            font.weight: Font.DemiBold
+                            font.family: Style.fontFamily
+                        }
                     }
                 }
             }
@@ -115,13 +128,14 @@ Rectangle {
             spacing: Style.spacingS
 
             AppButton {
-                text: "运行安全体检"
+                text: page.healthRunning ? "体检中…" : "运行安全体检"
                 icon: "shield"
                 variant: "primary"
+                enabled: !page.healthRunning
                 onClicked: {
                     if (typeof security !== "undefined") {
                         security.runSelfCheck()
-                        page.notify("正在运行安全体检…")
+                        page.notify("开始安全体检…")
                     }
                 }
             }
@@ -129,6 +143,7 @@ Rectangle {
             AppButton {
                 text: "扫描下载目录"
                 icon: "search"
+                enabled: !(typeof security !== "undefined" && security.busy)
                 onClicked: {
                     if (typeof security !== "undefined")
                         security.runScan("")
@@ -156,13 +171,6 @@ Rectangle {
             }
 
             Item { Layout.fillWidth: true }
-
-            Text {
-                text: page.busy ? "正在检查…" : ""
-                color: Style.text3
-                font.pixelSize: 11
-                font.family: Style.fontFamily
-            }
         }
 
         AppCard {
@@ -171,36 +179,75 @@ Rectangle {
 
             ColumnLayout {
                 anchors.fill: parent
-                spacing: 8
+                spacing: 6
 
-                Text {
-                    text: "这个页面在整体项目里的位置"
-                    color: Style.text
-                    font.pixelSize: 13
-                    font.weight: Font.DemiBold
-                    font.family: Style.fontFamily
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+
+                    Text {
+                        text: "体检过程"
+                        color: Style.text
+                        font.pixelSize: 13
+                        font.weight: Font.DemiBold
+                        font.family: Style.fontFamily
+                    }
+                    Item { Layout.fillWidth: true }
+                    Text {
+                        text: page.healthRunning
+                              ? "检查中…"
+                              : (page.steps.length > 0 ? "已完成" : "")
+                        color: page.healthRunning ? Style.warning : Style.text3
+                        font.pixelSize: 11
+                        font.family: Style.fontFamily
+                    }
                 }
 
                 Text {
+                    visible: page.steps.length === 0
                     Layout.fillWidth: true
-                    wrapMode: Text.WordWrap
-                    color: Style.text2
-                    font.pixelSize: 12
-                    font.family: Style.fontFamily
-                    text: "安全中心把 C++ 安全模块（tools/file_guard_cpp v1.0.0）直接编译进主程序：" +
-                          "审计链校验、备份库、保险箱、敏感扫描。所有调用都是异步子进程 + --json，" +
-                          "审计链 / 备份 / 保险箱 / 扫描全部走 C++ 实现，不启动外部进程。"
-                }
-
-                Text {
-                    Layout.fillWidth: true
-                    wrapMode: Text.WordWrap
+                    text: "点击「运行安全体检」，这里会一步步显示检查过程。"
                     color: Style.text3
                     font.pixelSize: 12
+                    wrapMode: Text.WordWrap
                     font.family: Style.fontFamily
-                    text: "当前边界：已提供可验证的安全能力（加密容器 / 审计链 / 备份恢复 / 保险箱）；" +
-                          "M3 的 FileOpGateway 网关、策略判定与 security.db 权威库属于下一阶段，" +
-                          "设计见 docs/architecture/四模块完整架构.md §6。"
+                }
+
+                Repeater {
+                    model: page.steps
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+
+                        Rectangle {
+                            width: 6
+                            height: 6
+                            radius: 3
+                            color: page.stepColor(modelData.state)
+                        }
+                        Text {
+                            Layout.preferredWidth: 72
+                            text: modelData.title
+                            color: Style.text
+                            font.pixelSize: 12
+                            font.family: Style.fontFamily
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            text: modelData.detail
+                            color: Style.text2
+                            font.pixelSize: 12
+                            elide: Text.ElideRight
+                            font.family: Style.fontFamily
+                        }
+                        Text {
+                            text: modelData.time
+                            color: Style.text3
+                            font.pixelSize: 11
+                            font.family: Style.fontFamily
+                        }
+                    }
                 }
 
                 Item { Layout.fillHeight: true }
