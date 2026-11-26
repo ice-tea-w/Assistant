@@ -159,9 +159,10 @@ ApplicationWindow {
     Rectangle {
         id: shell
         anchors.fill: parent
-        radius: Style.radiusWindow
+        // 最大化时去掉圆角和边框，避免屏幕边缘出现缝隙
+        radius: panelWindow.visibility === Window.Maximized ? 0 : Style.radiusWindow
         color: Style.bg
-        border.width: 1
+        border.width: panelWindow.visibility === Window.Maximized ? 0 : 1
         border.color: Style.lineStrong
 
         ColumnLayout {
@@ -237,6 +238,17 @@ ApplicationWindow {
                         iconSize: 12
                         tooltip: "最小化"
                         onClicked: panelWindow.showMinimized()
+                    }
+                    AppIconButton {
+                        icon: panelWindow.visibility === Window.Maximized ? "restore" : "maximize"
+                        iconSize: 12
+                        tooltip: panelWindow.visibility === Window.Maximized ? "还原" : "最大化"
+                        onClicked: {
+                            if (panelWindow.visibility === Window.Maximized)
+                                panelWindow.showNormal()
+                            else
+                                panelWindow.showMaximized()
+                        }
                     }
                     AppIconButton {
                         icon: "close"
@@ -468,10 +480,15 @@ ApplicationWindow {
         }
     }
 
-    // ================= 四边缩放热区 =================
+    // ================= 边框/角落缩放热区 =================
+    // 无边框窗口没有原生 resize 边框，用 startSystemResize 模拟；
+    // 四边 + 四角，角落压在上层（z 更高）实现斜向缩放。
+    readonly property bool resizable: panelWindow.visibility !== Window.Maximized
+
     MouseArea {
         width: 5; height: parent.height
         anchors.left: parent.left
+        visible: panelWindow.resizable
         cursorShape: Qt.SizeHorCursor
         onPressed: panelWindow.startSystemResize(Qt.LeftEdge)
         z: 60
@@ -479,6 +496,7 @@ ApplicationWindow {
     MouseArea {
         width: 5; height: parent.height
         anchors.right: parent.right
+        visible: panelWindow.resizable
         cursorShape: Qt.SizeHorCursor
         onPressed: panelWindow.startSystemResize(Qt.RightEdge)
         z: 60
@@ -486,6 +504,7 @@ ApplicationWindow {
     MouseArea {
         width: parent.width; height: 5
         anchors.top: parent.top
+        visible: panelWindow.resizable
         cursorShape: Qt.SizeVerCursor
         onPressed: panelWindow.startSystemResize(Qt.TopEdge)
         z: 60
@@ -493,6 +512,7 @@ ApplicationWindow {
     MouseArea {
         width: parent.width; height: 5
         anchors.bottom: parent.bottom
+        visible: panelWindow.resizable
         cursorShape: Qt.SizeVerCursor
         onPressed: panelWindow.startSystemResize(Qt.BottomEdge)
         z: 60
@@ -503,4 +523,41 @@ ApplicationWindow {
         id: loginDialog
     }
 
+    // ---- 四个角：斜向缩放 ----
+    MouseArea {
+        width: 9; height: 9
+        anchors.left: parent.left
+        anchors.top: parent.top
+        visible: panelWindow.resizable
+        cursorShape: Qt.SizeFDiagCursor
+        onPressed: panelWindow.startSystemResize(Qt.LeftEdge | Qt.TopEdge)
+        z: 61
+    }
+    MouseArea {
+        width: 9; height: 9
+        anchors.right: parent.right
+        anchors.top: parent.top
+        visible: panelWindow.resizable
+        cursorShape: Qt.SizeBDiagCursor
+        onPressed: panelWindow.startSystemResize(Qt.RightEdge | Qt.TopEdge)
+        z: 61
+    }
+    MouseArea {
+        width: 9; height: 9
+        anchors.left: parent.left
+        anchors.bottom: parent.bottom
+        visible: panelWindow.resizable
+        cursorShape: Qt.SizeBDiagCursor
+        onPressed: panelWindow.startSystemResize(Qt.LeftEdge | Qt.BottomEdge)
+        z: 61
+    }
+    MouseArea {
+        width: 9; height: 9
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        visible: panelWindow.resizable
+        cursorShape: Qt.SizeFDiagCursor
+        onPressed: panelWindow.startSystemResize(Qt.RightEdge | Qt.BottomEdge)
+        z: 61
+    }
 }

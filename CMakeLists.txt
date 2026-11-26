@@ -48,6 +48,10 @@ add_executable(${PROJECT_NAME}
     resources/resources.qrc
 )
 
+# GUI 子系统：双击/快捷方式启动时不弹出控制台窗口（日志仍写文件）。
+# Qt6 会自动链接 Qt6::EntryPoint 提供 WinMain。
+set_target_properties(${PROJECT_NAME} PROPERTIES WIN32_EXECUTABLE TRUE)
+
 target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_SOURCE_DIR}/include
 )
